@@ -57,10 +57,42 @@ _LOGGER = logging.getLogger(__name__)
 # MQTT CONNACK / v5 reason-code values that mean "the network round trip
 # happened but the broker rejected these credentials" -- as opposed to a
 # network/TLS failure, which never reaches on_connect at all (it surfaces
-# via on_connect_fail instead). paho-mqtt converts MQTTv3.1.1 CONNACK
-# codes 4 ("bad username or password") and 5 ("not authorised") to the
-# same numeric reason codes under the v2 callback API.
+# via on_connect_fail instead). paho-mqtt's v2 callback API always hands
+# on_connect a paho.mqtt.reasoncodes.ReasonCode, even for a plain
+# MQTTv3.1.1 broker -- convert_connack_rc_to_reason_code() remaps the old
+# CONNACK codes 4/5 ("bad username or password" / "not authorised") to
+# the MQTTv5 numeric space (134/135), so 4/5 never actually appear here in
+# production; they're kept only so a caller/test that already has a v3
+# numeric code still matches.
 _AUTH_FAILURE_REASON_CODES = frozenset({4, 5, 134, 135})
+
+
+def _reason_code_value(reason_code: Any) -> int:
+    """Numeric value of a CONNACK/SUBACK reason code.
+
+    paho-mqtt 2.x's ReasonCode does NOT support int() -- it has no
+    __int__, only a plain `.value` attribute and __eq__/__lt__ against a
+    bare int. Calling int() on one raises TypeError (the exact bug this
+    fixes). ReasonCode is also unhashable (it defines __eq__ without
+    __hash__), so it can never be used directly as a `in <frozenset>`
+    member either -- always extract the plain int first. A test double
+    may still hand us a plain int/bool directly, which has no `.value`,
+    so that case falls through unchanged.
+    """
+    return int(getattr(reason_code, "value", reason_code))
+
+
+def _reason_code_is_failure(reason_code: Any) -> bool:
+    """Whether a reason code represents failure, per ReasonCode.is_failure.
+
+    Prefers the real ReasonCode.is_failure property when available;
+    falls back to the same >= 0x80 threshold it uses internally for
+    plain-int test doubles that have no such property.
+    """
+    is_failure = getattr(reason_code, "is_failure", None)
+    if is_failure is not None:
+        return bool(is_failure)
+    return _reason_code_value(reason_code) >= 0x80
 
 
 class ConnectionState(StrEnum):
@@ -207,7 +239,7 @@ class KameraportiMqttClient:
         reason_code: Any,
         properties: Any = None,
     ) -> None:
-        rc = int(reason_code)
+        rc = _reason_code_value(reason_code)
         if rc == 0:
             client.subscribe(self.topic, qos=1)
             self._hass.loop.call_soon_threadsafe(self._on_connected)
@@ -296,24 +328,34 @@ def _blocking_test_connection(customer_id: int, username: str, password: str) ->
     """
     connected = threading.Event()
     subscribed = threading.Event()
-    outcome: dict[str, bool] = {}
+    outcome: dict[str, Any] = {}
 
     def on_connect(client: mqtt.Client, userdata: Any, connect_flags: Any, reason_code: Any, properties: Any = None) -> None:
-        rc = int(reason_code)
-        if rc == 0:
-            client.subscribe(TOPIC_SUBSCRIBE_TEMPLATE.format(customer_id=customer_id), qos=1)
-        elif rc in _AUTH_FAILURE_REASON_CODES:
-            outcome["auth_failed"] = True
-        else:
-            outcome["connect_failed"] = True
-        connected.set()
+        try:
+            rc = _reason_code_value(reason_code)
+            if rc == 0:
+                client.subscribe(TOPIC_SUBSCRIBE_TEMPLATE.format(customer_id=customer_id), qos=1)
+            elif rc in _AUTH_FAILURE_REASON_CODES:
+                outcome["auth_failed"] = True
+            else:
+                outcome["connect_failed"] = True
+        except Exception as exc:  # noqa: BLE001 - must not crash paho's thread; re-raised below
+            outcome["callback_exception"] = exc
+        finally:
+            connected.set()
 
     def on_connect_fail(client: mqtt.Client, userdata: Any) -> None:
         outcome["connect_failed"] = True
         connected.set()
 
-    def on_subscribe(client: mqtt.Client, userdata: Any, mid: int, reason_codes: Any, properties: Any = None) -> None:
-        subscribed.set()
+    def on_subscribe(client: mqtt.Client, userdata: Any, mid: int, reason_code_list: Any, properties: Any = None) -> None:
+        try:
+            if any(_reason_code_is_failure(rc) for rc in reason_code_list):
+                outcome["subscribe_failed"] = True
+        except Exception as exc:  # noqa: BLE001
+            outcome["callback_exception"] = exc
+        finally:
+            subscribed.set()
 
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -337,12 +379,32 @@ def _blocking_test_connection(customer_id: int, username: str, password: str) ->
     try:
         if not connected.wait(CONNECTION_TEST_TIMEOUT_SECONDS):
             raise CannotConnect("timed out waiting for the broker to respond")
+        callback_exception = outcome.get("callback_exception")
+        if callback_exception is not None:
+            # A programming/callback error is not "the broker is
+            # unreachable" -- surface and log it as itself so it shows up
+            # as "unknown" (with a full traceback) rather than being
+            # silently misreported as cannot_connect/invalid_auth.
+            _LOGGER.exception(
+                "Unexpected error handling a Kameraposti MQTT callback during connection test",
+                exc_info=callback_exception,
+            )
+            raise callback_exception
         if outcome.get("auth_failed"):
             raise InvalidAuth("broker rejected the given credentials")
         if outcome.get("connect_failed"):
             raise CannotConnect("broker refused the connection")
         if not subscribed.wait(CONNECTION_TEST_TIMEOUT_SECONDS):
             raise CannotConnect("timed out waiting for subscription confirmation")
+        callback_exception = outcome.get("callback_exception")
+        if callback_exception is not None:
+            _LOGGER.exception(
+                "Unexpected error handling a Kameraposti MQTT callback during connection test",
+                exc_info=callback_exception,
+            )
+            raise callback_exception
+        if outcome.get("subscribe_failed"):
+            raise CannotConnect("broker rejected the subscription to the customer topic")
     finally:
         client.disconnect()
         client.loop_stop()

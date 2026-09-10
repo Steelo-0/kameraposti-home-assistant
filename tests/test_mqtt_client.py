@@ -2,20 +2,36 @@
 connection-state transitions, auth-failure detection, reconnect scheduling,
 clean stop. paho.mqtt.client.Client itself is mocked throughout -- no real
 network I/O happens in this test file.
+
+Reason-code regression (see TestBlockingConnectionTestReasonCodes and the
+test_handle_connect_accepts_a_real_*_reasoncode_object tests below): a
+production WSS smoke test found that paho-mqtt 2.x's callback API hands
+on_connect/on_subscribe real `paho.mqtt.reasoncodes.ReasonCode` objects,
+which have no __int__ and are unhashable -- `int(reason_code)` and
+`reason_code in <frozenset of ints>` both raise. Every test above this
+point only ever fed callbacks a plain int, which is why 73 passing tests
+still missed a bug that broke every real connection attempt.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
+import paho.mqtt.client as mqtt
 import pytest
 from homeassistant.core import HomeAssistant
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.reasoncodes import ReasonCode
 
 from custom_components.kameraposti.mqtt_client import (
+    CannotConnect,
     ConnectionState,
+    InvalidAuth,
     KameraportiMqttClient,
     _Backoff,
+    _blocking_test_connection,
 )
 
 CUSTOMER_ID = 3
@@ -90,6 +106,51 @@ async def test_auth_rejection_reason_codes_report_auth_failure_and_do_not_subscr
     # section 12: reload must be able to fix it, and a rotated password
     # applied broker-side should eventually be picked up too).
     assert client._reconnect_handle is not None
+
+    await client.async_stop()
+
+
+async def test_handle_connect_accepts_a_real_successful_connack_reasoncode_object(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """Regression: a real ReasonCode has no __int__ and is unhashable --
+    int(reason_code) and `reason_code in frozenset(...)` both raise for
+    it even though every int-based test above passes. Uses paho's own
+    convert_connack_rc_to_reason_code(), exactly what a real MQTTv3.1.1
+    broker's CONNACK produces under the v2 callback API."""
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    await client.async_start()
+    await hass.async_block_till_done()
+
+    success = mqtt.convert_connack_rc_to_reason_code(0)
+    mock_paho_client.on_connect(mock_paho_client, None, MagicMock(), success, None)
+    await hass.async_block_till_done()
+
+    mock_paho_client.subscribe.assert_called_once_with(f"customers/{CUSTOMER_ID}/detections/+", qos=1)
+    assert states[-1] == ConnectionState.CONNECTED
+
+    await client.async_stop()
+
+
+@pytest.mark.parametrize("v3_rc", [4, 5])
+async def test_handle_connect_accepts_a_real_auth_failure_reasoncode_object(
+    hass: HomeAssistant, mock_paho_client: MagicMock, v3_rc: int
+) -> None:
+    """Same regression as above, for the auth-failure path: paho remaps
+    the old CONNACK codes 4/5 to ReasonCode values 134/135, never as a
+    plain int, in real production traffic."""
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    await client.async_start()
+    await hass.async_block_till_done()
+
+    failure = mqtt.convert_connack_rc_to_reason_code(v3_rc)
+    mock_paho_client.on_connect(mock_paho_client, None, MagicMock(), failure, None)
+    await hass.async_block_till_done()
+
+    assert ConnectionState.AUTH_FAILURE in states
+    mock_paho_client.subscribe.assert_not_called()
 
     await client.async_stop()
 
@@ -234,3 +295,105 @@ class TestBackoff:
         backoff.reset()
 
         assert backoff.next_delay() == 1
+
+
+class TestBlockingConnectionTestReasonCodes:
+    """Regression tests for the config-flow connection probe
+    (`_blocking_test_connection`, used by `async_test_connection`).
+
+    This is the exact function and line (mqtt_client.py, `on_connect`)
+    where the real WSS smoke test hit `TypeError` from `int(reason_code)`
+    in production -- and it had NO direct test coverage at all before
+    this (only ever exercised indirectly, with `async_test_connection`
+    itself mocked away in tests/test_config_flow.py). All fixtures here
+    drive it with real paho.mqtt.reasoncodes.ReasonCode objects, the
+    actual runtime type, not integers.
+    """
+
+    @staticmethod
+    def _connect_with(mock_paho_client: MagicMock, reason_code: object) -> None:
+        mock_paho_client.connect.side_effect = lambda *a, **k: mock_paho_client.on_connect(
+            mock_paho_client, None, MagicMock(), reason_code, None
+        )
+
+    @staticmethod
+    def _subscribe_with(mock_paho_client: MagicMock, *suback_reason_codes: object) -> None:
+        mock_paho_client.subscribe.side_effect = lambda *a, **k: mock_paho_client.on_subscribe(
+            mock_paho_client, None, 1, list(suback_reason_codes), None
+        )
+
+    def test_successful_connack_reasoncode_does_not_raise_and_issues_subscribe(
+        self, mock_paho_client: MagicMock
+    ) -> None:
+        self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(0))
+        self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=1))
+
+        _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+
+        mock_paho_client.subscribe.assert_called_once()
+        mock_paho_client.disconnect.assert_called_once()
+
+    @pytest.mark.parametrize("v3_rc", [4, 5])
+    def test_auth_failure_reasoncode_maps_to_invalid_auth(self, mock_paho_client: MagicMock, v3_rc: int) -> None:
+        self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(v3_rc))
+
+        with pytest.raises(InvalidAuth):
+            _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="wrong")
+
+    def test_non_auth_connect_failure_reasoncode_maps_to_cannot_connect(self, mock_paho_client: MagicMock) -> None:
+        # v3 CONNACK code 3 -> "Server unavailable", ReasonCode value 136.
+        self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(3))
+
+        with pytest.raises(CannotConnect):
+            _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+
+    def test_suback_success_reasoncode_does_not_raise(self, mock_paho_client: MagicMock) -> None:
+        self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(0))
+        self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=0))
+
+        _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+
+    def test_suback_failure_reasoncode_maps_to_cannot_connect(self, mock_paho_client: MagicMock) -> None:
+        self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(0))
+        # 128 = "Unspecified error" for SUBACK -- ReasonCode.is_failure is
+        # True for any value >= 0x80.
+        self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=128))
+
+        with pytest.raises(CannotConnect):
+            _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+
+    def test_an_unexpected_callback_exception_is_reraised_as_itself_and_logged(
+        self, mock_paho_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Item 6: a programming/callback bug must surface as itself (and
+        be logged), never be silently reported as CannotConnect."""
+
+        class _ExplodingReasonCode:
+            @property
+            def value(self) -> int:
+                raise ZeroDivisionError("boom")
+
+        self._connect_with(mock_paho_client, _ExplodingReasonCode())
+
+        with caplog.at_level(logging.ERROR, logger="custom_components.kameraposti.mqtt_client"):
+            with pytest.raises(ZeroDivisionError):
+                _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+
+        assert "Unexpected error handling a Kameraposti MQTT callback" in caplog.text
+
+    def test_callback_thread_never_raises_typeerror_from_reasoncode_conversion(
+        self, mock_paho_client: MagicMock
+    ) -> None:
+        """Broad regression: feed every real ReasonCode this module deals
+        with (success/auth-failure/other-failure CONNACK, success/failure
+        SUBACK) through the probe and confirm none of them ever raise
+        TypeError -- the exact class of bug int(reason_code) caused."""
+        for connack_value in (0, 128, 132, 133, 134, 135, 136):
+            for suback_value in (0, 1, 2, 128):
+                mock_paho_client.reset_mock(side_effect=True)
+                self._connect_with(mock_paho_client, ReasonCode(PacketTypes.CONNACK, identifier=connack_value))
+                self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=suback_value))
+                try:
+                    _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+                except (CannotConnect, InvalidAuth):
+                    pass
