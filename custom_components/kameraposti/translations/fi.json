@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Yhdistä Kamerapostiin",
+        "description": "Syötä Kameraposti-tilisi tiedot. Nämä MQTT-tunnukset ovat Kamerapostin generoimia ja erillään mistä tahansa Home Assistantissa jo käytössä olevasta MQTT-brokerista.",
+        "data": {
+          "customer_id": "Asiakas-ID",
+          "username": "MQTT-käyttäjätunnus",
+          "password": "MQTT-salasana"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Yhdistä uudelleen Kamerapostiin",
+        "description": "Kameraposti hylkäsi tallennetun salasanan. Syötä tilin nykyinen MQTT-salasana.",
+        "data": {
+          "password": "MQTT-salasana"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kameraposti-brokeriin ei saatu yhteyttä. Tarkista verkkoyhteys ja yritä uudelleen.",
+      "invalid_auth": "Kameraposti hylkäsi nämä tunnukset. Tarkista asiakas-ID, käyttäjätunnus ja salasana.",
+      "unknown": "Odottamaton virhe. Yritä uudelleen."
+    },
+    "abort": {
+      "already_configured": "Tämä Kameraposti-tili on jo määritetty.",
+      "reauth_successful": "Uudelleentunnistautuminen onnistui."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_detection": {
+        "name": "Viimeisin havainto"
+      },
+      "detection_confidence": {
+        "name": "Havainnon varmuus"
+      },
+      "last_detection_time": {
+        "name": "Viimeisimmän havainnon aika"
+      }
+    }
+  }
+}
