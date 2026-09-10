@@ -120,13 +120,18 @@ class KameraportiCoordinator:
             _LOGGER.debug("Ignoring invalid Kameraposti detection message on %s: %s", topic, err)
             return
 
+        _LOGGER.debug(
+            "Kameraposti received event_id=%s camera_id=%s label=%s",
+            detection.event_id,
+            detection.camera_id,
+            detection.label,
+        )
+
         if self._dedup.seen(detection.event_id):
-            _LOGGER.debug(
-                "Ignoring duplicate Kameraposti detection event_id=%s camera_id=%s",
-                detection.event_id,
-                detection.camera_id,
-            )
+            _LOGGER.debug("Kameraposti dedup rejected event_id=%s (duplicate)", detection.event_id)
             return
+
+        _LOGGER.debug("Kameraposti dedup accepted event_id=%s", detection.event_id)
 
         self._apply_detection(detection)
 
@@ -134,6 +139,13 @@ class KameraportiCoordinator:
     def _apply_detection(self, detection: Detection) -> None:
         """Contract section 17 steps 3-7: ensure entities, update state, fire event."""
         is_new_camera = detection.camera_id not in self.cameras
+
+        _LOGGER.debug(
+            "Kameraposti updating camera state event_id=%s camera_id=%s label=%s",
+            detection.event_id,
+            detection.camera_id,
+            detection.label,
+        )
 
         state = self.cameras.setdefault(detection.camera_id, CameraState(camera_id=detection.camera_id))
         state.label = detection.label
@@ -147,6 +159,13 @@ class KameraportiCoordinator:
             async_dispatcher_send(self.hass, self.signal_new_camera, detection.camera_id)
         else:
             async_dispatcher_send(self.hass, self.signal_camera_update(detection.camera_id))
+
+        _LOGGER.debug(
+            "Kameraposti firing %s event_id=%s camera_id=%s",
+            EVENT_DETECTION,
+            detection.event_id,
+            detection.camera_id,
+        )
 
         self.hass.bus.async_fire(
             EVENT_DETECTION,
