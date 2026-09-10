@@ -18,6 +18,12 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # Brand assets live in a separate, maintainer-reviewed repo
+          # (home-assistant/brands) and can't be added from here -- this
+          # only gates HACS's official default-store listing, not
+          # installing via "custom repository", so it's ignored until a
+          # brands PR is submitted and merged there.
+          ignore: brands
 
   hassfest:
     name: Hassfest

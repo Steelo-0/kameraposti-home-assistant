@@ -4,9 +4,9 @@
   "codeowners": ["@steelo-0"],
   "config_flow": true,
   "documentation": "https://github.com/Steelo-0/kameraposti-home-assistant",
-  "issue_tracker": "https://github.com/Steelo-0/kameraposti-home-assistant/issues",
-  "iot_class": "cloud_push",
   "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/Steelo-0/kameraposti-home-assistant/issues",
   "requirements": ["paho-mqtt>=2.1.0,<3.0.0"],
   "version": "1.0.0"
 }
