@@ -54,13 +54,14 @@ automatically.
 ## What you get
 
 For each camera (`camera_id`) that reports a detection, one device is
-created with three sensors:
+created (named "Riistakamera {camera_id}", e.g. "Riistakamera 16") with
+three sensors:
 
 | Sensor | Example entity ID | Description |
 |---|---|---|
-| Last detection | `sensor.kameraposti_camera_16_last_detection` | Label of the most recent detection (e.g. `moose`) |
-| Detection confidence | `sensor.kameraposti_camera_16_detection_confidence` | Confidence of the most recent detection, 0–1 |
-| Last detection time | `sensor.kameraposti_camera_16_last_detection_time` | Timestamp of the most recent detection |
+| Last detection | `sensor.riistakamera_16_last_detection` | Label of the most recent detection (e.g. `moose`) |
+| Detection confidence | `sensor.riistakamera_16_detection_confidence` | Confidence of the most recent detection, 0–1 |
+| Last detection time | `sensor.riistakamera_16_last_detection_time` | Timestamp of the most recent detection |
 
 Every detection also fires a `kameraposti_detection` event, so you can
 build automations that react immediately without polling a sensor's

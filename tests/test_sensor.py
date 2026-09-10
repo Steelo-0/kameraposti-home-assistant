@@ -74,7 +74,7 @@ async def test_first_detection_creates_one_device_and_three_entities(
     assert device is not None
     assert device.manufacturer == "Kameraposti"
     assert device.model == "Riistakamera"
-    assert device.name == f"Kameraposti Camera {CAMERA_ID}"
+    assert device.name == f"Riistakamera {CAMERA_ID}"
 
     entity_registry = er.async_get(hass)
     unique_ids = {e.unique_id for e in entity_registry.entities.values() if e.device_id == device.id}
@@ -84,10 +84,10 @@ async def test_first_detection_creates_one_device_and_three_entities(
         f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:last_detection_time",
     }
 
-    # entity_id shape matches the contract's suggested examples exactly.
-    last_detection = hass.states.get(f"sensor.kameraposti_camera_{CAMERA_ID}_last_detection")
-    confidence = hass.states.get(f"sensor.kameraposti_camera_{CAMERA_ID}_detection_confidence")
-    last_time = hass.states.get(f"sensor.kameraposti_camera_{CAMERA_ID}_last_detection_time")
+    # entity_id is derived from the device name -- "Riistakamera 16".
+    last_detection = hass.states.get(f"sensor.riistakamera_{CAMERA_ID}_last_detection")
+    confidence = hass.states.get(f"sensor.riistakamera_{CAMERA_ID}_detection_confidence")
+    last_time = hass.states.get(f"sensor.riistakamera_{CAMERA_ID}_last_detection_time")
 
     assert last_detection is not None
     assert last_detection.state == "animal"
@@ -120,7 +120,7 @@ async def test_second_detection_for_the_same_camera_updates_state_without_new_en
 
     assert count_after_second == count_after_first
 
-    last_detection = hass.states.get(f"sensor.kameraposti_camera_{CAMERA_ID}_last_detection")
+    last_detection = hass.states.get(f"sensor.riistakamera_{CAMERA_ID}_last_detection")
     assert last_detection.state == "person"
 
 

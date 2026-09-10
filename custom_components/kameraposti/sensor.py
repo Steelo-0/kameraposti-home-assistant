@@ -79,7 +79,7 @@ class _KameraportiCameraSensorBase(SensorEntity):
             identifiers={(DOMAIN, f"{coordinator.customer_id}:{camera_id}")},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name=f"Kameraposti Camera {camera_id}",
+            name=f"Riistakamera {camera_id}",
         )
 
     @property
