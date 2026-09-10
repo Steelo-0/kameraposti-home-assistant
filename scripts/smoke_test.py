@@ -57,12 +57,15 @@ def main() -> int:
     failures: list[str] = []
 
     def on_connect(client: mqtt.Client, userdata: Any, connect_flags: Any, reason_code: Any, properties: Any = None) -> None:
-        rc = int(reason_code)
+        # reason_code is a real paho.mqtt.reasoncodes.ReasonCode -- it has
+        # no __int__ (int() raises TypeError) and is unhashable, so always
+        # go through .value, never int(reason_code) or `in <frozenset>`.
+        rc = int(getattr(reason_code, "value", reason_code))
         if rc == 0:
             print(f"CONNECTED (rc={rc})")
             client.subscribe(topic, qos=1)
         else:
-            failures.append(f"CONNECT FAILED rc={rc}")
+            failures.append(f"CONNECT FAILED rc={rc} ({reason_code})")
         connected.set()
 
     def on_connect_fail(client: mqtt.Client, userdata: Any) -> None:
