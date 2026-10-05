@@ -39,6 +39,11 @@
       "last_detection_time": {
         "name": "Last detection time"
       }
+    },
+    "alarm_control_panel": {
+      "security": {
+        "name": "Security system"
+      }
     }
   },
   "options": {
@@ -53,6 +58,26 @@
     },
     "error": {
       "too_many": "Kameraposti accepts at most 20 sensors per account."
+    }
+  },
+  "exceptions": {
+    "invalid_code": {
+      "message": "Wrong disarm code."
+    },
+    "locked": {
+      "message": "Too many wrong codes: disarming is locked for a while. Arming still works."
+    },
+    "code_not_set": {
+      "message": "Set a disarm code in Kameraposti (Sensors → Security system) so Home Assistant can disarm."
+    },
+    "no_response": {
+      "message": "Kameraposti did not answer. Try again."
+    },
+    "not_connected": {
+      "message": "Not connected to Kameraposti."
+    },
+    "refused": {
+      "message": "Kameraposti did not accept the change."
     }
   }
 }

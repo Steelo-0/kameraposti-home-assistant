@@ -47,6 +47,8 @@ from .const import (
     RECONNECT_JITTER_SECONDS,
     RECONNECT_MAX_DELAY_SECONDS,
     RECONNECT_MIN_DELAY_SECONDS,
+    SECURITY_RESULT_TOPIC_TEMPLATE,
+    SECURITY_STATE_TOPIC_TEMPLATE,
     TOPIC_SUBSCRIBE_TEMPLATE,
 )
 
@@ -164,6 +166,15 @@ class KameraportiMqttClient:
     def topic(self) -> str:
         return TOPIC_SUBSCRIBE_TEMPLATE.format(customer_id=self._customer_id)
 
+    @property
+    def topics(self) -> list[str]:
+        """Detections + the security system state and command results (2026-10-05)."""
+        return [
+            self.topic,
+            SECURITY_STATE_TOPIC_TEMPLATE.format(customer_id=self._customer_id),
+            SECURITY_RESULT_TOPIC_TEMPLATE.format(customer_id=self._customer_id),
+        ]
+
     async def async_start(self) -> None:
         """Start the client and attempt the first connection."""
         self._closing = False
@@ -257,7 +268,8 @@ class KameraportiMqttClient:
     ) -> None:
         rc = _reason_code_value(reason_code)
         if rc == 0:
-            client.subscribe(self.topic, qos=1)
+            for topic in self.topics:
+                client.subscribe(topic, qos=1)
             self._hass.loop.call_soon_threadsafe(self._on_connected)
             return
 

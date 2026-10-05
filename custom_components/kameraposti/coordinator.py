@@ -15,21 +15,40 @@ listen for per-entry/per-camera dispatcher signals sent from here.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
-from .const import CONF_EXPORTED_ENTITIES, EVENT_DETECTION, SIGNAL_CAMERA_UPDATE, SIGNAL_NEW_CAMERA
+from .const import (
+    CONF_EXPORTED_ENTITIES,
+    DOMAIN,
+    EVENT_DETECTION,
+    SECURITY_COMMAND_TOPIC_TEMPLATE,
+    SECURITY_ERRORS,
+    SECURITY_MODES,
+    SECURITY_RESULT_TOPIC_TEMPLATE,
+    SECURITY_STATE_TOPIC_TEMPLATE,
+    SIGNAL_CAMERA_UPDATE,
+    SIGNAL_NEW_CAMERA,
+    SIGNAL_SECURITY,
+)
 from .dedup import EventDedupCache
 from .models import Detection, DetectionRejected, parse_detection
 from .mqtt_client import ConnectionState, KameraportiMqttClient
 from .sensor_export import KameraportiSensorExporter
 
 _LOGGER = logging.getLogger(__name__)
+
+# How long arming/disarming waits for Kameraposti's answer.
+SECURITY_RESULT_TIMEOUT_SECONDS = 10
 
 
 @dataclass(slots=True)
@@ -60,6 +79,12 @@ class KameraportiCoordinator:
         self.customer_id = customer_id
         self.cameras: dict[int, CameraState] = {}
         self.connection_state: ConnectionState = ConnectionState.CONNECTING
+        # steelo 2026-10-05: Kamerapostin turvajärjestelmän tila (None = ei vielä tiedossa).
+        self.security_mode: str | None = None
+        self._security_pending: dict[str, asyncio.Future[dict]] = {}
+        self._security_state_topic = SECURITY_STATE_TOPIC_TEMPLATE.format(customer_id=customer_id)
+        self._security_result_topic = SECURITY_RESULT_TOPIC_TEMPLATE.format(customer_id=customer_id)
+        self._security_command_topic = SECURITY_COMMAND_TOPIC_TEMPLATE.format(customer_id=customer_id)
 
         self._dedup = EventDedupCache()
         self._client = KameraportiMqttClient(
@@ -82,6 +107,11 @@ class KameraportiCoordinator:
     def signal_new_camera(self) -> str:
         """Dispatcher signal fired the first time a camera_id is ever seen."""
         return f"{SIGNAL_NEW_CAMERA}_{self.entry.entry_id}"
+
+    @property
+    def signal_security(self) -> str:
+        """Dispatcher signal for the security panel (mode or availability changed)."""
+        return f"{SIGNAL_SECURITY}_{self.entry.entry_id}"
 
     def signal_camera_update(self, camera_id: int) -> str:
         """Dispatcher signal fired on every subsequent update for a known camera_id."""
@@ -107,6 +137,7 @@ class KameraportiCoordinator:
             return
         _LOGGER.info("Kameraposti MQTT connection state: %s -> %s", self.connection_state, state)
         self.connection_state = state
+        async_dispatcher_send(self.hass, self.signal_security)
 
         if state == ConnectionState.CONNECTED:
             # Describe the exported sensors and send their current state on
@@ -130,6 +161,13 @@ class KameraportiCoordinator:
         silently ignored -- never raises, never disconnects, never
         blocks (section 7).
         """
+        if topic == self._security_state_topic:
+            self._apply_security_state(payload)
+            return
+        if topic == self._security_result_topic:
+            self._apply_security_result(payload)
+            return
+
         try:
             detection = parse_detection(topic, payload, expected_customer_id=self.customer_id)
         except DetectionRejected as err:
@@ -150,6 +188,57 @@ class KameraportiCoordinator:
         _LOGGER.debug("Kameraposti dedup accepted event_id=%s", detection.event_id)
 
         self._apply_detection(detection)
+
+    @callback
+    def _apply_security_state(self, payload: bytes) -> None:
+        data = _json_object(payload)
+        mode = data.get("mode") if data else None
+        if mode not in SECURITY_MODES:
+            _LOGGER.debug("Ignoring invalid Kameraposti security state")
+            return
+        self.security_mode = mode
+        async_dispatcher_send(self.hass, self.signal_security)
+
+    @callback
+    def _apply_security_result(self, payload: bytes) -> None:
+        data = _json_object(payload)
+        request_id = data.get("request_id") if data else None
+        future = self._security_pending.get(request_id) if isinstance(request_id, str) else None
+        if future is not None and not future.done():
+            future.set_result(data)
+
+    async def async_set_security_mode(self, mode: str, code: str | None) -> None:
+        """Arm or disarm Kameraposti (disarming needs the code set in Kameraposti).
+
+        Raises HomeAssistantError (translated) when not connected, when
+        Kameraposti does not answer, or when it refuses (wrong code, locked,
+        no code set).
+        """
+        request_id = secrets.token_hex(8)
+        command: dict[str, str] = {"mode": mode, "request_id": request_id}
+        if code:
+            command["code"] = code
+        future: asyncio.Future[dict] = self.hass.loop.create_future()
+        self._security_pending[request_id] = future
+        try:
+            if not self._client.publish(self._security_command_topic, json.dumps(command), False):
+                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="not_connected")
+            try:
+                result = await asyncio.wait_for(future, SECURITY_RESULT_TIMEOUT_SECONDS)
+            except TimeoutError as err:
+                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="no_response") from err
+        finally:
+            self._security_pending.pop(request_id, None)
+
+        if not result.get("ok"):
+            error = result.get("error")
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key=error if error in SECURITY_ERRORS else "refused",
+            )
+        if result.get("mode") in SECURITY_MODES:
+            self.security_mode = result["mode"]
+            async_dispatcher_send(self.hass, self.signal_security)
 
     @callback
     def _apply_detection(self, detection: Detection) -> None:
@@ -197,3 +286,11 @@ class KameraportiCoordinator:
                 "timestamp": detection.timestamp.isoformat(),
             },
         )
+
+
+def _json_object(payload: bytes) -> dict | None:
+    try:
+        data = json.loads(payload)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None

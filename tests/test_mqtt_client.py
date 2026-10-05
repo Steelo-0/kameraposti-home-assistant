@@ -85,9 +85,23 @@ async def test_start_connects_with_expected_transport_and_subscribes_on_success(
     on_connect(mock_paho_client, None, MagicMock(), 0, None)
     await hass.async_block_till_done()
 
-    mock_paho_client.subscribe.assert_called_once_with(f"customers/{CUSTOMER_ID}/detections/+", qos=1)
+    mock_paho_client.subscribe.assert_any_call(f"customers/{CUSTOMER_ID}/detections/+", qos=1)
     assert states[-1] == ConnectionState.CONNECTED
 
+    await client.async_stop()
+
+
+async def test_connect_subscribes_detections_and_the_security_topics(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    client = _make_client(hass, [])
+    await client.async_start()
+    await hass.async_block_till_done()
+
+    client._handle_connect(mock_paho_client, None, None, 0)
+
+    topics = [c.args[0] for c in mock_paho_client.subscribe.call_args_list]
+    assert topics == ["customers/3/detections/+", "customers/3/security", "customers/3/security/result"]
     await client.async_stop()
 
 
@@ -156,7 +170,7 @@ async def test_handle_connect_accepts_a_real_successful_connack_reasoncode_objec
     mock_paho_client.on_connect(mock_paho_client, None, MagicMock(), success, None)
     await hass.async_block_till_done()
 
-    mock_paho_client.subscribe.assert_called_once_with(f"customers/{CUSTOMER_ID}/detections/+", qos=1)
+    mock_paho_client.subscribe.assert_any_call(f"customers/{CUSTOMER_ID}/detections/+", qos=1)
     assert states[-1] == ConnectionState.CONNECTED
 
     await client.async_stop()
@@ -251,7 +265,8 @@ async def test_reconnect_attempt_reconnects_and_resubscribes_on_success(
     mock_paho_client.on_connect(mock_paho_client, None, MagicMock(), 0, None)
     await hass.async_block_till_done()
 
-    assert mock_paho_client.subscribe.call_count == 2
+    # Kaksi yhteyttä (alku + uudelleen), kumpikin tilaa havainnot + turvatilan + tuloksen.
+    assert mock_paho_client.subscribe.call_count == 6
     assert states[-1] == ConnectionState.CONNECTED
 
     await client.async_stop()

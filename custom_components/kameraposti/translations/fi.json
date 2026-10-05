@@ -39,6 +39,11 @@
       "last_detection_time": {
         "name": "Viimeisimmän havainnon aika"
       }
+    },
+    "alarm_control_panel": {
+      "security": {
+        "name": "Turvajärjestelmä"
+      }
     }
   },
   "options": {
@@ -53,6 +58,26 @@
     },
     "error": {
       "too_many": "Kameraposti ottaa enintään 20 anturia tiliä kohden."
+    }
+  },
+  "exceptions": {
+    "invalid_code": {
+      "message": "Väärä purkukoodi."
+    },
+    "locked": {
+      "message": "Liian monta väärää koodia: purku on lukossa hetken. Viritys toimii."
+    },
+    "code_not_set": {
+      "message": "Aseta purkukoodi Kamerapostissa (Anturit → Turvajärjestelmä), niin Home Assistant voi purkaa."
+    },
+    "no_response": {
+      "message": "Kameraposti ei vastannut. Yritä uudelleen."
+    },
+    "not_connected": {
+      "message": "Ei yhteyttä Kamerapostiin."
+    },
+    "refused": {
+      "message": "Kameraposti ei hyväksynyt muutosta."
     }
   }
 }
