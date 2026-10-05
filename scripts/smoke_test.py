@@ -2,18 +2,18 @@
 """Manual, optional smoke test against the REAL Kameraposti broker.
 
 Not part of the automated test suite and never runs in CI -- it needs a
-real network path to wss://tailscale2.steels.me/mqtt and a real test
-account's credentials, supplied only via environment variables (never
-hardcoded here):
+real network path to Kameraposti's broker (wss://<service>/mqtt) and a real
+test account's MQTT password, supplied only via environment variables
+(never hardcoded here):
 
+    KAMERAPOSTI_TEST_HOST          kameraposti.fi or cam.steels.me (default)
     KAMERAPOSTI_TEST_CUSTOMER_ID
-    KAMERAPOSTI_TEST_USERNAME
-    KAMERAPOSTI_TEST_PASSWORD
+    KAMERAPOSTI_TEST_PASSWORD      from Kameraposti's sensor page (MQTT)
 
-Run manually, e.g. against test account #3:
+The login is always kp-<customer_id> with the same client id. Run manually,
+e.g. against test account #3 on the CAM test server:
 
     KAMERAPOSTI_TEST_CUSTOMER_ID=3 \\
-    KAMERAPOSTI_TEST_USERNAME=rk-3-... \\
     KAMERAPOSTI_TEST_PASSWORD=... \\
     python scripts/smoke_test.py
 
@@ -32,23 +32,27 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
-HOST = "tailscale2.steels.me"
+HOSTS = ("kameraposti.fi", "cam.steels.me")
 PORT = 443
 WS_PATH = "/mqtt"
 WAIT_SECONDS = 30
 
 
 def main() -> int:
+    host = os.environ.get("KAMERAPOSTI_TEST_HOST", "cam.steels.me")
     customer_id = os.environ.get("KAMERAPOSTI_TEST_CUSTOMER_ID")
-    username = os.environ.get("KAMERAPOSTI_TEST_USERNAME")
     password = os.environ.get("KAMERAPOSTI_TEST_PASSWORD")
 
-    if not (customer_id and username and password):
+    if not (customer_id and password):
         print(
-            "SKIP: set KAMERAPOSTI_TEST_CUSTOMER_ID, KAMERAPOSTI_TEST_USERNAME "
-            "and KAMERAPOSTI_TEST_PASSWORD to run this manual smoke test."
+            "SKIP: set KAMERAPOSTI_TEST_CUSTOMER_ID and KAMERAPOSTI_TEST_PASSWORD "
+            "(and optionally KAMERAPOSTI_TEST_HOST) to run this manual smoke test."
         )
         return 0
+    if host not in HOSTS:
+        print(f"FAIL: KAMERAPOSTI_TEST_HOST must be one of {', '.join(HOSTS)}")
+        return 1
+    username = f"kp-{customer_id}"
 
     topic = f"customers/{customer_id}/detections/+"
     connected = threading.Event()
@@ -84,7 +88,9 @@ def main() -> int:
             print(message.payload)
         received.set()
 
-    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, transport="websockets")
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2, transport="websockets", client_id=username
+    )
     client.username_pw_set(username, password)
     client.tls_set()
     client.ws_set_options(path=WS_PATH)
@@ -93,8 +99,8 @@ def main() -> int:
     client.on_subscribe = on_subscribe
     client.on_message = on_message
 
-    print(f"Connecting to wss://{HOST}{WS_PATH} as {username} (customer_id={customer_id})...")
-    client.connect(HOST, PORT, keepalive=60)
+    print(f"Connecting to wss://{host}{WS_PATH} as {username} (customer_id={customer_id})...")
+    client.connect(host, PORT, keepalive=60)
     client.loop_start()
 
     try:

@@ -3,7 +3,9 @@
 Home Assistant custom integration that receives Kameraposti riistakamera
 (trail camera) detection events directly from Kameraposti's own MQTT
 broker, and turns them into Home Assistant sensors and an automation
-trigger event.
+trigger event. It can also send your own Home Assistant sensors (leak,
+smoke, door, window, motion, temperature) to Kameraposti, which then
+alarms through its own notifications.
 
 It talks to Kameraposti's broker over its own dedicated MQTT connection —
 it does **not** use, share, or modify your existing Home Assistant MQTT
@@ -13,14 +15,14 @@ outbound-only, over WSS/TLS).
 
 ## Requirements
 
-- Home Assistant 2024.1.0 or newer
-- A Kameraposti account with MQTT access enabled, and:
-  - your **customer ID**
-  - an **MQTT username** and **MQTT password** issued by Kameraposti for that account
+- Home Assistant 2024.11.0 or newer
+- A Kameraposti account with sensors enabled, and:
+  - your **account number** (customer ID)
+  - the account's **MQTT password** from Kameraposti's sensor page
+    (Cameras → Sensors → MQTT)
 
-Kameraposti provides these three values when MQTT access is enabled for
-your account. This integration does not use your regular Kameraposti
-login.
+The MQTT login is always `kp-<account number>`; you never type it. This
+integration does not use your regular Kameraposti login.
 
 ## Installation
 
@@ -39,7 +41,8 @@ Copy `custom_components/kameraposti` into your Home Assistant
 
 1. Go to **Settings → Devices & services → Add integration**, search for
    **Kameraposti**.
-2. Enter your customer ID, MQTT username, and MQTT password.
+2. Choose the service (`kameraposti.fi`, or `cam.steels.me` for the test
+   server), then enter your account number and MQTT password.
 3. The integration tests the connection (WSS/TLS + authentication +
    subscribe) before saving — if anything fails, you'll see the reason
    before the entry is created.
@@ -50,6 +53,10 @@ its own device, with no further configuration.
 If Kameraposti rotates your MQTT password, Home Assistant will prompt you
 to re-authenticate; enter the new password and the integration reconnects
 automatically.
+
+Upgrading from 1.0.x: the old broker address no longer exists. The entry is
+migrated automatically and Home Assistant asks for the new MQTT password
+(re-authenticate) — create it on Kameraposti's sensor page.
 
 ## What you get
 
@@ -99,6 +106,30 @@ automation:
             ({{ (trigger.event.data.confidence * 100) | round(0) }}%)
 ```
 
+## Sensors to Kameraposti
+
+**Settings → Devices & services → Kameraposti → Configure** lets you pick
+Home Assistant entities to send to Kameraposti (at most 20 per account):
+
+| Home Assistant entity | Kameraposti sensor | Sent |
+|---|---|---|
+| `binary_sensor`, device class `moisture` | leak | `leak` / `dry` |
+| `binary_sensor`, device class `smoke` | smoke | `smoke` / `clear` |
+| `binary_sensor`, device class `door`, `garage_door`, `opening` | door | `open` / `closed` |
+| `binary_sensor`, device class `window` | window | `open` / `closed` |
+| `binary_sensor`, device class `motion`, `occupancy`, `presence` | motion | `motion` |
+| `sensor`, device class `temperature` | temperature | value in °C, at most once a minute |
+
+Kameraposti creates each sensor automatically (named after the entity's
+friendly name) and handles the alarms, quiet hours and notifications
+itself. The topic is `kameraposti/<account>/anturit/<entity_id>`.
+
+On every (re)connect the sensors are described again and their current
+state is sent, so a leak that started while Home Assistant was offline is
+not lost. Nothing is queued while disconnected. A sensor deleted only in
+Kameraposti comes back on the next connection — remove it from this list
+as well.
+
 ## Known limitations
 
 - Duplicate-detection suppression is a bounded in-memory cache (~500
@@ -115,12 +146,12 @@ automation:
 
 `scripts/smoke_test.py` connects to the real Kameraposti broker with
 credentials for one test account, to verify WSS/TLS + auth + subscribe
-against production end-to-end. It is not run automatically anywhere and
-never reads credentials from anything but environment variables:
+end-to-end. It is not run automatically anywhere and never reads
+credentials from anything but environment variables:
 
 ```bash
+KAMERAPOSTI_TEST_HOST=cam.steels.me \
 KAMERAPOSTI_TEST_CUSTOMER_ID=... \
-KAMERAPOSTI_TEST_USERNAME=... \
 KAMERAPOSTI_TEST_PASSWORD=... \
 python scripts/smoke_test.py
 ```
