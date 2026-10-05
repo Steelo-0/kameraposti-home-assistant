@@ -41,6 +41,15 @@ EVENT_DETECTION: Final = "kameraposti_detection"
 
 CONF_CUSTOMER_ID: Final = "customer_id"
 CONF_HOST: Final = "host"
+CONF_EXPORTED_ENTITIES: Final = "exported_entities"
+
+# Sensor export (2026-10-05): chosen Home Assistant entities become sensors in
+# Kameraposti. The account login may publish only under its own
+# kameraposti/<id>/anturit/ prefix (broker ACL); "<name>/config" describes the
+# sensor, "<name>" carries its state in Kameraposti's simple format.
+SENSOR_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/{name}"
+# Kameraposti's per-account sensor cap (kameraposti_sensors.max_per_account).
+MAX_EXPORTED_SENSORS: Final = 20
 
 # The account's MQTT login on Kameraposti's broker is kp-<customer_id>, and the
 # broker only accepts that login with the same client id (dynsec clientid pin).

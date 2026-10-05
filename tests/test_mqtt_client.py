@@ -91,6 +91,29 @@ async def test_start_connects_with_expected_transport_and_subscribes_on_success(
     await client.async_stop()
 
 
+async def test_publish_is_qos1_and_only_while_connected(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """Sensor export: nothing is queued while disconnected (the exporter re-sends on connect)."""
+    client = _make_client(hass, [])
+    assert client.publish("kameraposti/3/anturit/x", "leak") is False
+
+    await client.async_start()
+    await hass.async_block_till_done()
+    mock_paho_client.is_connected.return_value = False
+    assert client.publish("kameraposti/3/anturit/x", "leak") is False
+    mock_paho_client.publish.assert_not_called()
+
+    mock_paho_client.is_connected.return_value = True
+    mock_paho_client.publish.return_value.rc = mqtt.MQTT_ERR_SUCCESS
+    assert client.publish("kameraposti/3/anturit/x", "leak") is True
+    mock_paho_client.publish.assert_called_once_with("kameraposti/3/anturit/x", "leak", qos=1, retain=False)
+
+    mock_paho_client.publish.return_value.rc = mqtt.MQTT_ERR_NO_CONN
+    assert client.publish("kameraposti/3/anturit/x", "dry") is False
+    await client.async_stop()
+
+
 @pytest.mark.parametrize("auth_rc", [4, 5])
 async def test_auth_rejection_reason_codes_report_auth_failure_and_do_not_subscribe(
     hass: HomeAssistant, mock_paho_client: MagicMock, auth_rc: int

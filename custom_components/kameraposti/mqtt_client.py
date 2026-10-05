@@ -185,6 +185,20 @@ class KameraportiMqttClient:
 
         self._report_state(ConnectionState.STOPPED)
 
+    def publish(self, topic: str, payload: str, retain: bool = False) -> bool:
+        """Queue a QoS 1 publish (sensor export). False while not connected.
+
+        paho-mqtt's publish() only queues the packet for its network thread,
+        so this is safe to call from the event loop. Nothing is buffered
+        while disconnected -- the exporter re-sends descriptions and current
+        states on the next connect instead.
+        """
+        client = self._client
+        if client is None or not client.is_connected():
+            return False
+        info = client.publish(topic, payload, qos=1, retain=retain)
+        return info.rc == mqtt.MQTT_ERR_SUCCESS
+
     # -- setup helpers (always run on the executor thread) --------------
 
     def _build_client(self) -> mqtt.Client:

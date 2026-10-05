@@ -40,5 +40,19 @@
         "name": "Viimeisimmän havainnon aika"
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Anturit Kamerapostiin",
+        "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, ovi, ikkuna, liike ja lämpötila (enintään {max}). Kameraposti luo anturit automaattisesti. Jos poistat anturin vain Kamerapostista, se palaa seuraavassa yhteydessä; poista se myös tästä listasta.",
+        "data": {
+          "exported_entities": "Vietävät anturit"
+        }
+      }
+    },
+    "error": {
+      "too_many": "Kameraposti ottaa enintään 20 anturia tiliä kohden."
+    }
   }
 }

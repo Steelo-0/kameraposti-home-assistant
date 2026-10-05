@@ -23,10 +23,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
-from .const import EVENT_DETECTION, SIGNAL_CAMERA_UPDATE, SIGNAL_NEW_CAMERA
+from .const import CONF_EXPORTED_ENTITIES, EVENT_DETECTION, SIGNAL_CAMERA_UPDATE, SIGNAL_NEW_CAMERA
 from .dedup import EventDedupCache
 from .models import Detection, DetectionRejected, parse_detection
 from .mqtt_client import ConnectionState, KameraportiMqttClient
+from .sensor_export import KameraportiSensorExporter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +71,12 @@ class KameraportiCoordinator:
             on_message=self._handle_message,
             on_state_change=self._handle_state_change,
         )
+        self._exporter = KameraportiSensorExporter(
+            hass,
+            customer_id=customer_id,
+            entity_ids=list(entry.options.get(CONF_EXPORTED_ENTITIES, [])),
+            publish=self._client.publish,
+        )
 
     @property
     def signal_new_camera(self) -> str:
@@ -82,10 +89,12 @@ class KameraportiCoordinator:
 
     async def async_start(self) -> None:
         """Start the MQTT client (contract section 21/22 counterpart is async_stop)."""
+        self._exporter.async_start()
         await self._client.async_start()
 
     async def async_stop(self) -> None:
         """Disconnect the MQTT client and stop any pending reconnect. Idempotent."""
+        self._exporter.async_stop()
         await self._client.async_stop()
 
     @callback
@@ -98,6 +107,11 @@ class KameraportiCoordinator:
             return
         _LOGGER.info("Kameraposti MQTT connection state: %s -> %s", self.connection_state, state)
         self.connection_state = state
+
+        if state == ConnectionState.CONNECTED:
+            # Describe the exported sensors and send their current state on
+            # every (re)connect -- nothing is buffered while disconnected.
+            self._exporter.publish_snapshot()
 
         if state == ConnectionState.AUTH_FAILURE:
             # Proactively surface Home Assistant's own reauth flow

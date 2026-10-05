@@ -9,6 +9,9 @@ id), so the user never types a username. Port/path/transport are fixed.
 Runs a REAL connection test (connect + auth + subscribe to the caller's
 own customer namespace) before ever saving the entry (section 18) -- a
 malformed/incorrect account never gets silently accepted.
+
+Options (2026-10-05): the Home Assistant entities exported to Kameraposti as
+sensors (sensor_export.py). Saving them reloads the entry.
 """
 
 from __future__ import annotations
@@ -17,10 +20,13 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
+    EntityFilterSelectorConfig,
+    EntitySelector,
+    EntitySelectorConfig,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -29,8 +35,18 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .const import BROKER_HOSTS, CONF_CUSTOMER_ID, CONF_HOST, DEFAULT_HOST, DOMAIN, USERNAME_TEMPLATE
+from .const import (
+    BROKER_HOSTS,
+    CONF_CUSTOMER_ID,
+    CONF_EXPORTED_ENTITIES,
+    CONF_HOST,
+    DEFAULT_HOST,
+    DOMAIN,
+    MAX_EXPORTED_SENSORS,
+    USERNAME_TEMPLATE,
+)
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
+from .sensor_export import KIND_BY_BINARY_DEVICE_CLASS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +67,19 @@ STEP_REAUTH_DATA_SCHEMA = vol.Schema(
 )
 
 
+EXPORTABLE_ENTITIES = EntitySelector(
+    EntitySelectorConfig(
+        multiple=True,
+        filter=[
+            EntityFilterSelectorConfig(
+                domain="binary_sensor", device_class=list(KIND_BY_BINARY_DEVICE_CLASS)
+            ),
+            EntityFilterSelectorConfig(domain="sensor", device_class="temperature"),
+        ],
+    )
+)
+
+
 async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Run the real connection test. Raises CannotConnect / InvalidAuth."""
     await async_test_connection(
@@ -68,6 +97,11 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 2
 
     _reauth_entry_data: dict[str, Any] | None = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> KameraportiOptionsFlow:
+        return KameraportiOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """First (and only, for V1) step: customer_id + credentials."""
@@ -133,4 +167,30 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=STEP_REAUTH_DATA_SCHEMA,
             errors=errors,
+        )
+
+
+class KameraportiOptionsFlow(OptionsFlow):
+    """Choose the entities exported to Kameraposti as sensors."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        current = list(self.config_entry.options.get(CONF_EXPORTED_ENTITIES, []))
+
+        if user_input is not None:
+            selected = list(dict.fromkeys(user_input.get(CONF_EXPORTED_ENTITIES, [])))
+            if len(selected) > MAX_EXPORTED_SENSORS:
+                errors[CONF_EXPORTED_ENTITIES] = "too_many"
+                current = selected
+            else:
+                options = {**self.config_entry.options, CONF_EXPORTED_ENTITIES: selected}
+                return self.async_create_entry(data=options)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {vol.Optional(CONF_EXPORTED_ENTITIES, default=current): EXPORTABLE_ENTITIES}
+            ),
+            errors=errors,
+            description_placeholders={"max": str(MAX_EXPORTED_SENSORS)},
         )
