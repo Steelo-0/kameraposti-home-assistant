@@ -138,6 +138,25 @@ alarms. Nothing is queued while disconnected. A sensor deleted only in
 Kameraposti comes back on the next connection — remove it from this list
 as well.
 
+## Security system (arm / disarm)
+
+The integration adds an alarm panel, **Security system** ("Turvajärjestelmä"),
+that shows and changes Kameraposti's mode:
+
+| Kameraposti | Home Assistant | What alarms |
+|---|---|---|
+| Poissa (away) | Armed away | everything: doors, windows, motion, leak, smoke, temperature |
+| Kotona (home) | Armed home | doors and windows; leak, smoke and temperature always |
+| Purettu (disarmed) | Disarmed | only leak, smoke and temperature |
+
+Arming needs no code. **Disarming needs the disarm code** you set in
+Kameraposti (Sensors → Security system → Home Assistant disarm code); Kameraposti
+checks it, Home Assistant never stores it. Without a code set, Home Assistant
+can arm but not disarm. After five wrong codes disarming is locked for 15
+minutes (arming still works). Every change shows in Kameraposti's log as
+"Home Assistant". Mode changes made in the Kameraposti app or website show up
+in Home Assistant right away, so automations can react to them too.
+
 ## Known limitations
 
 - Duplicate-detection suppression is a bounded in-memory cache (~500
