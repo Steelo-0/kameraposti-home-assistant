@@ -107,7 +107,7 @@ async def test_arming_sends_no_code(hass: HomeAssistant) -> None:
     await task
 
 
-@pytest.mark.parametrize("error", ["invalid_code", "locked", "code_not_set"])
+@pytest.mark.parametrize("error", ["invalid_code", "locked", "code_not_set", "code_required", "rate_limited"])
 async def test_a_refused_disarm_raises_a_translated_error(hass: HomeAssistant, error: str) -> None:
     client = _client()
     coordinator = await _coordinator(hass, client)
@@ -177,3 +177,57 @@ async def test_the_panel_follows_the_mode_and_disarms_with_the_code(hass: HomeAs
     await task
     await hass.async_block_till_done()
     assert hass.states.get(entity_id).state == "disarmed"
+
+
+async def test_foreign_results_are_ignored_and_nothing_is_left_pending(hass: HomeAssistant) -> None:
+    client = _client()
+    coordinator = await _coordinator(hass, client)
+
+    first = hass.async_create_task(coordinator.async_set_security_mode("home", None))
+    second = hass.async_create_task(coordinator.async_set_security_mode("away", None))
+    await asyncio.sleep(0)
+    ids = [json.loads(c.args[1])["request_id"] for c in client.publish.call_args_list]
+    assert len(set(ids)) == 2
+
+    # Tuntematon request_id ei ratkaise kumpaakaan.
+    coordinator._handle_message(
+        "customers/3/security/result", b'{"request_id":"nope","ok":false,"error":"invalid_code"}'
+    )
+    coordinator._handle_message("customers/3/security/result", b"not json")
+    await asyncio.sleep(0)
+    assert not first.done() and not second.done()
+
+    coordinator._handle_message(
+        "customers/3/security/result", json.dumps({"request_id": ids[1], "ok": True, "mode": "away"}).encode()
+    )
+    coordinator._handle_message(
+        "customers/3/security/result", json.dumps({"request_id": ids[0], "ok": True, "mode": "home"}).encode()
+    )
+    await second
+    await first
+    assert coordinator._security_pending == {}
+
+    with patch("custom_components.kameraposti.coordinator.SECURITY_RESULT_TIMEOUT_SECONDS", 0.01):
+        with pytest.raises(HomeAssistantError):
+            await coordinator.async_set_security_mode("home", None)
+    assert coordinator._security_pending == {}
+
+
+async def test_the_panel_is_unavailable_while_disconnected(hass: HomeAssistant) -> None:
+    entry = _entry(hass)
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient", return_value=_client()):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "alarm_control_panel", DOMAIN, "kameraposti:3:security"
+    )
+
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    coordinator._handle_message("customers/3/security", b'{"mode":"home"}')
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "armed_home"
+
+    coordinator._handle_state_change(ConnectionState.RECONNECTING)
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "unavailable"

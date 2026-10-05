@@ -78,7 +78,7 @@ SECURITY_STATE_TOPIC_TEMPLATE: Final = "customers/{customer_id}/security"
 SECURITY_RESULT_TOPIC_TEMPLATE: Final = "customers/{customer_id}/security/result"
 SECURITY_COMMAND_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/turva/set"
 SECURITY_MODES: Final = ("away", "home", "disarmed")
-SECURITY_ERRORS: Final = ("invalid_code", "locked", "code_not_set")
+SECURITY_ERRORS: Final = ("invalid_code", "locked", "code_not_set", "code_required", "rate_limited")
 
 SIGNAL_NEW_CAMERA: Final = f"{DOMAIN}_new_camera"
 SIGNAL_CAMERA_UPDATE: Final = f"{DOMAIN}_camera_update"

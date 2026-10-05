@@ -151,9 +151,11 @@ that shows and changes Kameraposti's mode:
 
 Arming needs no code. **Disarming needs the disarm code** you set in
 Kameraposti (Sensors → Security system → Home Assistant disarm code); Kameraposti
-checks it, Home Assistant never stores it. Without a code set, Home Assistant
-can arm but not disarm. After five wrong codes disarming is locked for 15
-minutes (arming still works). Every change shows in Kameraposti's log as
+checks it, and this integration passes it through without storing it (if you
+give the panel a default code in Home Assistant's own entity settings, Home
+Assistant stores that one). Without a code set, Home Assistant can arm but not
+disarm. Five wrong codes lock disarming for 15 minutes, ten in a day for 24
+hours, and Kameraposti notifies you and your followers (arming still works). Every change shows in Kameraposti's log as
 "Home Assistant". Mode changes made in the Kameraposti app or website show up
 in Home Assistant right away, so automations can react to them too.
 

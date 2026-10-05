@@ -65,7 +65,7 @@
       "message": "Wrong disarm code."
     },
     "locked": {
-      "message": "Too many wrong codes: disarming is locked for a while. Arming still works."
+      "message": "Too many wrong codes: disarming is locked (15 min, a day after repeated errors). Arming still works."
     },
     "code_not_set": {
       "message": "Set a disarm code in Kameraposti (Sensors → Security system) so Home Assistant can disarm."
@@ -78,6 +78,12 @@
     },
     "refused": {
       "message": "Kameraposti did not accept the change."
+    },
+    "code_required": {
+      "message": "Disarming needs the disarm code."
+    },
+    "rate_limited": {
+      "message": "Too many commands in a short time. Wait a moment."
     }
   }
 }

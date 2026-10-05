@@ -65,7 +65,7 @@
       "message": "Väärä purkukoodi."
     },
     "locked": {
-      "message": "Liian monta väärää koodia: purku on lukossa hetken. Viritys toimii."
+      "message": "Liian monta väärää koodia: purku on lukossa (15 min, toistuvista virheistä vuorokauden). Viritys toimii."
     },
     "code_not_set": {
       "message": "Aseta purkukoodi Kamerapostissa (Anturit → Turvajärjestelmä), niin Home Assistant voi purkaa."
@@ -78,6 +78,12 @@
     },
     "refused": {
       "message": "Kameraposti ei hyväksynyt muutosta."
+    },
+    "code_required": {
+      "message": "Purku vaatii purkukoodin."
+    },
+    "rate_limited": {
+      "message": "Liian monta komentoa lyhyessä ajassa. Odota hetki."
     }
   }
 }
