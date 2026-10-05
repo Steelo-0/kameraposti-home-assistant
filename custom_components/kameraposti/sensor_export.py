@@ -32,9 +32,18 @@ import math
 import re
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HassJob,
+    HomeAssistant,
+    State,
+    callback,
+)
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
@@ -216,10 +225,12 @@ class KameraportiSensorExporter:
             sent_at = self._temperature_sent_at.get(entity_id)
             elapsed = (dt_util.utcnow() - sent_at).total_seconds() if sent_at is not None else None
             if throttle and elapsed is not None and elapsed < TEMPERATURE_INTERVAL_SECONDS:
+                # A @callback (not a bare lambda, which Home Assistant would
+                # run as an executor job off the event loop -- Fable M-1).
                 self._temperature_pending[entity_id] = async_call_later(
                     self._hass,
                     TEMPERATURE_INTERVAL_SECONDS - elapsed,
-                    lambda _now: self._send_pending_temperature(entity_id),
+                    HassJob(partial(self._send_pending_temperature, entity_id), cancel_on_shutdown=True),
                 )
                 return
         _LOGGER.debug("Kameraposti exporting %s -> %s", entity_id, payload)
@@ -227,9 +238,10 @@ class KameraportiSensorExporter:
             self._temperature_sent_at[entity_id] = dt_util.utcnow()
 
     @callback
-    def _send_pending_temperature(self, entity_id: str) -> None:
+    def _send_pending_temperature(self, entity_id: str, _now: datetime) -> None:
         """Trailing send: the entity's value at the end of the interval."""
         self._temperature_pending.pop(entity_id, None)
         state = self._hass.states.get(entity_id)
         if state is not None and kind_for(state) == "temperature":
-            self._publish_state(state, "temperature")
+            # The interval has passed; a timer firing a hair early must not re-arm.
+            self._publish_state(state, "temperature", throttle=False)

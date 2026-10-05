@@ -14,8 +14,9 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HassJob, HassJobType, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
@@ -214,6 +215,30 @@ async def test_temperature_is_sent_at_most_once_a_minute_and_the_latest_value_fo
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert len(published) == 2
+
+
+async def test_trailing_temperature_send_runs_on_the_event_loop(hass: HomeAssistant) -> None:
+    """Fable M-1: a plain lambda given to async_call_later becomes an executor
+    job, so the trailing send would touch hass.states and async_call_later off
+    the event loop. The scheduled action must be an event-loop callback."""
+    _set(hass, "sensor.olohuone", "20.0", "temperature", "Olohuone")
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=["sensor.olohuone"], publish=publish
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    with patch("custom_components.kameraposti.sensor_export.async_call_later") as call_later:
+        _set(hass, "sensor.olohuone", "20.1", "temperature", "Olohuone")
+        await hass.async_block_till_done()
+
+    call_later.assert_called_once()
+    action = call_later.call_args.args[2]
+    job = action if isinstance(action, HassJob) else HassJob(action)
+    assert job.job_type is HassJobType.Callback
+    job.target(dt_util.utcnow())
+    assert published[-1] == ("kameraposti/3/anturit/sensor.olohuone", "20.1", False)
+    exporter.async_stop()
 
 
 async def test_entity_that_appears_later_is_described_before_its_first_state(hass: HomeAssistant) -> None:
