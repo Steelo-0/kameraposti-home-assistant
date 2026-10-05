@@ -110,3 +110,19 @@ async def test_updating_entry_data_triggers_a_reload_via_update_listener(
     assert len(mqtt_client_instances) == 2
     assert mqtt_client_instances[0].async_stop.await_count == 1
     assert mqtt_client_instances[1].async_start.await_count == 1
+
+
+async def test_version_1_entry_migrates_to_the_own_broker_and_kp_login(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    """2026-10-05: v1 pointed at the removed tailscale2.steels.me with an rk- login."""
+    entry = MockConfigEntry(domain=DOMAIN, data=DATA, version=1)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.version == 2
+    assert entry.data[CONF_USERNAME] == "kp-3"
+    assert entry.data["host"] == "kameraposti.fi"
+    assert entry.data[CONF_PASSWORD] == "secret"

@@ -8,12 +8,16 @@ register or depend on Home Assistant's built-in MQTT integration.
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_CUSTOMER_ID, DOMAIN
+from .const import CONF_CUSTOMER_ID, CONF_HOST, DEFAULT_HOST, DOMAIN, USERNAME_TEMPLATE
 from .coordinator import KameraportiCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -23,6 +27,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = KameraportiCoordinator(
         hass,
         entry,
+        host=entry.data.get(CONF_HOST, DEFAULT_HOST),
         customer_id=entry.data[CONF_CUSTOMER_ID],
         username=entry.data[CONF_USERNAME],
         password=entry.data[CONF_PASSWORD],
@@ -55,6 +60,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_stop()
 
     return unload_ok
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Version 1 -> 2 (2026-10-05): Kameraposti's own broker.
+
+    Version 1 entries pointed at tailscale2.steels.me (removed) with an
+    rk-<id>-<suffix> login. Version 2 uses the chosen service host and the
+    account login kp-<customer_id>; the stored password belongs to the old
+    login, so the broker rejects it and Home Assistant asks for the new
+    password (reauth), which the user copies from Kameraposti's sensor page.
+    """
+    if entry.version == 1:
+        data = {
+            **entry.data,
+            CONF_HOST: DEFAULT_HOST,
+            CONF_USERNAME: USERNAME_TEMPLATE.format(customer_id=entry.data[CONF_CUSTOMER_ID]),
+        }
+        hass.config_entries.async_update_entry(entry, data=data, version=2)
+        _LOGGER.info("Kameraposti entry migrated to version 2 (own broker, login kp-<id>)")
+    return True
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

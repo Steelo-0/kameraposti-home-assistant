@@ -14,10 +14,12 @@ from typing import Final
 
 DOMAIN: Final = "kameraposti"
 
-# Fixed service endpoint (contract section 2). NOT user-configurable in the
-# V1 config flow -- the user only supplies their own account credentials,
-# never the broker host/port/path.
-MQTT_HOST: Final = "tailscale2.steels.me"
+# Kameraposti's own broker (2026-10-05: the old tailscale2.steels.me endpoint
+# was removed). The user picks the service, never a free-form host: the
+# production service or the CAM test server. Port/path/transport are fixed:
+# MQTT over WSS behind the service's HTTPS proxy.
+DEFAULT_HOST: Final = "kameraposti.fi"
+BROKER_HOSTS: Final = ("kameraposti.fi", "cam.steels.me")
 MQTT_PORT: Final = 443
 MQTT_WS_PATH: Final = "/mqtt"
 MQTT_TRANSPORT: Final = "websockets"
@@ -38,6 +40,11 @@ SCHEMA_VERSION_SUPPORTED: Final = 1
 EVENT_DETECTION: Final = "kameraposti_detection"
 
 CONF_CUSTOMER_ID: Final = "customer_id"
+CONF_HOST: Final = "host"
+
+# The account's MQTT login on Kameraposti's broker is kp-<customer_id>, and the
+# broker only accepts that login with the same client id (dynsec clientid pin).
+USERNAME_TEMPLATE: Final = "kp-{customer_id}"
 
 MANUFACTURER: Final = "Kameraposti"
 MODEL: Final = "Riistakamera"

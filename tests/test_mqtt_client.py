@@ -35,6 +35,7 @@ from custom_components.kameraposti.mqtt_client import (
 )
 
 CUSTOMER_ID = 3
+PROBE = {"host": "cam.steels.me", "customer_id": CUSTOMER_ID, "username": "kp-3"}
 
 
 @pytest.fixture
@@ -48,8 +49,9 @@ def mock_paho_client() -> Generator[MagicMock]:
 def _make_client(hass: HomeAssistant, states: list[ConnectionState]) -> KameraportiMqttClient:
     return KameraportiMqttClient(
         hass,
+        host="cam.steels.me",
         customer_id=CUSTOMER_ID,
-        username="rk-3-abc",
+        username="kp-3",
         password="secret",
         on_message=lambda topic, payload: None,
         on_state_change=states.append,
@@ -67,9 +69,13 @@ async def test_start_connects_with_expected_transport_and_subscribes_on_success(
 
     mock_paho_client.connect.assert_called_once()
     host, port = mock_paho_client.connect.call_args.args[:2]
-    assert host == "tailscale2.steels.me"
+    assert host == "cam.steels.me"
     assert port == 443
     mock_paho_client.ws_set_options.assert_called_once_with(path="/mqtt")
+    # The broker pins the login to client id == username (kp-<id>).
+    with patch("custom_components.kameraposti.mqtt_client.mqtt.Client") as mock_cls:
+        client._build_client()
+        assert mock_cls.call_args.kwargs["client_id"] == "kp-3"
     mock_paho_client.tls_set.assert_called_once()
     mock_paho_client.loop_start.assert_called_once()
     assert states == [ConnectionState.CONNECTING]
@@ -328,7 +334,7 @@ class TestBlockingConnectionTestReasonCodes:
         self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(0))
         self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=1))
 
-        _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+        _blocking_test_connection(**PROBE, password="secret")
 
         mock_paho_client.subscribe.assert_called_once()
         mock_paho_client.disconnect.assert_called_once()
@@ -338,20 +344,20 @@ class TestBlockingConnectionTestReasonCodes:
         self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(v3_rc))
 
         with pytest.raises(InvalidAuth):
-            _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="wrong")
+            _blocking_test_connection(**PROBE, password="wrong")
 
     def test_non_auth_connect_failure_reasoncode_maps_to_cannot_connect(self, mock_paho_client: MagicMock) -> None:
         # v3 CONNACK code 3 -> "Server unavailable", ReasonCode value 136.
         self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(3))
 
         with pytest.raises(CannotConnect):
-            _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+            _blocking_test_connection(**PROBE, password="secret")
 
     def test_suback_success_reasoncode_does_not_raise(self, mock_paho_client: MagicMock) -> None:
         self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(0))
         self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=0))
 
-        _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+        _blocking_test_connection(**PROBE, password="secret")
 
     def test_suback_failure_reasoncode_maps_to_cannot_connect(self, mock_paho_client: MagicMock) -> None:
         self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(0))
@@ -360,7 +366,7 @@ class TestBlockingConnectionTestReasonCodes:
         self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=128))
 
         with pytest.raises(CannotConnect):
-            _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+            _blocking_test_connection(**PROBE, password="secret")
 
     def test_an_unexpected_callback_exception_is_reraised_as_itself_and_logged(
         self, mock_paho_client: MagicMock, caplog: pytest.LogCaptureFixture
@@ -377,7 +383,7 @@ class TestBlockingConnectionTestReasonCodes:
 
         with caplog.at_level(logging.ERROR, logger="custom_components.kameraposti.mqtt_client"):
             with pytest.raises(ZeroDivisionError):
-                _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+                _blocking_test_connection(**PROBE, password="secret")
 
         assert "Unexpected error handling a Kameraposti MQTT callback" in caplog.text
 
@@ -394,6 +400,6 @@ class TestBlockingConnectionTestReasonCodes:
                 self._connect_with(mock_paho_client, ReasonCode(PacketTypes.CONNACK, identifier=connack_value))
                 self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=suback_value))
                 try:
-                    _blocking_test_connection(customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+                    _blocking_test_connection(**PROBE, password="secret")
                 except (CannotConnect, InvalidAuth):
                     pass

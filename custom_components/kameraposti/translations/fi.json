@@ -3,16 +3,16 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Syötä Kameraposti-tilisi tiedot. Nämä MQTT-tunnukset ovat Kamerapostin generoimia ja erillään mistä tahansa Home Assistantissa jo käytössä olevasta MQTT-brokerista.",
+        "description": "Valitse palvelu ja syötä Kameraposti-tilisi numero sekä MQTT-salasana Kamerapostin Anturit-sivulta (Kamerat → Anturit → MQTT). Tunnus on kp-<tilin numero>.",
         "data": {
-          "customer_id": "Asiakas-ID",
-          "username": "MQTT-käyttäjätunnus",
+          "host": "Palvelu",
+          "customer_id": "Tilin numero",
           "password": "MQTT-salasana"
         }
       },
       "reauth_confirm": {
         "title": "Yhdistä uudelleen Kamerapostiin",
-        "description": "Kameraposti hylkäsi tallennetun salasanan. Syötä tilin nykyinen MQTT-salasana.",
+        "description": "Kameraposti hylkäsi tallennetun salasanan. Luo tai vaihda MQTT-salasana Kamerapostin Anturit-sivulla ja syötä se tähän.",
         "data": {
           "password": "MQTT-salasana"
         }
@@ -20,7 +20,7 @@
     },
     "error": {
       "cannot_connect": "Kameraposti-brokeriin ei saatu yhteyttä. Tarkista verkkoyhteys ja yritä uudelleen.",
-      "invalid_auth": "Kameraposti hylkäsi nämä tunnukset. Tarkista asiakas-ID, käyttäjätunnus ja salasana.",
+      "invalid_auth": "Kameraposti hylkäsi tunnukset. Tarkista tilin numero ja MQTT-salasana.",
       "unknown": "Odottamaton virhe. Yritä uudelleen."
     },
     "abort": {

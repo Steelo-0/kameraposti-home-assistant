@@ -36,12 +36,10 @@ from enum import StrEnum
 from typing import Any
 
 import paho.mqtt.client as mqtt
-
 from homeassistant.core import HomeAssistant
 
 from .const import (
     CONNECTION_TEST_TIMEOUT_SECONDS,
-    MQTT_HOST,
     MQTT_KEEPALIVE_SECONDS,
     MQTT_PORT,
     MQTT_TRANSPORT,
@@ -142,6 +140,7 @@ class KameraportiMqttClient:
         self,
         hass: HomeAssistant,
         *,
+        host: str,
         customer_id: int,
         username: str,
         password: str,
@@ -149,6 +148,7 @@ class KameraportiMqttClient:
         on_state_change: Callable[[ConnectionState], None],
     ) -> None:
         self._hass = hass
+        self._host = host
         self._customer_id = customer_id
         self._username = username
         self._password = password
@@ -191,6 +191,8 @@ class KameraportiMqttClient:
         client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             transport=MQTT_TRANSPORT,
+            # The broker pins the login to client id == username.
+            client_id=self._username,
             # We own reconnection entirely (backoff + jitter below) --
             # paho-mqtt's own retry-on-failure would otherwise race with
             # ours and make the backoff/jitter contract unobservable.
@@ -214,7 +216,7 @@ class KameraportiMqttClient:
         client = self._build_client()
         self._client = client
         try:
-            client.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE_SECONDS)
+            client.connect(self._host, MQTT_PORT, keepalive=MQTT_KEEPALIVE_SECONDS)
         except (OSError, ssl.SSLError) as err:
             _LOGGER.debug("Kameraposti MQTT connect() raised %s: %s", type(err).__name__, err)
             self._client = None
@@ -317,7 +319,7 @@ class InvalidAuth(Exception):
     """The broker reached out but rejected the given credentials."""
 
 
-def _blocking_test_connection(customer_id: int, username: str, password: str) -> None:
+def _blocking_test_connection(host: str, customer_id: int, username: str, password: str) -> None:
     """Fully synchronous connect + subscribe + disconnect probe.
 
     MUST run on an executor thread, never on the event loop. Deliberately
@@ -360,6 +362,7 @@ def _blocking_test_connection(customer_id: int, username: str, password: str) ->
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         transport=MQTT_TRANSPORT,
+        client_id=username,
         reconnect_on_failure=False,
     )
     client.username_pw_set(username, password)
@@ -371,7 +374,7 @@ def _blocking_test_connection(customer_id: int, username: str, password: str) ->
     client.on_subscribe = on_subscribe
 
     try:
-        client.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE_SECONDS)
+        client.connect(host, MQTT_PORT, keepalive=MQTT_KEEPALIVE_SECONDS)
     except (OSError, ssl.SSLError) as err:
         raise CannotConnect(str(err)) from err
 
@@ -410,11 +413,13 @@ def _blocking_test_connection(customer_id: int, username: str, password: str) ->
         client.loop_stop()
 
 
-async def async_test_connection(hass: HomeAssistant, *, customer_id: int, username: str, password: str) -> None:
+async def async_test_connection(
+    hass: HomeAssistant, *, host: str, customer_id: int, username: str, password: str
+) -> None:
     """Test connectivity, auth and subscription against the Kameraposti broker.
 
     Raises CannotConnect or InvalidAuth on failure; returns normally on
     success. Used by the config flow (contract section 18) -- an entry is
     never saved unless this passes.
     """
-    await hass.async_add_executor_job(_blocking_test_connection, customer_id, username, password)
+    await hass.async_add_executor_job(_blocking_test_connection, host, customer_id, username, password)

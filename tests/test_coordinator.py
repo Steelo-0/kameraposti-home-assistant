@@ -31,7 +31,9 @@ def coordinator(hass: HomeAssistant) -> KameraportiCoordinator:
         data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "rk-3-abc", CONF_PASSWORD: "secret"},
     )
     entry.add_to_hass(hass)
-    return KameraportiCoordinator(hass, entry, customer_id=CUSTOMER_ID, username="rk-3-abc", password="secret")
+    return KameraportiCoordinator(
+        hass, entry, host="cam.steels.me", customer_id=CUSTOMER_ID, username="kp-3", password="secret"
+    )
 
 
 def _payload(**overrides: object) -> bytes:

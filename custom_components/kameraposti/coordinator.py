@@ -49,6 +49,7 @@ class KameraportiCoordinator:
         hass: HomeAssistant,
         entry: ConfigEntry,
         *,
+        host: str,
         customer_id: int,
         username: str,
         password: str,
@@ -62,6 +63,7 @@ class KameraportiCoordinator:
         self._dedup = EventDedupCache()
         self._client = KameraportiMqttClient(
             hass,
+            host=host,
             customer_id=customer_id,
             username=username,
             password=password,

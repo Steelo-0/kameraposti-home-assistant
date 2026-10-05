@@ -1,8 +1,10 @@
 """Config flow for the Kameraposti integration.
 
-Only asks for the three things the contract requires (customer_id, MQTT
-username, MQTT password, section 3) -- broker host/port/websocket path
-are fixed in const.py and never exposed in the UI (section 2/19).
+Version 2 (2026-10-05): Kameraposti's own broker. Asks for the service
+(production or the CAM test server -- a fixed list, never a free-form host),
+the account number and the account's MQTT password from Kameraposti's sensor
+page. The login is always kp-<customer_id> (the broker pins it to that client
+id), so the user never types a username. Port/path/transport are fixed.
 
 Runs a REAL connection test (connect + auth + subscribe to the caller's
 own customer namespace) before ever saving the entry (section 18) -- a
@@ -15,25 +17,29 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
 )
 
-from .const import CONF_CUSTOMER_ID, DOMAIN
+from .const import BROKER_HOSTS, CONF_CUSTOMER_ID, CONF_HOST, DEFAULT_HOST, DOMAIN, USERNAME_TEMPLATE
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
+        vol.Required(CONF_HOST, default=DEFAULT_HOST): SelectSelector(
+            SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
+        ),
         vol.Required(CONF_CUSTOMER_ID): vol.All(vol.Coerce(int), vol.Range(min=1)),
-        vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
     }
 )
@@ -49,6 +55,7 @@ async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Run the real connection test. Raises CannotConnect / InvalidAuth."""
     await async_test_connection(
         hass,
+        host=data.get(CONF_HOST, DEFAULT_HOST),
         customer_id=data[CONF_CUSTOMER_ID],
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
@@ -58,7 +65,7 @@ async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> None:
 class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Kameraposti."""
 
-    VERSION = 1
+    VERSION = 2
 
     _reauth_entry_data: dict[str, Any] | None = None
 
@@ -69,6 +76,13 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             await self.async_set_unique_id(str(user_input[CONF_CUSTOMER_ID]))
             self._abort_if_unique_id_configured()
+            if user_input[CONF_HOST] not in BROKER_HOSTS:
+                errors["base"] = "cannot_connect"
+                return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
+            user_input = {
+                **user_input,
+                CONF_USERNAME: USERNAME_TEMPLATE.format(customer_id=user_input[CONF_CUSTOMER_ID]),
+            }
 
             try:
                 await _async_validate(self.hass, user_input)
