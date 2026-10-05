@@ -15,7 +15,7 @@ outbound-only, over WSS/TLS).
 
 ## Requirements
 
-- Home Assistant 2024.11.0 or newer
+- Home Assistant 2024.12.0 or newer
 - A Kameraposti account with sensors enabled, and:
   - your **account number** (customer ID)
   - the account's **MQTT password** from Kameraposti's sensor page
@@ -23,6 +23,12 @@ outbound-only, over WSS/TLS).
 
 The MQTT login is always `kp-<account number>`; you never type it. This
 integration does not use your regular Kameraposti login.
+
+One account has one MQTT connection at a time: the broker accepts the login
+only with client id `kp-<account number>`, so a second connection with the
+same login (for example a Zigbee2MQTT/Mosquitto bridge to Kameraposti)
+disconnects this integration and the two keep taking turns. Use this
+integration *or* a bridge for one account, not both.
 
 ## Installation
 
