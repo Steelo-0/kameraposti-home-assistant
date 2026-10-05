@@ -15,6 +15,9 @@ On every (re)connect the sensors are described again and their current state
 is sent (not motion: a motion sensor that happens to be "on" at reconnect is
 not a new movement), so an alarm that started during a break is not lost.
 Kameraposti drops a repeated leak/dry/open/closed state on its own.
+The same snapshot is repeated every 15 minutes: Kameraposti's listener
+reconnects hourly (and after a crash), and a message published in that gap
+would otherwise be lost until the next state change.
 A temperature is sent at most once a minute per entity (the latest value
 follows when the minute is up), so a chatty thermometer cannot use up the
 account's shared message budget and crowd out a leak alarm.
@@ -31,7 +34,7 @@ import logging
 import math
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -44,7 +47,11 @@ from homeassistant.core import (
     State,
     callback,
 )
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.util import dt as dt_util
 
 from .const import SENSOR_TOPIC_TEMPLATE
@@ -81,6 +88,8 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 # Minimum interval between two temperature messages from one entity.
 TEMPERATURE_INTERVAL_SECONDS = 60
+# Periodic resend of descriptions and current states.
+RESYNC_INTERVAL = timedelta(minutes=15)
 
 PublishFn = Callable[[str, str, bool], bool]
 
@@ -152,6 +161,7 @@ class KameraportiSensorExporter:
         self._entity_ids = list(dict.fromkeys(entity_ids))
         self._publish = publish
         self._unsub: Callable[[], None] | None = None
+        self._unsub_resync: Callable[[], None] | None = None
         # entity_id -> (name, kind) last described on the current connection.
         self._described: dict[str, tuple[str, str]] = {}
         # Temperature throttle: last sent time and the pending trailing send.
@@ -164,12 +174,18 @@ class KameraportiSensorExporter:
             self._unsub = async_track_state_change_event(
                 self._hass, self._entity_ids, self._handle_state_event
             )
+            self._unsub_resync = async_track_time_interval(
+                self._hass, self._handle_resync, RESYNC_INTERVAL, cancel_on_shutdown=True
+            )
 
     @callback
     def async_stop(self) -> None:
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
+        if self._unsub_resync is not None:
+            self._unsub_resync()
+            self._unsub_resync = None
         for cancel in self._temperature_pending.values():
             cancel()
         self._temperature_pending.clear()
@@ -188,6 +204,11 @@ class KameraportiSensorExporter:
                 return
             if kind != "motion":
                 self._publish_state(state, kind, throttle=False)
+
+    @callback
+    def _handle_resync(self, _now: datetime) -> None:
+        """Periodic resend; publishes nothing while disconnected."""
+        self.publish_snapshot()
 
     @callback
     def _handle_state_event(self, event: Event[EventStateChangedData]) -> None:

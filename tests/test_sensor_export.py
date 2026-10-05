@@ -241,6 +241,48 @@ async def test_trailing_temperature_send_runs_on_the_event_loop(hass: HomeAssist
     exporter.async_stop()
 
 
+async def test_sensors_are_described_and_resent_every_15_minutes(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Fable re-check: Kameraposti's listener reconnects hourly (and after a crash);
+    a description or state published in that gap is lost. A periodic resend
+    recovers it (Kameraposti drops repeated states, so no extra alarms)."""
+    _set(hass, "binary_sensor.kellari", "on", "moisture", "Kellarin vuoto")
+    _set(hass, "binary_sensor.liike", "on", "motion", "Pihan liike")
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=["binary_sensor.kellari", "binary_sensor.liike"],
+        publish=publish,
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    published.clear()
+
+    freezer.tick(14 * 60)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert published == []
+
+    freezer.tick(61)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert [t for t, _, _ in published] == [
+        "kameraposti/3/anturit/binary_sensor.kellari/config",
+        "kameraposti/3/anturit/binary_sensor.kellari",
+        "kameraposti/3/anturit/binary_sensor.liike/config",
+    ]
+    assert published[1][1] == "leak"
+
+    exporter.async_stop()
+    published.clear()
+    freezer.tick(16 * 60)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert published == []
+
+
 async def test_entity_that_appears_later_is_described_before_its_first_state(hass: HomeAssistant) -> None:
     published, publish = _recorder()
     exporter = KameraportiSensorExporter(

@@ -130,9 +130,11 @@ Kameraposti creates each sensor automatically (named after the entity's
 friendly name) and handles the alarms, quiet hours and notifications
 itself. The topic is `kameraposti/<account>/anturit/<entity_id>`.
 
-On every (re)connect the sensors are described again and their current
-state is sent, so a leak that started while Home Assistant was offline is
-not lost. Nothing is queued while disconnected. A sensor deleted only in
+On every (re)connect, and every 15 minutes, the sensors are described
+again and their current state is sent, so a leak that started while Home
+Assistant was offline (or a message lost during a broker-side restart) is
+not lost; Kameraposti ignores repeated states, so this causes no extra
+alarms. Nothing is queued while disconnected. A sensor deleted only in
 Kameraposti comes back on the next connection — remove it from this list
 as well.
 
