@@ -3,12 +3,11 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Valitse palvelu ja syötä Kameraposti-tilisi numero sekä MQTT-salasana Kamerapostin Anturit-sivulta (Kamerat → Anturit → MQTT). Tunnus on kp-<tilin numero>. Jos tilillä on jo toinen yhteys (esim. toinen Home Assistant), luo Anturit-sivulla lisätunnus kp-<tilin numero>-<n> ja anna tähän n; muuten jätä tyhjäksi.",
+        "description": "Valitse palvelu (testipalvelin cam.steels.me tai tuotanto kameraposti.fi) ja syötä MQTT-tunnus Kamerapostin Anturit-sivulta (Kamerat → Anturit → MQTT), esim. kp-2 tai lisätunnus kp-2-2, sekä sen salasana. Pelkkä tilin numero (2) tarkoittaa päätunnusta kp-2. Jokaisella tunnuksella on yksi yhteys kerrallaan: toinen Home Assistant tai silta tarvitsee oman lisätunnuksen.",
         "data": {
           "host": "Palvelu",
-          "customer_id": "Tilin numero",
-          "password": "MQTT-salasana",
-          "login_number": "Lisätunnuksen numero (valinnainen)"
+          "customer_id": "MQTT-tunnus tai tilin numero",
+          "password": "MQTT-salasana"
         }
       },
       "reauth_confirm": {
@@ -22,7 +21,8 @@
     "error": {
       "cannot_connect": "Kameraposti-brokeriin ei saatu yhteyttä. Tarkista verkkoyhteys ja yritä uudelleen.",
       "invalid_auth": "Kameraposti hylkäsi tunnukset. Tarkista tilin numero ja MQTT-salasana.",
-      "unknown": "Odottamaton virhe. Yritä uudelleen."
+      "unknown": "Odottamaton virhe. Yritä uudelleen.",
+      "invalid_login": "Tuntematon tunnus. Kirjoita se kuten Anturit-sivulla, esim. kp-2 tai kp-2-2 (tai pelkkä tilin numero)."
     },
     "abort": {
       "already_configured": "Tämä Kameraposti-tili on jo määritetty.",

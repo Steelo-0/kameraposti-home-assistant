@@ -3,12 +3,11 @@
     "step": {
       "user": {
         "title": "Connect to Kameraposti",
-        "description": "Choose the service and enter your Kameraposti account number and the MQTT password from Kameraposti's Sensors page (Kamerat → Sensors → MQTT). The login is kp-<account number>. If the account already has another connection (e.g. another Home Assistant), create an extra login kp-<account number>-<n> on the Anturit page and enter n here; otherwise leave it empty.",
+        "description": "Choose the service (test server cam.steels.me or production kameraposti.fi) and enter the MQTT login from Kameraposti’s sensor page (Cameras → Sensors → MQTT), e.g. kp-2 or the extra login kp-2-2, and its password. Just the account number (2) means the main login kp-2. Each login has one connection at a time: another Home Assistant or a bridge needs its own extra login.",
         "data": {
           "host": "Service",
-          "customer_id": "Account number",
-          "password": "MQTT password",
-          "login_number": "Extra login number (optional)"
+          "customer_id": "MQTT login or account number",
+          "password": "MQTT password"
         }
       },
       "reauth_confirm": {
@@ -22,7 +21,8 @@
     "error": {
       "cannot_connect": "Could not reach the Kameraposti broker. Check your network connection and try again.",
       "invalid_auth": "Kameraposti rejected these credentials. Check the account number and the MQTT password.",
-      "unknown": "Unexpected error. Please try again."
+      "unknown": "Unexpected error. Please try again.",
+      "invalid_login": "Unknown login. Type it as shown on the sensor page, e.g. kp-2 or kp-2-2 (or just the account number)."
     },
     "abort": {
       "already_configured": "This Kameraposti account is already configured.",

@@ -57,8 +57,10 @@ USERNAME_TEMPLATE: Final = "kp-{customer_id}"
 # 2026-10-06: each login has one connection (the broker pins client id == username), so a second
 # Home Assistant (or a bridge) on the same account uses an extra login kp-<id>-<n> created on the
 # Kameraposti Anturit page. Same permissions as the main login.
-CONF_LOGIN_NUMBER: Final = "login_number"
 EXTRA_USERNAME_TEMPLATE: Final = "kp-{customer_id}-{login_number}"
+# 1.3.1 (steelo 2026-10-06 "ei hyväksy kuin numeroita"): the setup field takes the login exactly as the
+# Anturit page shows it -- "kp-<id>", "kp-<id>-<n>" (n >= 2) -- or just the account number.
+LOGIN_PATTERN: Final = re.compile(r"^(?:kp-)?([1-9]\d{0,9})(?:-([2-9]|[1-9]\d))?$", re.IGNORECASE)
 
 MANUFACTURER: Final = "Kameraposti"
 MODEL: Final = "Riistakamera"

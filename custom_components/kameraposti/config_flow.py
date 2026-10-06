@@ -40,10 +40,10 @@ from .const import (
     CONF_CUSTOMER_ID,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
-    CONF_LOGIN_NUMBER,
     DEFAULT_HOST,
     DOMAIN,
     EXTRA_USERNAME_TEMPLATE,
+    LOGIN_PATTERN,
     MAX_EXPORTED_SENSORS,
     USERNAME_TEMPLATE,
 )
@@ -57,9 +57,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_HOST, default=DEFAULT_HOST): SelectSelector(
             SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
         ),
-        vol.Required(CONF_CUSTOMER_ID): vol.All(vol.Coerce(int), vol.Range(min=1)),
-        # Optional extra login kp-<id>-<n> (n >= 2); empty = the main login kp-<id>.
-        vol.Optional(CONF_LOGIN_NUMBER): vol.All(vol.Coerce(int), vol.Range(min=2, max=99)),
+        # 1.3.1: the login as shown on the Anturit page ("kp-2", "kp-2-2") or just the account number.
+        vol.Required(CONF_CUSTOMER_ID): vol.Coerce(str),
         vol.Required(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
     }
 )
@@ -117,15 +116,21 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             if user_input[CONF_HOST] not in BROKER_HOSTS:
                 errors["base"] = "cannot_connect"
                 return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
-            login_number = user_input.get(CONF_LOGIN_NUMBER)
+            match = LOGIN_PATTERN.match(str(user_input[CONF_CUSTOMER_ID]).strip())
+            if match is None:
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=STEP_USER_DATA_SCHEMA,
+                    errors={CONF_CUSTOMER_ID: "invalid_login"},
+                )
+            customer_id, login_number = int(match.group(1)), match.group(2)
             user_input = {
                 **user_input,
+                CONF_CUSTOMER_ID: customer_id,
                 CONF_USERNAME: (
-                    EXTRA_USERNAME_TEMPLATE.format(
-                        customer_id=user_input[CONF_CUSTOMER_ID], login_number=login_number
-                    )
+                    EXTRA_USERNAME_TEMPLATE.format(customer_id=customer_id, login_number=int(login_number))
                     if login_number
-                    else USERNAME_TEMPLATE.format(customer_id=user_input[CONF_CUSTOMER_ID])
+                    else USERNAME_TEMPLATE.format(customer_id=customer_id)
                 ),
             }
 
@@ -142,7 +147,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=(
                         f"Kameraposti ({user_input[CONF_USERNAME]})"
-                        if user_input.get(CONF_LOGIN_NUMBER)
+                        if login_number
                         else f"Kameraposti ({user_input[CONF_CUSTOMER_ID]})"
                     ),
                     data=user_input,
