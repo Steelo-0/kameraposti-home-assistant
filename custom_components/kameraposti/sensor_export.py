@@ -1,14 +1,14 @@
 """Export chosen Home Assistant entities to Kameraposti as sensors.
 
 The user picks entities in the integration's options (leak, smoke, gas,
-door, window, motion binary sensors and temperature sensors). For each one this
-module publishes, over the integration's own connection:
+door, window, motion binary sensors; temperature and CO2 sensors). For each
+one this module publishes, over the integration's own connection:
 
 * ``kameraposti/<id>/anturit/<name>/config`` -- {"name", "kind", "format"};
   Kameraposti creates the sensor (or updates its name/kind) automatically.
 * ``kameraposti/<id>/anturit/<name>`` -- the state in Kameraposti's simple
-  format: leak/dry, smoke/clear, gas/clear, open/closed, motion, or the
-  temperature in degrees Celsius.
+  format: leak/dry, smoke/clear, gas/clear, open/closed, motion, the
+  temperature in degrees Celsius, or {"e":"co2","v":<ppm>}.
 
 ``<name>`` is the entity_id, so it stays stable across friendly-name changes.
 On every (re)connect the sensors are described again and their current state
@@ -18,9 +18,10 @@ Kameraposti drops a repeated leak/dry/open/closed state on its own.
 The same snapshot is repeated every 15 minutes: Kameraposti's listener
 reconnects hourly (and after a crash), and a message published in that gap
 would otherwise be lost until the next state change.
-A temperature is sent at most once a minute per entity (the latest value
-follows when the minute is up), so a chatty thermometer cannot use up the
-account's shared message budget and crowd out a leak alarm.
+A reading (temperature, CO2) is sent at most once a minute per entity (the
+latest value follows when the minute is up), so a chatty thermometer or CO2
+meter cannot use up the account's shared message budget and crowd out a leak
+alarm.
 
 Everything here runs on the Home Assistant event loop; ``publish`` is the
 MQTT client's non-blocking publish and returns False while disconnected.
@@ -108,7 +109,7 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 # Kinds that send a reading (a number), not an alarm state: sent at most once
 # per READING_INTERVAL_SECONDS per entity, the latest value following.
-READING_KINDS: frozenset[str] = frozenset({"temperature"})
+READING_KINDS: frozenset[str] = frozenset({"temperature", "co2"})
 # Minimum interval between two readings from one entity.
 READING_INTERVAL_SECONDS = 60
 # Periodic resend of descriptions and current states.
@@ -127,8 +128,12 @@ def kind_for(state: State | None) -> str | None:
         if kind is None and device_class in INFERRED_DEVICE_CLASSES:
             kind = _kind_from_name(state)
         return kind
-    if state.domain == "sensor" and device_class == "temperature":
-        return "temperature"
+    if state.domain == "sensor":
+        if device_class == "temperature":
+            return "temperature"
+        # 1.4.0: a CO2 meter (ppm) is sent as a reading, like a thermometer.
+        if device_class == "carbon_dioxide":
+            return "co2"
     return None
 
 
@@ -152,17 +157,20 @@ def event_for(kind: str, state: str, unit: str | None = None) -> str | None:
     if state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
         return None
     if kind == "temperature":
-        try:
-            value = float(state)
-        except ValueError:
-            return None
-        if not math.isfinite(value):
+        value = _finite_number(state)
+        if value is None:
             return None
         if unit == "°F":
             return str(round((value - 32) * 5 / 9, 2))
         if unit not in (None, "°C"):
             return None
         return state
+    if kind == "co2":
+        # The contract's JSON form names the event; the value in whole ppm.
+        value = _finite_number(state)
+        if value is None or unit not in (None, "ppm"):
+            return None
+        return json.dumps({"e": "co2", "v": round(value)}, separators=(",", ":"))
     events = _EVENTS_BY_KIND.get(kind)
     if events is None:
         return None
@@ -171,6 +179,14 @@ def event_for(kind: str, state: str, unit: str | None = None) -> str | None:
     if state == "off":
         return events[1]
     return None
+
+
+def _finite_number(state: str) -> float | None:
+    try:
+        value = float(state)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
 
 
 def mqtt_name_for(entity_id: str) -> str:

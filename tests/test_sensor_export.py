@@ -599,11 +599,18 @@ def test_export_list_offers_gas_and_carbon_monoxide_detectors() -> None:
     assert ("binary_sensor", "carbon_monoxide") in offered
 
 
+def test_export_list_offers_carbon_dioxide_sensors() -> None:
+    offered = _offered_device_classes()
+    assert ("sensor", "carbon_dioxide") in offered
+    assert ("sensor", "temperature") in offered
+
+
 @pytest.mark.parametrize(
     ("entity_id", "device_class", "state", "unit"),
     [
         ("binary_sensor.keittio_kaasu", "gas", "off", None),
         ("binary_sensor.eteinen_haka", "carbon_monoxide", "off", None),
+        ("sensor.olohuone_co2", "carbon_dioxide", "812", "ppm"),
     ],
 )
 async def test_options_flow_accepts_the_new_kinds(
@@ -628,3 +635,84 @@ async def test_options_flow_accepts_the_new_kinds(
 
     assert saved["type"] is FlowResultType.CREATE_ENTRY, saved.get("errors")
     assert entry.options[CONF_EXPORTED_ENTITIES] == [entity_id]
+
+
+async def test_carbon_dioxide_sensor_is_a_co2_sensor(hass: HomeAssistant) -> None:
+    """1.4.0 (steelo 2026-10-06): a CO2 meter (HA sensor "carbon_dioxide", ppm) is the co2 kind."""
+    cases = {
+        ("sensor.olohuone_co2", "carbon_dioxide"): "co2",
+        ("binary_sensor.co2_halytys", "carbon_dioxide"): None,
+        ("sensor.haka_ppm", "carbon_monoxide"): None,
+    }
+    for (entity_id, device_class), kind in cases.items():
+        _set(hass, entity_id, "812", device_class, entity_id)
+        assert kind_for(hass.states.get(entity_id)) == kind, entity_id
+
+
+def test_co2_reading_is_sent_as_whole_ppm_in_json() -> None:
+    """Contract: {"e":"co2","v":<integer ppm>}; unit ppm or none, finite numbers only."""
+    assert event_for("co2", "812") == '{"e":"co2","v":812}'
+    assert event_for("co2", "812", "ppm") == '{"e":"co2","v":812}'
+    assert event_for("co2", "812.6", "ppm") == '{"e":"co2","v":813}'
+    assert event_for("co2", "1449.4") == '{"e":"co2","v":1449}'
+    assert type(json.loads(event_for("co2", "455.0", "ppm"))["v"]) is int
+    for state, unit in [
+        ("812", "ppb"),
+        ("812", "mg/m³"),
+        ("0.08", "%"),
+        ("high", "ppm"),
+        ("", None),
+        ("inf", "ppm"),
+        ("-inf", None),
+        ("nan", "ppm"),
+        ("unavailable", "ppm"),
+        ("unknown", None),
+        ("on", None),
+    ]:
+        assert event_for("co2", state, unit) is None, (state, unit)
+
+
+async def test_co2_is_sent_at_most_once_a_minute_and_the_latest_value_follows(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Like temperature: a chatty CO2 meter must not use up the account's shared message budget."""
+    _set(hass, "sensor.olohuone_co2", "800", "carbon_dioxide", "Olohuoneen CO2", "ppm")
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=["sensor.olohuone_co2"], publish=publish
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    assert [(t, json.loads(p)) for t, p, _ in published] == [
+        (
+            "kameraposti/3/anturit/sensor.olohuone_co2/config",
+            {"name": "Olohuoneen CO2", "kind": "co2", "format": "simple"},
+        ),
+        ("kameraposti/3/anturit/sensor.olohuone_co2", {"e": "co2", "v": 800}),
+    ]
+    published.clear()
+
+    for value in ("810", "820", "830.4"):
+        freezer.tick(5)
+        _set(hass, "sensor.olohuone_co2", value, "carbon_dioxide", "Olohuoneen CO2", "ppm")
+    await hass.async_block_till_done()
+    assert published == []
+
+    freezer.tick(50)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert published == [("kameraposti/3/anturit/sensor.olohuone_co2", '{"e":"co2","v":830}', False)]
+
+    freezer.tick(61)
+    _set(hass, "sensor.olohuone_co2", "840", "carbon_dioxide", "Olohuoneen CO2", "ppm")
+    await hass.async_block_till_done()
+    assert published[-1] == ("kameraposti/3/anturit/sensor.olohuone_co2", '{"e":"co2","v":840}', False)
+    assert len(published) == 2
+
+    freezer.tick(1)
+    _set(hass, "sensor.olohuone_co2", "850", "carbon_dioxide", "Olohuoneen CO2", "ppm")
+    exporter.async_stop()
+    freezer.tick(120)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(published) == 2

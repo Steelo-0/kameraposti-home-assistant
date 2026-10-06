@@ -79,6 +79,7 @@ EXPORTABLE_ENTITIES = EntitySelector(
                 device_class=[*KIND_BY_BINARY_DEVICE_CLASS, *INFERRED_DEVICE_CLASSES],
             ),
             EntityFilterSelectorConfig(domain="sensor", device_class="temperature"),
+            EntityFilterSelectorConfig(domain="sensor", device_class="carbon_dioxide"),
         ],
     )
 )
