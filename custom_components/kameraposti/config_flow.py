@@ -24,9 +24,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
-    EntityFilterSelectorConfig,
-    EntitySelector,
-    EntitySelectorConfig,
+    SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -48,7 +46,7 @@ from .const import (
     USERNAME_TEMPLATE,
 )
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .sensor_export import INFERRED_DEVICE_CLASSES, KIND_BY_BINARY_DEVICE_CLASS, kind_for
+from .sensor_export import kind_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,19 +68,24 @@ STEP_REAUTH_DATA_SCHEMA = vol.Schema(
 )
 
 
-EXPORTABLE_ENTITIES = EntitySelector(
-    EntitySelectorConfig(
-        multiple=True,
-        filter=[
-            EntityFilterSelectorConfig(
-                domain="binary_sensor",
-                device_class=[*KIND_BY_BINARY_DEVICE_CLASS, *INFERRED_DEVICE_CLASSES],
-            ),
-            EntityFilterSelectorConfig(domain="sensor", device_class="temperature"),
-            EntityFilterSelectorConfig(domain="sensor", device_class="carbon_dioxide"),
-        ],
-    )
-)
+def exportable_entity_options(hass: HomeAssistant, current: list[str]) -> list[SelectOptionDict]:
+    """1.4.1: the export list offers exactly the entities this integration can send.
+
+    Built from kind_for() instead of an entity filter, because a filter only sees device classes and
+    Z-Wave JS UI publishes gas levels (CO, CO2 ppm) without one. Chosen entities stay listed even if
+    they are unavailable right now, so saving the form does not drop them.
+    """
+    labels: dict[str, str] = {}
+    for state in hass.states.async_all(("binary_sensor", "sensor")):
+        if kind_for(state) is not None:
+            name = str(state.attributes.get("friendly_name") or state.entity_id)
+            labels[state.entity_id] = f"{name} ({state.entity_id})"
+    for entity_id in current:
+        labels.setdefault(entity_id, entity_id)
+    return [
+        SelectOptionDict(value=entity_id, label=label)
+        for entity_id, label in sorted(labels.items(), key=lambda item: item[1].lower())
+    ]
 
 
 async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> None:
@@ -223,7 +226,15 @@ class KameraportiOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
-                {vol.Optional(CONF_EXPORTED_ENTITIES, default=current): EXPORTABLE_ENTITIES}
+                {
+                    vol.Optional(CONF_EXPORTED_ENTITIES, default=current): SelectSelector(
+                        SelectSelectorConfig(
+                            options=exportable_entity_options(self.hass, current),
+                            multiple=True,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
             ),
             errors=errors,
             description_placeholders=placeholders,

@@ -21,7 +21,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
-from custom_components.kameraposti.config_flow import EXPORTABLE_ENTITIES
+from custom_components.kameraposti.config_flow import exportable_entity_options
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
 from custom_components.kameraposti.mqtt_client import ConnectionState
@@ -466,9 +466,12 @@ async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssis
         "problem",
         "Keitttio-Vuoto_event_general_purpose",
     )
+    # 1.4.1: the list only offers sensors that can be sent; a sensor chosen earlier (here the general
+    # purpose one) stays in the list and is named if its kind can no longer be told.
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        options={CONF_EXPORTED_ENTITIES: ["binary_sensor.keitttio_vuoto_event_general_purpose"]},
         version=2,
     )
     entry.add_to_hass(hass)
@@ -492,7 +495,7 @@ async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssis
             refused["description_placeholders"]["entities"]
             == "binary_sensor.keitttio_vuoto_event_general_purpose"
         )
-        assert CONF_EXPORTED_ENTITIES not in entry.options
+        assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.keitttio_vuoto_event_general_purpose"]
 
         saved = await hass.config_entries.options.async_configure(
             refused["flow_id"], {CONF_EXPORTED_ENTITIES: ["binary_sensor.keitttio_vuoto_event_water_leak"]}
@@ -516,7 +519,7 @@ async def test_gas_and_carbon_monoxide_detectors_are_gas_sensors(hass: HomeAssis
         assert kind_for(hass.states.get(entity_id)) == kind, entity_id
     assert event_for("gas", "on") == "gas"
     assert event_for("gas", "off") == "clear"
-    for state in ("unavailable", "unknown", "12"):
+    for state in ("unavailable", "unknown"):
         assert event_for("gas", state) is None, state
 
 
@@ -585,25 +588,49 @@ async def test_gas_alarm_is_described_and_sent_without_throttling(
     exporter.async_stop()
 
 
-def _offered_device_classes() -> set[tuple[str, str]]:
-    return {
-        (domain, device_class)
-        for entity_filter in EXPORTABLE_ENTITIES.config["filter"]
-        for domain in entity_filter["domain"]
-        for device_class in entity_filter["device_class"]
+async def test_export_list_offers_exactly_what_can_be_sent(hass: HomeAssistant) -> None:
+    """1.4.1: the list is built from kind_for(), so a Z-Wave gas level without a device class
+    (steelo 2026-10-06: "sensor_gas_carbon_monoxide" was missing) is offered, and an entity that
+    cannot be sent is not."""
+    _set(hass, "binary_sensor.keittio_kaasu", "off", "gas", "Keittiön kaasu")
+    _set(hass, "binary_sensor.eteinen_hakavaroitin", "off", "carbon_monoxide", "Eteisen häkävaroitin")
+    _set(hass, "sensor.olohuone_co2", "612", "carbon_dioxide", "Olohuone CO2", unit="ppm")
+    _set(hass, "sensor.olohuone_lampo", "21.5", "temperature", "Olohuone", unit="°C")
+    _set(hass, "sensor.nodeid_27_gas_carbon_monoxide", "0", None, "nodeID_27_gas_carbon_monoxide", unit="ppm")
+    _set(hass, "sensor.nodeid_28_gas_carbon_dioxide", "640", None, "nodeID_28_gas_carbon_dioxide", unit="ppm")
+    _set(
+        hass,
+        "binary_sensor.keitttio_vuoto_event_water_leak",
+        "off",
+        "problem",
+        "Keitttio-Vuoto_event_water_leak",
+    )
+    _set(
+        hass,
+        "binary_sensor.keitttio_vuoto_event_general_purpose",
+        "on",
+        "problem",
+        "Keitttio-Vuoto_event_general_purpose",
+    )
+    _set(hass, "sensor.nodeid_27_hardware_status", "ok", None, "nodeID_27_hardware_status")
+    _set(hass, "sensor.olohuone_kosteus", "40", "humidity", "Olohuone kosteus", unit="%")
+    _set(hass, "switch.nodeid_27_config_switch_2_1", "off", None, "config_switch_2_1")
+
+    offered = {option["value"] for option in exportable_entity_options(hass, ["binary_sensor.poistettu"])}
+
+    assert offered == {
+        "binary_sensor.keittio_kaasu",
+        "binary_sensor.eteinen_hakavaroitin",
+        "sensor.olohuone_co2",
+        "sensor.olohuone_lampo",
+        "sensor.nodeid_27_gas_carbon_monoxide",
+        "sensor.nodeid_28_gas_carbon_dioxide",
+        "binary_sensor.keitttio_vuoto_event_water_leak",
+        # Already chosen but gone right now: stays so saving the form keeps it.
+        "binary_sensor.poistettu",
     }
-
-
-def test_export_list_offers_gas_and_carbon_monoxide_detectors() -> None:
-    offered = _offered_device_classes()
-    assert ("binary_sensor", "gas") in offered
-    assert ("binary_sensor", "carbon_monoxide") in offered
-
-
-def test_export_list_offers_carbon_dioxide_sensors() -> None:
-    offered = _offered_device_classes()
-    assert ("sensor", "carbon_dioxide") in offered
-    assert ("sensor", "temperature") in offered
+    assert kind_for(hass.states.get("sensor.nodeid_27_gas_carbon_monoxide")) == "gas"
+    assert kind_for(hass.states.get("sensor.nodeid_28_gas_carbon_dioxide")) == "co2"
 
 
 @pytest.mark.parametrize(
@@ -643,7 +670,8 @@ async def test_carbon_dioxide_sensor_is_a_co2_sensor(hass: HomeAssistant) -> Non
     cases = {
         ("sensor.olohuone_co2", "carbon_dioxide"): "co2",
         ("binary_sensor.co2_halytys", "carbon_dioxide"): None,
-        ("sensor.haka_ppm", "carbon_monoxide"): None,
+        # 1.4.1: a CO meter is a gas alarm by ppm limits (test_co_meter_is_a_gas_alarm_by_ppm_limits).
+        ("sensor.haka_ppm", "carbon_monoxide"): "gas",
     }
     for (entity_id, device_class), kind in cases.items():
         _set(hass, entity_id, "812", device_class, entity_id)
@@ -740,3 +768,45 @@ async def test_gas_counts_only_as_a_word_of_its_own(hass: HomeAssistant) -> None
         assert kind_for(hass.states.get(entity_id)) is None, entity_id
     _set(hass, "binary_sensor.varasto_gas_alarm", "off", "problem", "Varasto gas alarm")
     assert kind_for(hass.states.get("binary_sensor.varasto_gas_alarm")) == "gas"
+
+
+async def test_co_meter_is_a_gas_alarm_by_ppm_limits(hass: HomeAssistant) -> None:
+    """1.4.1 (steelo 2026-10-06, Z-Wave "Carbon monoxide (CO) level"): a CO meter in ppm is a gas
+    sensor that alarms from 50 ppm and clears below 35 ppm; nothing is sent in between."""
+    _set(hass, "sensor.node_27_carbon_monoxide_co_level", "0", "carbon_monoxide", "CO level", unit="ppm")
+    assert kind_for(hass.states.get("sensor.node_27_carbon_monoxide_co_level")) == "gas"
+
+    assert event_for("gas", "0", "ppm") == "clear"
+    assert event_for("gas", "34.9", "ppm") == "clear"
+    assert event_for("gas", "35", "ppm") is None
+    assert event_for("gas", "49.9", None) is None
+    assert event_for("gas", "50", "ppm") == "gas"
+    assert event_for("gas", "300", "ppm") == "gas"
+    assert event_for("gas", "60", "mg/m³") is None
+    assert event_for("gas", "nan", "ppm") is None
+    # The detector's on/off is unchanged.
+    assert event_for("gas", "on") == "gas"
+    assert event_for("gas", "off") == "clear"
+
+
+async def test_co_meter_sends_only_when_the_alarm_state_changes(hass: HomeAssistant) -> None:
+    published, publish = _recorder()
+    entity_id = "sensor.node_27_carbon_monoxide_co_level"
+    _set(hass, entity_id, "0", "carbon_monoxide", "CO level", unit="ppm")
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=[entity_id], publish=publish
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    await hass.async_block_till_done()
+    state_topic = f"kameraposti/{CUSTOMER_ID}/anturit/{entity_id}"
+
+    for value in ("2", "40", "55", "70", "45", "30", "1"):
+        _set(hass, entity_id, value, "carbon_monoxide", "CO level", unit="ppm")
+        await hass.async_block_till_done()
+    exporter.async_stop()
+
+    states = [payload for topic, payload, _ in published if topic == state_topic]
+    assert states == ["clear", "gas", "clear"]
+    config = [json.loads(payload) for topic, payload, _ in published if topic == f"{state_topic}/config"]
+    assert config[0]["kind"] == "gas"

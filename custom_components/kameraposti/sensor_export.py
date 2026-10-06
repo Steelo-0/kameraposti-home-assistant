@@ -111,6 +111,12 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 # Kinds that send a reading (a number), not an alarm state: sent at most once
 # per READING_INTERVAL_SECONDS per entity, the latest value following.
 READING_KINDS: frozenset[str] = frozenset({"temperature", "co2"})
+# 1.4.1 (steelo 2026-10-06, Z-Wave "Carbon monoxide (CO) level"): a CO meter (sensor, ppm) is sent
+# as a gas sensor that alarms at CO_ALARM_PPM and clears below CO_CLEAR_PPM (no message in between,
+# so a reading hovering around the limit does not flap). EN 50291 alarms at 50 ppm after 60-90 min;
+# alarming at once is the safe side.
+CO_ALARM_PPM = 50
+CO_CLEAR_PPM = 35
 # Minimum interval between two readings from one entity.
 READING_INTERVAL_SECONDS = 60
 # Periodic resend of descriptions and current states.
@@ -135,6 +141,20 @@ def kind_for(state: State | None) -> str | None:
         # 1.4.0: a CO2 meter (ppm) is sent as a reading, like a thermometer.
         if device_class == "carbon_dioxide":
             return "co2"
+        # 1.4.1: a CO meter (ppm) is a gas sensor: alarm / clear by CO_ALARM_PPM / CO_CLEAR_PPM.
+        if device_class == "carbon_monoxide":
+            return "gas"
+        # 1.4.1: Z-Wave JS UI publishes Multilevel Sensor gas levels without a device class (only an
+        # icon), e.g. "<node>_gas_carbon_monoxide" / "<node>_gas_carbon_dioxide" in ppm.
+        if device_class is None and state.attributes.get("unit_of_measurement") in (None, "ppm"):
+            names = " ".join(
+                re.sub(r"[\s-]+", "_", name.lower())
+                for name in (state.entity_id, str(state.attributes.get("friendly_name") or ""))
+            )
+            if "carbon_monoxide" in names:
+                return "gas"
+            if "carbon_dioxide" in names:
+                return "co2"
     return None
 
 
@@ -183,6 +203,15 @@ def event_for(kind: str, state: str, unit: str | None = None) -> str | None:
         return events[0]
     if state == "off":
         return events[1]
+    if kind == "gas":
+        # 1.4.1: a CO meter's ppm reading; between the limits nothing is sent (Kameraposti keeps the state).
+        value = _finite_number(state)
+        if value is None or unit not in (None, "ppm"):
+            return None
+        if value >= CO_ALARM_PPM:
+            return events[0]
+        if value < CO_CLEAR_PPM:
+            return events[1]
     return None
 
 
@@ -226,6 +255,8 @@ class KameraportiSensorExporter:
         self._unsub_resync: Callable[[], None] | None = None
         # entity_id -> (name, kind) last described on the current connection.
         self._described: dict[str, tuple[str, str]] = {}
+        # 1.4.1: last alarm state sent for a CO meter, so each ppm update does not resend "clear".
+        self._co_sent: dict[str, str] = {}
         # Reading throttle: last sent time and the pending trailing send.
         self._reading_sent_at: dict[str, datetime] = {}
         self._reading_pending: dict[str, CALLBACK_TYPE] = {}
@@ -252,6 +283,7 @@ class KameraportiSensorExporter:
             cancel()
         self._reading_pending.clear()
         self._described.clear()
+        self._co_sent.clear()
 
     @callback
     def publish_snapshot(self) -> None:
@@ -302,6 +334,9 @@ class KameraportiSensorExporter:
         if payload is None:
             return
         entity_id = state.entity_id
+        co_meter = state.domain == "sensor" and kind == "gas"
+        if co_meter and throttle and self._co_sent.get(entity_id) == payload:
+            return
         if kind in READING_KINDS:
             if entity_id in self._reading_pending:
                 return
@@ -317,8 +352,11 @@ class KameraportiSensorExporter:
                 )
                 return
         _LOGGER.debug("Kameraposti exporting %s -> %s", entity_id, payload)
-        if self._publish(self._topic(entity_id), payload, False) and kind in READING_KINDS:
-            self._reading_sent_at[entity_id] = dt_util.utcnow()
+        if self._publish(self._topic(entity_id), payload, False):
+            if kind in READING_KINDS:
+                self._reading_sent_at[entity_id] = dt_util.utcnow()
+            if co_meter:
+                self._co_sent[entity_id] = payload
 
     @callback
     def _send_pending_reading(self, entity_id: str, _now: datetime) -> None:

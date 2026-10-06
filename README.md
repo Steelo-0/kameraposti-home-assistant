@@ -118,7 +118,8 @@ automation:
 ## Sensors to Kameraposti
 
 **Settings → Devices & services → Kameraposti → Configure** lets you pick
-Home Assistant entities to send to Kameraposti (at most 20 per account):
+Home Assistant entities to send to Kameraposti (at most 20 per account). Since 1.4.1 the list shows
+exactly the entities the integration can send:
 
 | Home Assistant entity | Kameraposti sensor | Sent |
 |---|---|---|
@@ -133,6 +134,8 @@ Home Assistant entities to send to Kameraposti (at most 20 per account):
 | `binary_sensor`, device class `motion`, `occupancy`, `presence` | motion | `motion` |
 | `sensor`, device class `temperature` | temperature | value in °C, at most once a minute |
 | `sensor`, device class `carbon_dioxide` (unit ppm or none) | co2 | `{"e":"co2","v":812}`, whole ppm, at most once a minute |
+| `sensor`, device class `carbon_monoxide` (CO meter, unit ppm or none) | gas | `gas` from 50 ppm, `clear` below 35 ppm (nothing in between); sent when the alarm state changes |
+| `sensor` without a device class named `…carbon_monoxide` / `…carbon_dioxide`, unit ppm or none (Z-Wave JS UI gas levels, e.g. `nodeID_27_gas_carbon_monoxide`) | gas / co2 | as the two rows above |
 
 For a `problem` sensor the kind comes from the value part of its name, which
 follows the device name: if the name has several of these words (a combined
