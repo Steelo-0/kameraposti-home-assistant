@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, DOMAIN
+from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, CONF_LOGIN_NUMBER, DOMAIN
 from custom_components.kameraposti.mqtt_client import CannotConnect, InvalidAuth
 
 # Version 2 (2026-10-05): service + account number + password; the login is always kp-<id>.
@@ -169,3 +169,42 @@ async def test_the_service_must_be_one_of_the_known_hosts(hass: HomeAssistant) -
     assert result2 is None or result2["type"] is FlowResultType.FORM
     mock_test.assert_not_awaited()
     assert len(hass.config_entries.async_entries(DOMAIN)) == 0
+
+
+async def test_an_extra_login_number_uses_the_extra_login(hass: HomeAssistant) -> None:
+    """steelo 2026-10-06: each Kameraposti login has one connection (client id == username), so a second
+    Home Assistant on the same account uses an extra login kp-<id>-<n> from the Anturit page."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+
+    with patch(
+        "custom_components.kameraposti.config_flow.async_test_connection",
+        new_callable=AsyncMock,
+    ) as mock_test:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {**USER_INPUT, CONF_LOGIN_NUMBER: 2}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
+    assert result2["data"][CONF_USERNAME] == "kp-3-2"
+    assert result2["data"][CONF_CUSTOMER_ID] == 3
+    assert result2["title"] == "Kameraposti (kp-3-2)"
+    assert mock_test.await_args.kwargs["username"] == "kp-3-2"
+
+
+async def test_the_extra_login_number_must_be_two_or_more(hass: HomeAssistant) -> None:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+
+    with patch(
+        "custom_components.kameraposti.config_flow.async_test_connection",
+        new_callable=AsyncMock,
+    ) as mock_test:
+        try:
+            await hass.config_entries.flow.async_configure(
+                result["flow_id"], {**USER_INPUT, CONF_LOGIN_NUMBER: 1}
+            )
+        except Exception as error:  # noqa: BLE001 - voluptuous rejects the value before the flow runs
+            assert "login_number" in str(error) or "value must be at least" in str(error)
+        else:
+            raise AssertionError("login number 1 must be rejected")
+    mock_test.assert_not_awaited()

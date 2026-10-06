@@ -40,8 +40,10 @@ from .const import (
     CONF_CUSTOMER_ID,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
+    CONF_LOGIN_NUMBER,
     DEFAULT_HOST,
     DOMAIN,
+    EXTRA_USERNAME_TEMPLATE,
     MAX_EXPORTED_SENSORS,
     USERNAME_TEMPLATE,
 )
@@ -56,6 +58,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
             SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
         ),
         vol.Required(CONF_CUSTOMER_ID): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        # Optional extra login kp-<id>-<n> (n >= 2); empty = the main login kp-<id>.
+        vol.Optional(CONF_LOGIN_NUMBER): vol.All(vol.Coerce(int), vol.Range(min=2, max=99)),
         vol.Required(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
     }
 )
@@ -113,9 +117,16 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             if user_input[CONF_HOST] not in BROKER_HOSTS:
                 errors["base"] = "cannot_connect"
                 return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
+            login_number = user_input.get(CONF_LOGIN_NUMBER)
             user_input = {
                 **user_input,
-                CONF_USERNAME: USERNAME_TEMPLATE.format(customer_id=user_input[CONF_CUSTOMER_ID]),
+                CONF_USERNAME: (
+                    EXTRA_USERNAME_TEMPLATE.format(
+                        customer_id=user_input[CONF_CUSTOMER_ID], login_number=login_number
+                    )
+                    if login_number
+                    else USERNAME_TEMPLATE.format(customer_id=user_input[CONF_CUSTOMER_ID])
+                ),
             }
 
             try:
@@ -129,7 +140,11 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 return self.async_create_entry(
-                    title=f"Kameraposti ({user_input[CONF_CUSTOMER_ID]})",
+                    title=(
+                        f"Kameraposti ({user_input[CONF_USERNAME]})"
+                        if user_input.get(CONF_LOGIN_NUMBER)
+                        else f"Kameraposti ({user_input[CONF_CUSTOMER_ID]})"
+                    ),
                     data=user_input,
                 )
 

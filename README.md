@@ -21,14 +21,16 @@ outbound-only, over WSS/TLS).
   - the account's **MQTT password** from Kameraposti's sensor page
     (Cameras → Sensors → MQTT)
 
-The MQTT login is always `kp-<account number>`; you never type it. This
+The MQTT login is `kp-<account number>`; you never type it. This
 integration does not use your regular Kameraposti login.
 
-One account has one MQTT connection at a time: the broker accepts the login
-only with client id `kp-<account number>`, so a second connection with the
-same login (for example a Zigbee2MQTT/Mosquitto bridge to Kameraposti)
-disconnects this integration and the two keep taking turns. Use this
-integration *or* a bridge for one account, not both.
+Each MQTT login has one connection at a time: the broker accepts a login only
+with the same client id, so a second connection with the same login (another
+Home Assistant, or a Zigbee2MQTT/Mosquitto bridge to Kameraposti) disconnects
+the first. For a second connection, create an **extra login**
+`kp-<account number>-<n>` on Kameraposti's sensor page (Cameras → Sensors →
+MQTT → Extra logins) and, in this integration, enter `n` as the
+**extra login number** (since 1.3.0). Bridges use their extra login directly.
 
 ## Installation
 

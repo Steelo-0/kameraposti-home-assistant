@@ -3,11 +3,12 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Valitse palvelu ja syötä Kameraposti-tilisi numero sekä MQTT-salasana Kamerapostin Anturit-sivulta (Kamerat → Anturit → MQTT). Tunnus on kp-<tilin numero>.",
+        "description": "Valitse palvelu ja syötä Kameraposti-tilisi numero sekä MQTT-salasana Kamerapostin Anturit-sivulta (Kamerat → Anturit → MQTT). Tunnus on kp-<tilin numero>. Jos tilillä on jo toinen yhteys (esim. toinen Home Assistant), luo Anturit-sivulla lisätunnus kp-<tilin numero>-<n> ja anna tähän n; muuten jätä tyhjäksi.",
         "data": {
           "host": "Palvelu",
           "customer_id": "Tilin numero",
-          "password": "MQTT-salasana"
+          "password": "MQTT-salasana",
+          "login_number": "Lisätunnuksen numero (valinnainen)"
         }
       },
       "reauth_confirm": {

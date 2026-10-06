@@ -54,6 +54,11 @@ MAX_EXPORTED_SENSORS: Final = 20
 # The account's MQTT login on Kameraposti's broker is kp-<customer_id>, and the
 # broker only accepts that login with the same client id (dynsec clientid pin).
 USERNAME_TEMPLATE: Final = "kp-{customer_id}"
+# 2026-10-06: each login has one connection (the broker pins client id == username), so a second
+# Home Assistant (or a bridge) on the same account uses an extra login kp-<id>-<n> created on the
+# Kameraposti Anturit page. Same permissions as the main login.
+CONF_LOGIN_NUMBER: Final = "login_number"
+EXTRA_USERNAME_TEMPLATE: Final = "kp-{customer_id}-{login_number}"
 
 MANUFACTURER: Final = "Kameraposti"
 MODEL: Final = "Riistakamera"

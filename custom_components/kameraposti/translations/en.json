@@ -3,11 +3,12 @@
     "step": {
       "user": {
         "title": "Connect to Kameraposti",
-        "description": "Choose the service and enter your Kameraposti account number and the MQTT password from Kameraposti's Sensors page (Kamerat → Sensors → MQTT). The login is kp-<account number>.",
+        "description": "Choose the service and enter your Kameraposti account number and the MQTT password from Kameraposti's Sensors page (Kamerat → Sensors → MQTT). The login is kp-<account number>. If the account already has another connection (e.g. another Home Assistant), create an extra login kp-<account number>-<n> on the Anturit page and enter n here; otherwise leave it empty.",
         "data": {
           "host": "Service",
           "customer_id": "Account number",
-          "password": "MQTT password"
+          "password": "MQTT password",
+          "login_number": "Extra login number (optional)"
         }
       },
       "reauth_confirm": {
