@@ -1,14 +1,14 @@
 """Export chosen Home Assistant entities to Kameraposti as sensors.
 
-The user picks entities in the integration's options (leak, smoke, door,
-window, motion binary sensors and temperature sensors). For each one this
+The user picks entities in the integration's options (leak, smoke, gas,
+door, window, motion binary sensors and temperature sensors). For each one this
 module publishes, over the integration's own connection:
 
 * ``kameraposti/<id>/anturit/<name>/config`` -- {"name", "kind", "format"};
   Kameraposti creates the sensor (or updates its name/kind) automatically.
 * ``kameraposti/<id>/anturit/<name>`` -- the state in Kameraposti's simple
-  format: leak/dry, smoke/clear, open/closed, motion, or the temperature in
-  degrees Celsius.
+  format: leak/dry, smoke/clear, gas/clear, open/closed, motion, or the
+  temperature in degrees Celsius.
 
 ``<name>`` is the entity_id, so it stays stable across friendly-name changes.
 On every (re)connect the sensors are described again and their current state
@@ -62,6 +62,10 @@ _LOGGER = logging.getLogger(__name__)
 KIND_BY_BINARY_DEVICE_CLASS: dict[str, str] = {
     "moisture": "leak",
     "smoke": "smoke",
+    # 1.4.0 (steelo 2026-10-06): a gas detector is its own kind, alarming like smoke;
+    # a carbon monoxide detector is a gas sensor too.
+    "gas": "gas",
+    "carbon_monoxide": "gas",
     "door": "door",
     "garage_door": "door",
     "opening": "door",
@@ -74,16 +78,23 @@ KIND_BY_BINARY_DEVICE_CLASS: dict[str, str] = {
 # 1.3.2 (2026-10-06): Z-Wave JS UI publishes notification sensors as device_class "problem"
 # ("OK" / "Problem"), e.g. the Water Alarm as "<device>_event_water_leak". Their kind comes from
 # the value part of the name; others of that class (general purpose, alarm status) stay unexported.
+# The value part follows the device name, so when the name has several kind words (a combined
+# "Smoke-Gas" detector) the last one decides. Only English value words: a Finnish device name
+# ("Keitttio-Vuoto", "Keittio-Kaasu") never makes its general purpose sensor a leak or gas sensor.
 INFERRED_DEVICE_CLASSES: tuple[str, ...] = ("problem",)
 _KIND_BY_NAME: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"water_leak|leak|flood"), "leak"),
     (re.compile(r"smoke"), "smoke"),
+    # 1.4.0: gas alarms (combustible / toxic gas) and carbon monoxide; not carbon_dioxide,
+    # whose kind (co2) is a ppm reading, not an alarm state.
+    (re.compile(r"combustible|gas|carbon_monoxide"), "gas"),
 )
 
 # Kameraposti simple-format event for a binary sensor that is on / off.
 _EVENTS_BY_KIND: dict[str, tuple[str, str | None]] = {
     "leak": ("leak", "dry"),
     "smoke": ("smoke", "clear"),
+    "gas": ("gas", "clear"),
     "door": ("open", "closed"),
     "window": ("open", "closed"),
     "motion": ("motion", None),
@@ -122,13 +133,18 @@ def kind_for(state: State | None) -> str | None:
 
 
 def _kind_from_name(state: State) -> str | None:
-    """Kind from the entity id / friendly name (spaces and dashes read as underscores)."""
+    """Kind from the entity id / friendly name (spaces and dashes read as underscores).
+
+    The last kind word in the name wins: it belongs to the value part, which follows the device name.
+    """
     names = (state.entity_id, str(state.attributes.get("friendly_name") or ""))
     text = " ".join(re.sub(r"[\s-]+", "_", name.lower()) for name in names)
+    last: tuple[int, str] | None = None
     for pattern, kind in _KIND_BY_NAME:
-        if pattern.search(text):
-            return kind
-    return None
+        for match in pattern.finditer(text):
+            if last is None or match.start() > last[0]:
+                last = (match.start(), kind)
+    return last[1] if last is not None else None
 
 
 def event_for(kind: str, state: str, unit: str | None = None) -> str | None:

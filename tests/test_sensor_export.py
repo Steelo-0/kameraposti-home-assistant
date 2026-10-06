@@ -13,12 +13,14 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HassJob, HassJobType, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
+from custom_components.kameraposti.config_flow import EXPORTABLE_ENTITIES
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
 from custom_components.kameraposti.mqtt_client import ConnectionState
@@ -498,3 +500,131 @@ async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssis
 
     assert saved["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.keitttio_vuoto_event_water_leak"]
+
+
+async def test_gas_and_carbon_monoxide_detectors_are_gas_sensors(hass: HomeAssistant) -> None:
+    """1.4.0 (steelo 2026-10-06): a gas detector is its own kind, alarming like smoke; a carbon
+    monoxide detector (HA "carbon_monoxide") is a gas sensor too."""
+    cases = {
+        ("binary_sensor.kaasu", "gas"): "gas",
+        ("binary_sensor.haka", "carbon_monoxide"): "gas",
+        ("sensor.kaasu", "gas"): None,
+    }
+    for (entity_id, device_class), kind in cases.items():
+        _set(hass, entity_id, "off", device_class, entity_id)
+        assert kind_for(hass.states.get(entity_id)) == kind, entity_id
+    assert event_for("gas", "on") == "gas"
+    assert event_for("gas", "off") == "clear"
+    for state in ("unavailable", "unknown", "12"):
+        assert event_for("gas", state) is None, state
+
+
+async def test_zwave_problem_class_gas_is_exported_as_gas(hass: HomeAssistant) -> None:
+    """Z-Wave JS UI notification sensors (device class "problem"): "gas", "combustible" or
+    "carbon_monoxide" in the value part of the name makes a gas sensor. A Finnish device name
+    ("Keittio-Kaasu") alone does not, and a CO2 alarm (a threshold, not a ppm reading) is not gas."""
+    cases = {
+        "Keittio-Kaasu_event_combustible_gas_detected": "gas",
+        "Keittio-Kaasu_event_toxic_gas": "gas",
+        "Eteinen_event_carbon_monoxide_detected": "gas",
+        "Keittio-Kaasu_event_general_purpose": None,
+        "Olohuone_event_carbon_dioxide_detected": None,
+    }
+    for name, kind in cases.items():
+        entity_id = "binary_sensor." + name.lower().replace("-", "_")
+        _set(hass, entity_id, "off", "problem", name)
+        assert kind_for(hass.states.get(entity_id)) == kind, name
+
+
+async def test_value_part_decides_when_the_device_name_names_another_kind(hass: HomeAssistant) -> None:
+    """A combined detector's device name may name several kinds ("Smoke-Gas"); the value part,
+    which follows the device name, decides -- the last kind word in the name wins."""
+    cases = {
+        "Smoke-Gas_event_smoke_detected": "smoke",
+        "Smoke-Gas_event_combustible_gas_detected": "gas",
+        "Gas-Smoke_event_smoke_detected": "smoke",
+        "Smoke-CO_event_carbon_monoxide_detected": "gas",
+        "Smoke-Leak_event_smoke_detected": "smoke",
+        "Smoke-Leak_event_water_leak": "leak",
+    }
+    for name, kind in cases.items():
+        entity_id = "binary_sensor." + name.lower().replace("-", "_")
+        _set(hass, entity_id, "off", "problem", name)
+        assert kind_for(hass.states.get(entity_id)) == kind, name
+
+
+async def test_gas_alarm_is_described_and_sent_without_throttling(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    _set(hass, "binary_sensor.keittio_kaasu", "off", "gas", "Keittiön kaasu")
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=["binary_sensor.keittio_kaasu"], publish=publish
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    assert [(t, json.loads(p) if t.endswith("/config") else p) for t, p, _ in published] == [
+        (
+            "kameraposti/3/anturit/binary_sensor.keittio_kaasu/config",
+            {"name": "Keittiön kaasu", "kind": "gas", "format": "simple"},
+        ),
+        ("kameraposti/3/anturit/binary_sensor.keittio_kaasu", "clear"),
+    ]
+    published.clear()
+
+    for state in ("on", "off", "on"):
+        freezer.tick(1)
+        _set(hass, "binary_sensor.keittio_kaasu", state, "gas", "Keittiön kaasu")
+    await hass.async_block_till_done()
+    assert published == [
+        ("kameraposti/3/anturit/binary_sensor.keittio_kaasu", "gas", False),
+        ("kameraposti/3/anturit/binary_sensor.keittio_kaasu", "clear", False),
+        ("kameraposti/3/anturit/binary_sensor.keittio_kaasu", "gas", False),
+    ]
+    exporter.async_stop()
+
+
+def _offered_device_classes() -> set[tuple[str, str]]:
+    return {
+        (domain, device_class)
+        for entity_filter in EXPORTABLE_ENTITIES.config["filter"]
+        for domain in entity_filter["domain"]
+        for device_class in entity_filter["device_class"]
+    }
+
+
+def test_export_list_offers_gas_and_carbon_monoxide_detectors() -> None:
+    offered = _offered_device_classes()
+    assert ("binary_sensor", "gas") in offered
+    assert ("binary_sensor", "carbon_monoxide") in offered
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "device_class", "state", "unit"),
+    [
+        ("binary_sensor.keittio_kaasu", "gas", "off", None),
+        ("binary_sensor.eteinen_haka", "carbon_monoxide", "off", None),
+    ],
+)
+async def test_options_flow_accepts_the_new_kinds(
+    hass: HomeAssistant, entity_id: str, device_class: str, state: str, unit: str | None
+) -> None:
+    _set(hass, entity_id, state, device_class, entity_id, unit)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        saved = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: [entity_id]}
+        )
+        await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY, saved.get("errors")
+    assert entry.options[CONF_EXPORTED_ENTITIES] == [entity_id]
