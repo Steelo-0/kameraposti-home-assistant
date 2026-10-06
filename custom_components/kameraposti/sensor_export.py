@@ -95,8 +95,11 @@ _MAX_NAME_LENGTH = 64
 _MAX_DISPLAY_NAME_LENGTH = 60
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
-# Minimum interval between two temperature messages from one entity.
-TEMPERATURE_INTERVAL_SECONDS = 60
+# Kinds that send a reading (a number), not an alarm state: sent at most once
+# per READING_INTERVAL_SECONDS per entity, the latest value following.
+READING_KINDS: frozenset[str] = frozenset({"temperature"})
+# Minimum interval between two readings from one entity.
+READING_INTERVAL_SECONDS = 60
 # Periodic resend of descriptions and current states.
 RESYNC_INTERVAL = timedelta(minutes=15)
 
@@ -186,9 +189,9 @@ class KameraportiSensorExporter:
         self._unsub_resync: Callable[[], None] | None = None
         # entity_id -> (name, kind) last described on the current connection.
         self._described: dict[str, tuple[str, str]] = {}
-        # Temperature throttle: last sent time and the pending trailing send.
-        self._temperature_sent_at: dict[str, datetime] = {}
-        self._temperature_pending: dict[str, CALLBACK_TYPE] = {}
+        # Reading throttle: last sent time and the pending trailing send.
+        self._reading_sent_at: dict[str, datetime] = {}
+        self._reading_pending: dict[str, CALLBACK_TYPE] = {}
 
     @callback
     def async_start(self) -> None:
@@ -208,9 +211,9 @@ class KameraportiSensorExporter:
         if self._unsub_resync is not None:
             self._unsub_resync()
             self._unsub_resync = None
-        for cancel in self._temperature_pending.values():
+        for cancel in self._reading_pending.values():
             cancel()
-        self._temperature_pending.clear()
+        self._reading_pending.clear()
         self._described.clear()
 
     @callback
@@ -262,29 +265,30 @@ class KameraportiSensorExporter:
         if payload is None:
             return
         entity_id = state.entity_id
-        if kind == "temperature":
-            if entity_id in self._temperature_pending:
+        if kind in READING_KINDS:
+            if entity_id in self._reading_pending:
                 return
-            sent_at = self._temperature_sent_at.get(entity_id)
+            sent_at = self._reading_sent_at.get(entity_id)
             elapsed = (dt_util.utcnow() - sent_at).total_seconds() if sent_at is not None else None
-            if throttle and elapsed is not None and elapsed < TEMPERATURE_INTERVAL_SECONDS:
+            if throttle and elapsed is not None and elapsed < READING_INTERVAL_SECONDS:
                 # A @callback (not a bare lambda, which Home Assistant would
                 # run as an executor job off the event loop -- Fable M-1).
-                self._temperature_pending[entity_id] = async_call_later(
+                self._reading_pending[entity_id] = async_call_later(
                     self._hass,
-                    TEMPERATURE_INTERVAL_SECONDS - elapsed,
-                    HassJob(partial(self._send_pending_temperature, entity_id), cancel_on_shutdown=True),
+                    READING_INTERVAL_SECONDS - elapsed,
+                    HassJob(partial(self._send_pending_reading, entity_id), cancel_on_shutdown=True),
                 )
                 return
         _LOGGER.debug("Kameraposti exporting %s -> %s", entity_id, payload)
-        if self._publish(self._topic(entity_id), payload, False) and kind == "temperature":
-            self._temperature_sent_at[entity_id] = dt_util.utcnow()
+        if self._publish(self._topic(entity_id), payload, False) and kind in READING_KINDS:
+            self._reading_sent_at[entity_id] = dt_util.utcnow()
 
     @callback
-    def _send_pending_temperature(self, entity_id: str, _now: datetime) -> None:
+    def _send_pending_reading(self, entity_id: str, _now: datetime) -> None:
         """Trailing send: the entity's value at the end of the interval."""
-        self._temperature_pending.pop(entity_id, None)
+        self._reading_pending.pop(entity_id, None)
         state = self._hass.states.get(entity_id)
-        if state is not None and kind_for(state) == "temperature":
+        kind = kind_for(state)
+        if state is not None and kind in READING_KINDS:
             # The interval has passed; a timer firing a hair early must not re-arm.
-            self._publish_state(state, "temperature", throttle=False)
+            self._publish_state(state, kind, throttle=False)
