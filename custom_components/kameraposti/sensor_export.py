@@ -87,8 +87,9 @@ _KIND_BY_NAME: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"water_leak|leak|flood"), "leak"),
     (re.compile(r"smoke"), "smoke"),
     # 1.4.0: gas alarms (combustible / toxic gas) and carbon monoxide; not carbon_dioxide,
-    # whose kind (co2) is a ppm reading, not an alarm state.
-    (re.compile(r"combustible|gas|carbon_monoxide"), "gas"),
+    # whose kind (co2) is a ppm reading, not an alarm state. "gas" only as a word of its own
+    # (names use "_" between words), not inside "vegas", "gasket" or "degassing".
+    (re.compile(r"combustible|(?<![a-z])gas(?![a-z])|carbon_monoxide"), "gas"),
 )
 
 # Kameraposti simple-format event for a binary sensor that is on / off.
@@ -138,18 +139,22 @@ def kind_for(state: State | None) -> str | None:
 
 
 def _kind_from_name(state: State) -> str | None:
-    """Kind from the entity id / friendly name (spaces and dashes read as underscores).
+    """Kind from the entity id, else the friendly name (spaces and dashes read as underscores).
 
-    The last kind word in the name wins: it belongs to the value part, which follows the device name.
+    Within a name the last kind word wins: it belongs to the value part, which follows the device
+    name. The entity id decides first (it comes from the integration's own name and stays put when
+    the user renames the entity), so a renamed friendly name cannot turn a leak sensor into a gas one.
     """
-    names = (state.entity_id, str(state.attributes.get("friendly_name") or ""))
-    text = " ".join(re.sub(r"[\s-]+", "_", name.lower()) for name in names)
-    last: tuple[int, str] | None = None
-    for pattern, kind in _KIND_BY_NAME:
-        for match in pattern.finditer(text):
-            if last is None or match.start() > last[0]:
-                last = (match.start(), kind)
-    return last[1] if last is not None else None
+    for name in (state.entity_id, str(state.attributes.get("friendly_name") or "")):
+        text = re.sub(r"[\s-]+", "_", name.lower())
+        last: tuple[int, str] | None = None
+        for pattern, kind in _KIND_BY_NAME:
+            for match in pattern.finditer(text):
+                if last is None or match.start() > last[0]:
+                    last = (match.start(), kind)
+        if last is not None:
+            return last[1]
+    return None
 
 
 def event_for(kind: str, state: str, unit: str | None = None) -> str | None:

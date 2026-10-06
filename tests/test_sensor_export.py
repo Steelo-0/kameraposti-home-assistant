@@ -717,3 +717,26 @@ async def test_co2_is_sent_at_most_once_a_minute_and_the_latest_value_follows(
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert len(published) == 2
+
+
+async def test_entity_id_decides_before_a_renamed_friendly_name(hass: HomeAssistant) -> None:
+    """Fable M-1: a friendly name renamed by the user cannot turn a leak sensor into a gas one; the
+    friendly name decides only when the entity id has no kind word."""
+    _set(hass, "binary_sensor.keittio_event_water_leak", "off", "problem", "Kellarin gas-varoitin")
+    _set(hass, "binary_sensor.node_14_event", "off", "problem", "Varasto smoke detected")
+
+    assert kind_for(hass.states.get("binary_sensor.keittio_event_water_leak")) == "leak"
+    assert kind_for(hass.states.get("binary_sensor.node_14_event")) == "smoke"
+
+
+async def test_gas_counts_only_as_a_word_of_its_own(hass: HomeAssistant) -> None:
+    """Fable L-1: "gas" inside another word (Vegas, gasket, degassing) is no gas sensor."""
+    for entity_id, name in (
+        ("binary_sensor.las_vegas_event_general_purpose", "Las Vegas_event_general_purpose"),
+        ("binary_sensor.gasket_event_general_purpose", "Gasket_event_general_purpose"),
+        ("binary_sensor.degassing_tank_event_general_purpose", "Degassing tank_event_general_purpose"),
+    ):
+        _set(hass, entity_id, "off", "problem", name)
+        assert kind_for(hass.states.get(entity_id)) is None, entity_id
+    _set(hass, "binary_sensor.varasto_gas_alarm", "off", "problem", "Varasto gas alarm")
+    assert kind_for(hass.states.get("binary_sensor.varasto_gas_alarm")) == "gas"
