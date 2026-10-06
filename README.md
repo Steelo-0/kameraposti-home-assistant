@@ -4,8 +4,8 @@ Home Assistant custom integration that receives Kameraposti riistakamera
 (trail camera) detection events directly from Kameraposti's own MQTT
 broker, and turns them into Home Assistant sensors and an automation
 trigger event. It can also send your own Home Assistant sensors (leak,
-smoke, door, window, motion, temperature) to Kameraposti, which then
-alarms through its own notifications.
+smoke, gas, door, window, motion, temperature, carbon dioxide) to
+Kameraposti, which then alarms through its own notifications.
 
 It talks to Kameraposti's broker over its own dedicated MQTT connection —
 it does **not** use, share, or modify your existing Home Assistant MQTT
@@ -126,10 +126,18 @@ Home Assistant entities to send to Kameraposti (at most 20 per account):
 | `binary_sensor`, device class `problem` with `leak`, `water_leak` or `flood` in its name (Z-Wave JS UI water alarm, shown as OK / Problem) | leak | `leak` / `dry` |
 | `binary_sensor`, device class `problem` with `smoke` in its name | smoke | `smoke` / `clear` |
 | `binary_sensor`, device class `smoke` | smoke | `smoke` / `clear` |
+| `binary_sensor`, device class `gas`, `carbon_monoxide` | gas | `gas` / `clear` |
+| `binary_sensor`, device class `problem` with `gas`, `combustible` or `carbon_monoxide` in its name | gas | `gas` / `clear` |
 | `binary_sensor`, device class `door`, `garage_door`, `opening` | door | `open` / `closed` |
 | `binary_sensor`, device class `window` | window | `open` / `closed` |
 | `binary_sensor`, device class `motion`, `occupancy`, `presence` | motion | `motion` |
 | `sensor`, device class `temperature` | temperature | value in °C, at most once a minute |
+| `sensor`, device class `carbon_dioxide` (unit ppm or none) | co2 | `{"e":"co2","v":812}`, whole ppm, at most once a minute |
+
+For a `problem` sensor the kind comes from the value part of its name, which
+follows the device name: if the name has several of these words (a combined
+smoke and gas detector, say), the last one decides. A carbon monoxide
+detector is a gas sensor in Kameraposti.
 
 Kameraposti creates each sensor automatically (named after the entity's
 friendly name) and handles the alarms, quiet hours and notifications
@@ -150,9 +158,9 @@ that shows and changes Kameraposti's mode:
 
 | Kameraposti | Home Assistant | What alarms |
 |---|---|---|
-| Poissa (away) | Armed away | everything: doors, windows, motion, leak, smoke, temperature |
-| Kotona (home) | Armed home | doors and windows; leak, smoke and temperature always |
-| Purettu (disarmed) | Disarmed | only leak, smoke and temperature |
+| Poissa (away) | Armed away | everything: doors, windows, motion, leak, smoke, gas, temperature, CO₂ |
+| Kotona (home) | Armed home | doors and windows; leak, smoke, gas, temperature and CO₂ always |
+| Purettu (disarmed) | Disarmed | only leak, smoke, gas, temperature and CO₂ |
 
 Arming needs no code. **Disarming needs the disarm code** you set in
 Kameraposti (Sensors → Security system → Home Assistant disarm code); Kameraposti

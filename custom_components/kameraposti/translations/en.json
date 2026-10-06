@@ -51,7 +51,7 @@
     "step": {
       "init": {
         "title": "Sensors to Kameraposti",
-        "description": "Choose the Home Assistant sensors that appear in Kameraposti and alarm through Kameraposti notifications: leak, smoke, door, window, motion and temperature (at most {max}). Kameraposti creates them automatically. A sensor removed only in Kameraposti comes back on the next connection; remove it from this list too. A Z-Wave leak sensor is usually \"…_water_leak\" (shown as OK / Problem).",
+        "description": "Choose the Home Assistant sensors that appear in Kameraposti and alarm through Kameraposti notifications: leak, smoke, gas (also carbon monoxide), door, window, motion, temperature and CO₂ (carbon dioxide, ppm); at most {max}. Kameraposti creates them automatically. A sensor removed only in Kameraposti comes back on the next connection; remove it from this list too. A Z-Wave leak sensor is usually \"…_water_leak\" and a gas sensor has gas or carbon_monoxide in its name (shown as OK / Problem).",
         "data": {
           "exported_entities": "Exported sensors"
         }
@@ -59,7 +59,7 @@
     },
     "error": {
       "too_many": "Kameraposti accepts at most 20 sensors per account.",
-      "unknown_kind": "Could not tell whether these are leak, smoke, door, window, motion or temperature sensors: {entities}. Remove them from the list."
+      "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list."
     }
   },
   "exceptions": {

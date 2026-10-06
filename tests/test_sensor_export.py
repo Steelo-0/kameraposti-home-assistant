@@ -2,7 +2,8 @@
 Kameraposti sensors. The integration publishes a description to
 kameraposti/<id>/anturit/<name>/config (Kameraposti creates or updates the
 sensor) and each state change to kameraposti/<id>/anturit/<name> in the
-simple format (leak/dry, smoke/clear, open/closed, motion, temperature).
+simple format (leak/dry, smoke/clear, gas/clear, open/closed, motion,
+temperature, {"e":"co2","v":<ppm>}).
 On every (re)connect it describes the sensors again and sends their current
 state (not motion), so a leak that started during a break is not lost;
 Kameraposti drops repeated states itself.
