@@ -48,7 +48,7 @@ from .const import (
     USERNAME_TEMPLATE,
 )
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .sensor_export import KIND_BY_BINARY_DEVICE_CLASS
+from .sensor_export import INFERRED_DEVICE_CLASSES, KIND_BY_BINARY_DEVICE_CLASS, kind_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,7 +75,8 @@ EXPORTABLE_ENTITIES = EntitySelector(
         multiple=True,
         filter=[
             EntityFilterSelectorConfig(
-                domain="binary_sensor", device_class=list(KIND_BY_BINARY_DEVICE_CLASS)
+                domain="binary_sensor",
+                device_class=[*KIND_BY_BINARY_DEVICE_CLASS, *INFERRED_DEVICE_CLASSES],
             ),
             EntityFilterSelectorConfig(domain="sensor", device_class="temperature"),
         ],
@@ -195,13 +196,25 @@ class KameraportiOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
+        placeholders = {"max": str(MAX_EXPORTED_SENSORS), "entities": ""}
         current = list(self.config_entry.options.get(CONF_EXPORTED_ENTITIES, []))
 
         if user_input is not None:
             selected = list(dict.fromkeys(user_input.get(CONF_EXPORTED_ENTITIES, [])))
+            # 1.3.2: a "problem" sensor whose kind cannot be read from its name (e.g. general
+            # purpose) would be dropped silently -- say which one instead.
+            unknown = [
+                entity_id
+                for entity_id in selected
+                if (state := self.hass.states.get(entity_id)) is not None and kind_for(state) is None
+            ]
             if len(selected) > MAX_EXPORTED_SENSORS:
                 errors[CONF_EXPORTED_ENTITIES] = "too_many"
                 current = selected
+            elif unknown:
+                errors[CONF_EXPORTED_ENTITIES] = "unknown_kind"
+                current = selected
+                placeholders["entities"] = ", ".join(unknown)
             else:
                 options = {**self.config_entry.options, CONF_EXPORTED_ENTITIES: selected}
                 return self.async_create_entry(data=options)
@@ -212,5 +225,5 @@ class KameraportiOptionsFlow(OptionsFlow):
                 {vol.Optional(CONF_EXPORTED_ENTITIES, default=current): EXPORTABLE_ENTITIES}
             ),
             errors=errors,
-            description_placeholders={"max": str(MAX_EXPORTED_SENSORS)},
+            description_placeholders=placeholders,
         )

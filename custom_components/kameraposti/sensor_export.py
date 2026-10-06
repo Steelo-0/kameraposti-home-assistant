@@ -71,6 +71,15 @@ KIND_BY_BINARY_DEVICE_CLASS: dict[str, str] = {
     "presence": "motion",
 }
 
+# 1.3.2 (2026-10-06): Z-Wave JS UI publishes notification sensors as device_class "problem"
+# ("OK" / "Problem"), e.g. the Water Alarm as "<device>_event_water_leak". Their kind comes from
+# the value part of the name; others of that class (general purpose, alarm status) stay unexported.
+INFERRED_DEVICE_CLASSES: tuple[str, ...] = ("problem",)
+_KIND_BY_NAME: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"water_leak|leak|flood"), "leak"),
+    (re.compile(r"smoke"), "smoke"),
+)
+
 # Kameraposti simple-format event for a binary sensor that is on / off.
 _EVENTS_BY_KIND: dict[str, tuple[str, str | None]] = {
     "leak": ("leak", "dry"),
@@ -100,9 +109,22 @@ def kind_for(state: State | None) -> str | None:
         return None
     device_class = state.attributes.get("device_class")
     if state.domain == "binary_sensor":
-        return KIND_BY_BINARY_DEVICE_CLASS.get(device_class)
+        kind = KIND_BY_BINARY_DEVICE_CLASS.get(device_class)
+        if kind is None and device_class in INFERRED_DEVICE_CLASSES:
+            kind = _kind_from_name(state)
+        return kind
     if state.domain == "sensor" and device_class == "temperature":
         return "temperature"
+    return None
+
+
+def _kind_from_name(state: State) -> str | None:
+    """Kind from the entity id / friendly name (spaces and dashes read as underscores)."""
+    names = (state.entity_id, str(state.attributes.get("friendly_name") or ""))
+    text = " ".join(re.sub(r"[\s-]+", "_", name.lower()) for name in names)
+    for pattern, kind in _KIND_BY_NAME:
+        if pattern.search(text):
+            return kind
     return None
 
 

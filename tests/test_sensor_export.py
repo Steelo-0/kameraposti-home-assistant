@@ -414,3 +414,87 @@ async def test_options_flow_refuses_more_sensors_than_kameraposti_allows(hass: H
     assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {CONF_EXPORTED_ENTITIES: "too_many"}
     assert CONF_EXPORTED_ENTITIES not in entry.options
+
+
+async def test_zwave_problem_class_leak_is_exported_as_leak(hass: HomeAssistant) -> None:
+    """1.3.2 (steelo 2026-10-06 "vuoto mittaus jää pois"): Z-Wave JS UI publishes the Water Alarm as
+    device_class "problem" (OK / Problem). The value part of the name decides; the device name
+    ("Keitttio-Vuoto") alone does not make the general purpose sensor a leak sensor."""
+    _set(
+        hass,
+        "binary_sensor.keitttio_vuoto_event_water_leak",
+        "off",
+        "problem",
+        "Keitttio-Vuoto_event_water_leak",
+    )
+    _set(
+        hass,
+        "binary_sensor.keitttio_vuoto_event_general_purpose",
+        "on",
+        "problem",
+        "Keitttio-Vuoto_event_general_purpose",
+    )
+    _set(hass, "binary_sensor.nodeid_6_alarm_status", "off", "problem", "nodeID_6_alarm_status")
+    _set(hass, "binary_sensor.kellari", "off", "problem", "Kellari water leak")
+    _set(hass, "binary_sensor.olohuone_palo", "off", "problem", "Olohuone smoke detected")
+
+    assert kind_for(hass.states.get("binary_sensor.keitttio_vuoto_event_water_leak")) == "leak"
+    assert kind_for(hass.states.get("binary_sensor.kellari")) == "leak"
+    assert kind_for(hass.states.get("binary_sensor.olohuone_palo")) == "smoke"
+    assert kind_for(hass.states.get("binary_sensor.keitttio_vuoto_event_general_purpose")) is None
+    assert kind_for(hass.states.get("binary_sensor.nodeid_6_alarm_status")) is None
+    # Problem = on = leak, OK = off = dry.
+    assert event_for("leak", "on") == "leak"
+    assert event_for("leak", "off") == "dry"
+
+
+async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssistant) -> None:
+    _set(
+        hass,
+        "binary_sensor.keitttio_vuoto_event_water_leak",
+        "off",
+        "problem",
+        "Keitttio-Vuoto_event_water_leak",
+    )
+    _set(
+        hass,
+        "binary_sensor.keitttio_vuoto_event_general_purpose",
+        "on",
+        "problem",
+        "Keitttio-Vuoto_event_general_purpose",
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        refused = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_EXPORTED_ENTITIES: [
+                    "binary_sensor.keitttio_vuoto_event_water_leak",
+                    "binary_sensor.keitttio_vuoto_event_general_purpose",
+                ]
+            },
+        )
+        assert refused["type"] is FlowResultType.FORM
+        assert refused["errors"] == {CONF_EXPORTED_ENTITIES: "unknown_kind"}
+        assert (
+            refused["description_placeholders"]["entities"]
+            == "binary_sensor.keitttio_vuoto_event_general_purpose"
+        )
+        assert CONF_EXPORTED_ENTITIES not in entry.options
+
+        saved = await hass.config_entries.options.async_configure(
+            refused["flow_id"], {CONF_EXPORTED_ENTITIES: ["binary_sensor.keitttio_vuoto_event_water_leak"]}
+        )
+        await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.keitttio_vuoto_event_water_leak"]

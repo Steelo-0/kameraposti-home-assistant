@@ -123,6 +123,8 @@ Home Assistant entities to send to Kameraposti (at most 20 per account):
 | Home Assistant entity | Kameraposti sensor | Sent |
 |---|---|---|
 | `binary_sensor`, device class `moisture` | leak | `leak` / `dry` |
+| `binary_sensor`, device class `problem` with `leak`, `water_leak` or `flood` in its name (Z-Wave JS UI water alarm, shown as OK / Problem) | leak | `leak` / `dry` |
+| `binary_sensor`, device class `problem` with `smoke` in its name | smoke | `smoke` / `clear` |
 | `binary_sensor`, device class `smoke` | smoke | `smoke` / `clear` |
 | `binary_sensor`, device class `door`, `garage_door`, `opening` | door | `open` / `closed` |
 | `binary_sensor`, device class `window` | window | `open` / `closed` |
