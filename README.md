@@ -130,8 +130,12 @@ The integration follows your account's camera list in Kameraposti: a new
 camera gets its device right away, a renamed camera's device is renamed (a
 name you give the device in Home Assistant still wins), and a camera you
 remove in Kameraposti disappears from Home Assistant with its entities —
-including old cameras left behind by earlier versions. A detection from a
-camera that is not on the list still creates the camera, as before.
+including old cameras left behind by earlier versions. The list holds only
+active cameras: a camera that is paused, or left over your plan's camera
+limit, leaves Home Assistant the same way and comes back when it is active
+again. A detection from a camera that is not on the list still creates the
+camera, as before; it is removed only when Kameraposti's list changes again
+without it (not on every restart or reconnect).
 
 ## Latest photo
 
@@ -148,11 +152,14 @@ card, or open the entity.
   when nothing was detected), `is_video`, `captured_at`.
 - The address is a signed link to that one photo, valid for 30 days and
   renewed by Kameraposti before it expires. It is never shown as an
-  attribute.
+  attribute, and the integration never writes it to the log: if loading the
+  photo fails, the log names the entity, the photo's id and the reason (e.g.
+  `HTTP 403`, `ConnectError`), once.
 - Once created, the entity stays: if the photo is gone (e.g. deleted in
-  Kameraposti) or the link has expired, it is unavailable until the next
-  photo or renewed link arrives. After a Home Assistant restart it is back
-  as soon as Kameraposti's stored photo message arrives again.
+  Kameraposti), the link has expired or loading it failed, it is unavailable
+  until the next photo or renewed link arrives. After a Home Assistant
+  restart it is back as soon as the camera is, and shows the photo when
+  Kameraposti's stored photo message arrives again.
 
 To react to each new photo, trigger on the entity's state with `to: ~`
 (a state trigger without `to`/`from` also fires on Home Assistant's routine
