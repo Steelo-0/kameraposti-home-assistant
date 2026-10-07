@@ -2,10 +2,11 @@
 
 Home Assistant custom integration that receives Kameraposti riistakamera
 (trail camera) detection events directly from Kameraposti's own MQTT
-broker, and turns them into Home Assistant sensors and an automation
-trigger event. It can also send your own Home Assistant sensors (leak,
-smoke, gas, door, window, motion, temperature, carbon dioxide) to
-Kameraposti, which then alarms through its own notifications.
+broker, turns them into Home Assistant sensors and an automation trigger
+event, and shows each camera's latest photo. It can also send your own Home
+Assistant sensors (leak, smoke, gas, door, window, motion, temperature,
+carbon dioxide) to Kameraposti, which then alarms through its own
+notifications.
 
 It talks to Kameraposti's broker over its own dedicated MQTT connection —
 it does **not** use, share, or modify your existing Home Assistant MQTT
@@ -56,8 +57,10 @@ Copy `custom_components/kameraposti` into your Home Assistant
    subscribe) before saving — if anything fails, you'll see the reason
    before the entry is created.
 
-Each camera that has sent at least one detection appears automatically as
-its own device, with no further configuration.
+Your cameras appear automatically as devices, with no further
+configuration: since 1.5.0 straight from your account's camera list, named
+as in Kameraposti (on a service that does not publish the list, a camera
+appears with its first detection).
 
 If Kameraposti rotates your MQTT password, Home Assistant will prompt you
 to re-authenticate; enter the new password and the integration reconnects
@@ -69,15 +72,21 @@ migrated automatically and Home Assistant asks for the new MQTT password
 
 ## What you get
 
-For each camera (`camera_id`) that reports a detection, one device is
-created (named "Riistakamera {camera_id}", e.g. "Riistakamera 16") with
-three sensors:
+Each camera is one device, named as in Kameraposti ("Riistakamera
+{camera_id}", e.g. "Riistakamera 16", when the service sends no name), with
+three sensors and the camera's latest photo:
 
-| Sensor | Example entity ID | Description |
+| Entity | Example entity ID | Description |
 |---|---|---|
 | Last detection | `sensor.riistakamera_16_last_detection` | Label of the most recent detection (e.g. `moose`) |
 | Detection confidence | `sensor.riistakamera_16_detection_confidence` | Confidence of the most recent detection, 0–1 |
 | Last detection time | `sensor.riistakamera_16_last_detection_time` | Timestamp of the most recent detection |
+| Latest photo | `image.riistakamera_16_latest_photo` | The camera's latest photo, see [Latest photo](#latest-photo) |
+
+Entity IDs follow the device name when the entities are first created (a
+camera named "Pihakamera" gets `sensor.pihakamera_last_detection`); renaming
+the camera in Kameraposti later renames the device, and existing entity IDs
+stay as they are.
 
 Every detection also fires a `kameraposti_detection` event, so you can
 build automations that react immediately without polling a sensor's
@@ -114,6 +123,49 @@ automation:
             {{ trigger.event.data.label }}
             ({{ (trigger.event.data.confidence * 100) | round(0) }}%)
 ```
+
+### Camera list (since 1.5.0)
+
+The integration follows your account's camera list in Kameraposti: a new
+camera gets its device right away, a renamed camera's device is renamed (a
+name you give the device in Home Assistant still wins), and a camera you
+remove in Kameraposti disappears from Home Assistant with its entities —
+including old cameras left behind by earlier versions. A detection from a
+camera that is not on the list still creates the camera, as before.
+
+## Latest photo
+
+Since 1.5.0 every camera has a **Latest photo** ("Viimeisin kuva") image
+entity on its device. Kameraposti sends the photo's address when a new photo
+arrives, and Home Assistant fetches the photo (JPEG, long side at most
+1280 px; a video shows its poster frame) only then — nothing is polled. Show
+it on a dashboard with a **Picture entity** card, or open the entity.
+
+- **State**: the time the photo was taken (`captured_at`).
+- **Attributes**: `label` and `confidence` of the photo's detection (empty
+  when nothing was detected), `is_video`, `captured_at`.
+- The address is a signed link to that one photo, valid for 30 days and
+  renewed by Kameraposti before it expires. It is never shown as an
+  attribute.
+- With no photo, or if the link has expired, the entity is unavailable until
+  the next photo or renewed link arrives.
+
+To react to each new photo, trigger on the entity's state with `to: ~`
+(a state trigger without `to`/`from` also fires on Home Assistant's routine
+attribute updates of image entities):
+
+```yaml
+trigger:
+  - platform: state
+    entity_id: image.riistakamera_16_latest_photo
+    to: ~
+```
+
+If you added a camera's Home Assistant image link from Kameraposti
+(`…/riistakamera/ha/<id>/latest.jpg`) as a **Generic Camera**, it is no
+longer needed: the Latest photo entity shows the same photo without a link
+and without fetching it every 10 seconds. The old link keeps working until
+you remove it (Settings → Devices & services → Generic Camera).
 
 ## Sensors to Kameraposti
 
@@ -183,6 +235,8 @@ in Home Assistant right away, so automations can react to them too.
   recent event IDs) — it is not persisted across a Home Assistant
   restart, so a detection retried by the broker across a restart could
   in theory be delivered twice.
+- The latest photo needs a Kameraposti service that publishes it; on a
+  service that does not (yet), the Latest photo entity stays unavailable.
 - The three sensors reflect only the *most recent* detection per camera;
   historical detections are available through Home Assistant's own
   recorder/history for the sensors, and through the `kameraposti_detection`
