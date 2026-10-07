@@ -246,10 +246,12 @@ async def test_expired_url_makes_the_entity_unavailable_and_is_never_fetched(
         await async_get_image(hass, entity_id)
     assert route.call_count == 0
 
-    # Valid for one more hour: available now, unavailable once the hour has passed.
-    await _send(hass, coordinator, LATEST_TOPIC, _latest(expires_at="2026-10-07T06:00:00Z"))
+    # Valid for one more minute: available now, unavailable right after it has passed --
+    # by the entity's own timer, well before the image component's 5-minute token
+    # refresh would rewrite the state anyway.
+    await _send(hass, coordinator, LATEST_TOPIC, _latest(expires_at="2026-10-07T05:01:00Z"))
     assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
-    freezer.move_to("2026-10-07T06:00:01+00:00")
+    freezer.move_to("2026-10-07T05:01:01+00:00")
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert hass.states.get(entity_id).state == STATE_UNAVAILABLE

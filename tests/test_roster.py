@@ -128,6 +128,26 @@ async def test_roster_rename_updates_the_device_name(
     assert state.attributes["friendly_name"] == "Navetta Last detection"
 
 
+async def test_roster_renames_a_device_left_from_an_earlier_run_and_keeps_the_users_name(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    device_registry = dr.async_get(hass)
+    old = device_registry.async_get_or_create(
+        config_entry_id=setup_entry.entry_id,
+        identifiers={(DOMAIN, f"{CUSTOMER_ID}:12")},
+        name="Riistakamera 12",
+    )
+    device_registry.async_update_device(old.id, name_by_user="Oma nimi")
+
+    _coordinator(hass, setup_entry)._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera")))
+    await hass.async_block_till_done()
+
+    device = _camera_device(hass, 12)
+    assert device.id == old.id
+    assert device.name == "Pihakamera"
+    assert device.name_by_user == "Oma nimi"
+
+
 async def test_roster_names_a_camera_first_seen_in_a_detection(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:

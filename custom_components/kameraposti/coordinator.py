@@ -304,9 +304,9 @@ class KameraportiCoordinator:
         for camera_id, name in listed.items():
             state = self.cameras.get(camera_id)
             if state is None:
+                # The new entities' DeviceInfo carries the roster name, which also
+                # renames a device left from an earlier run.
                 self.cameras[camera_id] = self._new_camera_state(camera_id, name=name)
-                # A device left from an earlier run takes the current name too.
-                self._sync_device_name(device_registry, camera_id)
                 async_dispatcher_send(self.hass, self.signal_new_camera, camera_id)
             elif state.name != name:
                 state.name = name
