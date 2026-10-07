@@ -77,6 +77,8 @@ LOGIN_PATTERN: Final = re.compile(r"^(?:kp-)?([1-9]\d{0,9})(?:-([2-9]|[1-9]\d))?
 
 MANUFACTURER: Final = "Kameraposti"
 MODEL: Final = "Riistakamera"
+# Device name for a camera the roster has not named (or with no roster at all).
+DEFAULT_CAMERA_NAME_TEMPLATE: Final = "Riistakamera {camera_id}"
 
 # Contract section 8: "noin 500 viimeisintä event_id:tä" -- a reasonable
 # bounded size, not required to survive a HA restart.
@@ -102,4 +104,5 @@ SECURITY_ERRORS: Final = ("invalid_code", "locked", "code_not_set", "code_requir
 
 SIGNAL_NEW_CAMERA: Final = f"{DOMAIN}_new_camera"
 SIGNAL_CAMERA_UPDATE: Final = f"{DOMAIN}_camera_update"
+SIGNAL_CAMERA_REMOVED: Final = f"{DOMAIN}_camera_removed"
 SIGNAL_SECURITY: Final = f"{DOMAIN}_security"

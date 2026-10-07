@@ -91,9 +91,11 @@ async def test_start_connects_with_expected_transport_and_subscribes_on_success(
     await client.async_stop()
 
 
-async def test_connect_subscribes_detections_and_the_security_topics(
+async def test_connect_subscribes_detections_security_roster_and_latest_photos(
     hass: HomeAssistant, mock_paho_client: MagicMock
 ) -> None:
+    """1.5.0: the roster comes before the latest photos, so a fresh connection
+    knows the account's cameras before their retained photos arrive."""
     client = _make_client(hass, [])
     await client.async_start()
     await hass.async_block_till_done()
@@ -101,7 +103,14 @@ async def test_connect_subscribes_detections_and_the_security_topics(
     client._handle_connect(mock_paho_client, None, None, 0)
 
     topics = [c.args[0] for c in mock_paho_client.subscribe.call_args_list]
-    assert topics == ["customers/3/detections/+", "customers/3/security", "customers/3/security/result"]
+    assert topics == [
+        "customers/3/detections/+",
+        "customers/3/security",
+        "customers/3/security/result",
+        "customers/3/cameras",
+        "customers/3/cameras/+/latest",
+    ]
+    assert all(c.kwargs == {"qos": 1} for c in mock_paho_client.subscribe.call_args_list)
     await client.async_stop()
 
 
@@ -265,8 +274,9 @@ async def test_reconnect_attempt_reconnects_and_resubscribes_on_success(
     mock_paho_client.on_connect(mock_paho_client, None, MagicMock(), 0, None)
     await hass.async_block_till_done()
 
-    # Kaksi yhteyttä (alku + uudelleen), kumpikin tilaa havainnot + turvatilan + tuloksen.
-    assert mock_paho_client.subscribe.call_count == 6
+    # Kaksi yhteyttä (alku + uudelleen), kumpikin tilaa havainnot + turvatilan + tuloksen
+    # + kameralistan + viimeisimmät kuvat.
+    assert mock_paho_client.subscribe.call_count == 10
     assert states[-1] == ConnectionState.CONNECTED
 
     await client.async_stop()
@@ -376,6 +386,16 @@ class TestBlockingConnectionTestReasonCodes:
 
         mock_paho_client.subscribe.assert_called_once()
         mock_paho_client.disconnect.assert_called_once()
+
+    def test_probe_needs_only_the_detection_subscription(self, mock_paho_client: MagicMock) -> None:
+        """1.5.0: setup must keep working against a broker that does not (yet) let the
+        login read the roster / latest photos -- the probe asks only for detections."""
+        self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(0))
+        self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=1))
+
+        _blocking_test_connection(**PROBE, password="secret")
+
+        mock_paho_client.subscribe.assert_called_once_with(f"customers/{CUSTOMER_ID}/detections/+", qos=1)
 
     @pytest.mark.parametrize("v3_rc", [4, 5])
     def test_auth_failure_reasoncode_maps_to_invalid_auth(

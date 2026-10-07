@@ -7,6 +7,13 @@ per-camera state dicts, dynamic device/entity discovery signals, and the
 parse+validate, ensure device/entities exist, update state, fire event,
 all as one logical unit of work per incoming message).
 
+1.5.0: the account's camera roster (customers/<id>/cameras) is the
+authority on which cameras exist and what they are called -- listed cameras
+get their device, renamed with the roster, and a camera that leaves the
+roster loses its device (and so its entities) from the registries, including
+stale devices from earlier runs. A detection for an unlisted camera still
+creates it as before (servers that publish no roster).
+
 Not a homeassistant.helpers.update_coordinator.DataUpdateCoordinator --
 this integration is push-based (MQTT), not polling, so the usual
 poll-and-refresh coordinator pattern does not apply. Sensors instead
@@ -18,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,23 +33,37 @@ from datetime import datetime
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     CONF_EXPORTED_ENTITIES,
+    DEFAULT_CAMERA_NAME_TEMPLATE,
     DOMAIN,
     EVENT_DETECTION,
+    MANUFACTURER,
+    MODEL,
+    ROSTER_TOPIC_PATTERN,
     SECURITY_COMMAND_TOPIC_TEMPLATE,
     SECURITY_ERRORS,
     SECURITY_MODES,
     SECURITY_RESULT_TOPIC_TEMPLATE,
     SECURITY_STATE_TOPIC_TEMPLATE,
+    SIGNAL_CAMERA_REMOVED,
     SIGNAL_CAMERA_UPDATE,
     SIGNAL_NEW_CAMERA,
     SIGNAL_SECURITY,
 )
 from .dedup import EventDedupCache
-from .models import Detection, DetectionRejected, parse_detection
+from .models import (
+    CameraRoster,
+    Detection,
+    DetectionRejected,
+    RosterRejected,
+    parse_detection,
+    parse_roster,
+)
 from .mqtt_client import ConnectionState, KameraportiMqttClient
 from .sensor_export import KameraportiSensorExporter
 
@@ -49,6 +71,10 @@ _LOGGER = logging.getLogger(__name__)
 
 # How long arming/disarming waits for Kameraposti's answer.
 SECURITY_RESULT_TIMEOUT_SECONDS = 10
+
+# Camera device identifier "<customer_id>:<camera_id>" (the security system's
+# device is "<customer_id>:security" and never matches).
+_CAMERA_IDENTIFIER = re.compile(r"(?P<customer_id>[0-9]+):(?P<camera_id>[0-9]+)")
 
 
 @dataclass(slots=True)
@@ -59,6 +85,8 @@ class CameraState:
     label: str | None = None
     confidence: float | None = None
     last_detection_time: datetime | None = None
+    # 1.5.0: the camera's name on the roster (None = not named / no roster).
+    name: str | None = None
 
 
 class KameraportiCoordinator:
@@ -113,9 +141,34 @@ class KameraportiCoordinator:
         """Dispatcher signal for the security panel (mode or availability changed)."""
         return f"{SIGNAL_SECURITY}_{self.entry.entry_id}"
 
+    @property
+    def signal_camera_removed(self) -> str:
+        """Dispatcher signal fired when the roster drops a camera (its device is removed)."""
+        return f"{SIGNAL_CAMERA_REMOVED}_{self.entry.entry_id}"
+
     def signal_camera_update(self, camera_id: int) -> str:
         """Dispatcher signal fired on every subsequent update for a known camera_id."""
         return f"{SIGNAL_CAMERA_UPDATE}_{self.entry.entry_id}_{camera_id}"
+
+    def camera_device_identifier(self, camera_id: int) -> tuple[str, str]:
+        """The camera device's identifier, shared by all of the camera's entities."""
+        return (DOMAIN, f"{self.customer_id}:{camera_id}")
+
+    def camera_name(self, camera_id: int) -> str:
+        """The roster's name for the camera, else "Riistakamera <id>"."""
+        state = self.cameras.get(camera_id)
+        if state is not None and state.name:
+            return state.name
+        return DEFAULT_CAMERA_NAME_TEMPLATE.format(camera_id=camera_id)
+
+    def camera_device_info(self, camera_id: int) -> DeviceInfo:
+        """DeviceInfo for every entity of one camera (they all join the same device)."""
+        return DeviceInfo(
+            identifiers={self.camera_device_identifier(camera_id)},
+            manufacturer=MANUFACTURER,
+            model=MODEL,
+            name=self.camera_name(camera_id),
+        )
 
     async def async_start(self) -> None:
         """Start the MQTT client (contract section 21/22 counterpart is async_stop)."""
@@ -167,6 +220,9 @@ class KameraportiCoordinator:
         if topic == self._security_result_topic:
             self._apply_security_result(payload)
             return
+        if ROSTER_TOPIC_PATTERN.match(topic):
+            self._handle_roster(topic, payload)
+            return
 
         try:
             detection = parse_detection(topic, payload, expected_customer_id=self.customer_id)
@@ -188,6 +244,70 @@ class KameraportiCoordinator:
         _LOGGER.debug("Kameraposti dedup accepted event_id=%s", detection.event_id)
 
         self._apply_detection(detection)
+
+    @callback
+    def _handle_roster(self, topic: str, payload: bytes) -> None:
+        try:
+            roster = parse_roster(topic, payload, expected_customer_id=self.customer_id)
+        except RosterRejected as err:
+            _LOGGER.debug("Ignoring invalid Kameraposti camera roster on %s: %s", topic, err)
+            return
+        if roster is None:
+            # A cleared retained roster is "no roster", not "no cameras" (that
+            # is an empty list) -- keep the cameras as they are.
+            _LOGGER.debug("Kameraposti camera roster cleared on %s, keeping the cameras", topic)
+            return
+        self._apply_roster(roster)
+
+    @callback
+    def _apply_roster(self, roster: CameraRoster) -> None:
+        """Make the camera devices match the roster: remove, add, rename."""
+        listed = {camera.camera_id: camera.name for camera in roster.cameras}
+        _LOGGER.debug("Kameraposti camera roster: %s", sorted(listed))
+        device_registry = dr.async_get(self.hass)
+
+        # Every camera device of this entry that is not listed -- also a stale
+        # one from an earlier run that this run never saw. Removing the entry
+        # from the device removes the device and its entities (registry and
+        # live entities); a device shared with another entry only loses ours.
+        for device in dr.async_entries_for_config_entry(device_registry, self.entry.entry_id):
+            camera_id = self._camera_id_of_device(device)
+            if camera_id is not None and camera_id not in listed:
+                _LOGGER.debug("Kameraposti removing camera_id=%s (not on the roster)", camera_id)
+                device_registry.async_update_device(device.id, remove_config_entry_id=self.entry.entry_id)
+        for camera_id in [camera_id for camera_id in self.cameras if camera_id not in listed]:
+            del self.cameras[camera_id]
+            async_dispatcher_send(self.hass, self.signal_camera_removed, camera_id)
+
+        for camera_id, name in listed.items():
+            state = self.cameras.get(camera_id)
+            if state is None:
+                self.cameras[camera_id] = CameraState(camera_id=camera_id, name=name)
+                # A device left from an earlier run takes the current name too.
+                self._sync_device_name(device_registry, camera_id)
+                async_dispatcher_send(self.hass, self.signal_new_camera, camera_id)
+            elif state.name != name:
+                state.name = name
+                self._sync_device_name(device_registry, camera_id)
+
+    @callback
+    def _sync_device_name(self, device_registry: dr.DeviceRegistry, camera_id: int) -> None:
+        # Only the integration's name: a name the user gave the device in Home
+        # Assistant (name_by_user) still wins in the UI.
+        device = device_registry.async_get_device(identifiers={self.camera_device_identifier(camera_id)})
+        name = self.camera_name(camera_id)
+        if device is not None and device.name != name:
+            device_registry.async_update_device(device.id, name=name)
+
+    def _camera_id_of_device(self, device: dr.DeviceEntry) -> int | None:
+        """camera_id of one of this account's camera devices; None for any other device."""
+        for domain, identifier in device.identifiers:
+            if domain != DOMAIN:
+                continue
+            match = _CAMERA_IDENTIFIER.fullmatch(identifier)
+            if match is not None and int(match.group("customer_id")) == self.customer_id:
+                return int(match.group("camera_id"))
+        return None
 
     @callback
     def _apply_security_state(self, payload: bytes) -> None:

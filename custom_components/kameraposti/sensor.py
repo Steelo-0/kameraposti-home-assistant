@@ -1,11 +1,11 @@
 """Sensor platform for Kameraposti: 3 entities per detected camera.
 
 Cameras are discovered dynamically (contract section 15) -- camera_id is
-not known at config-flow time, only once the first detection for it
-arrives. Unique IDs are fully deterministic
-(``kameraposti:{customer_id}:{camera_id}:{kind}``), so a Home Assistant
-reload never creates duplicate entities for a camera_id already seen in
-an earlier run of this same config entry.
+not known at config-flow time, only once the account's camera roster
+(1.5.0) or the first detection for it arrives. Unique IDs are fully
+deterministic (``kameraposti:{customer_id}:{camera_id}:{kind}``), so a
+Home Assistant reload never creates duplicate entities for a camera_id
+already seen in an earlier run of this same config entry.
 
 V1 is deliberately generic (contract section 14): one "last detection"
 label sensor, one confidence sensor, one last-detection-time sensor.
@@ -20,12 +20,12 @@ import logging
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, MODEL
+from .const import DOMAIN
 from .coordinator import CameraState, KameraportiCoordinator
+from .entity import async_setup_camera_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,32 +38,17 @@ async def async_setup_entry(
     """Set up Kameraposti sensors, adding new ones as new cameras appear."""
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    known_cameras: set[int] = set()
-
-    @callback
-    def _add_camera(camera_id: int) -> None:
-        if camera_id in known_cameras:
-            # Guards against ever creating a duplicate set of entities
-            # for the same camera_id (contract section 15) -- a
-            # dispatcher signal could in principle be re-sent, entity
-            # creation itself must not be re-triggerable.
-            return
-        known_cameras.add(camera_id)
-        async_add_entities(
-            [
-                KameraportiLastDetectionSensor(coordinator, camera_id),
-                KameraportiConfidenceSensor(coordinator, camera_id),
-                KameraportiLastDetectionTimeSensor(coordinator, camera_id),
-            ]
-        )
-
-    entry.async_on_unload(async_dispatcher_connect(hass, coordinator.signal_new_camera, _add_camera))
-
-    # Entities for cameras the coordinator already knows about (e.g. a
-    # detection arrived between coordinator start and this platform
-    # finishing setup) -- do not wait for a second event to surface them.
-    for camera_id in list(coordinator.cameras):
-        _add_camera(camera_id)
+    async_setup_camera_entities(
+        hass,
+        entry,
+        coordinator,
+        async_add_entities,
+        lambda camera_id: [
+            KameraportiLastDetectionSensor(coordinator, camera_id),
+            KameraportiConfidenceSensor(coordinator, camera_id),
+            KameraportiLastDetectionTimeSensor(coordinator, camera_id),
+        ],
+    )
 
 
 class _KameraportiCameraSensorBase(SensorEntity):
@@ -75,12 +60,7 @@ class _KameraportiCameraSensorBase(SensorEntity):
     def __init__(self, coordinator: KameraportiCoordinator, camera_id: int) -> None:
         self._coordinator = coordinator
         self._camera_id = camera_id
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{coordinator.customer_id}:{camera_id}")},
-            manufacturer=MANUFACTURER,
-            model=MODEL,
-            name=f"Riistakamera {camera_id}",
-        )
+        self._attr_device_info = coordinator.camera_device_info(camera_id)
 
     @property
     def _camera_state(self) -> CameraState | None:

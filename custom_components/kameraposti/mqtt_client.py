@@ -40,6 +40,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONNECTION_TEST_TIMEOUT_SECONDS,
+    LATEST_PHOTO_SUBSCRIBE_TEMPLATE,
     MQTT_KEEPALIVE_SECONDS,
     MQTT_PORT,
     MQTT_TRANSPORT,
@@ -47,6 +48,7 @@ from .const import (
     RECONNECT_JITTER_SECONDS,
     RECONNECT_MAX_DELAY_SECONDS,
     RECONNECT_MIN_DELAY_SECONDS,
+    ROSTER_TOPIC_TEMPLATE,
     SECURITY_RESULT_TOPIC_TEMPLATE,
     SECURITY_STATE_TOPIC_TEMPLATE,
     TOPIC_SUBSCRIBE_TEMPLATE,
@@ -168,11 +170,22 @@ class KameraportiMqttClient:
 
     @property
     def topics(self) -> list[str]:
-        """Detections + the security system state and command results (2026-10-05)."""
+        """Detections + the security system state and command results (2026-10-05)
+        + the camera roster and each camera's latest photo (1.5.0).
+
+        The roster is subscribed before the latest photos so that, on a fresh
+        connection, the broker hands over the retained camera list before the
+        retained photos. A broker whose ACL does not (yet) allow the 1.5.0
+        topics just refuses those subscriptions in its SUBACK; detections and
+        the security system keep working (the config-flow probe asks only for
+        detections).
+        """
         return [
             self.topic,
             SECURITY_STATE_TOPIC_TEMPLATE.format(customer_id=self._customer_id),
             SECURITY_RESULT_TOPIC_TEMPLATE.format(customer_id=self._customer_id),
+            ROSTER_TOPIC_TEMPLATE.format(customer_id=self._customer_id),
+            LATEST_PHOTO_SUBSCRIBE_TEMPLATE.format(customer_id=self._customer_id),
         ]
 
     async def async_start(self) -> None:
