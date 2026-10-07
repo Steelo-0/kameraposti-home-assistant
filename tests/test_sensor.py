@@ -61,7 +61,7 @@ async def setup_entry(hass: HomeAssistant, mock_mqtt_client: None) -> MockConfig
     return entry
 
 
-async def test_first_detection_creates_one_device_with_its_sensors_and_latest_photo(
+async def test_first_detection_creates_one_device_and_three_entities(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][setup_entry.entry_id]
@@ -82,8 +82,7 @@ async def test_first_detection_creates_one_device_with_its_sensors_and_latest_ph
         f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:last_detection",
         f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:confidence",
         f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:last_detection_time",
-        # 1.5.0: the camera's latest photo (image platform) joins the same device.
-        f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:latest_photo",
+        # No latest-photo entity: it is created only with the camera's first photo (1.5.0).
     }
 
     # entity_id is derived from the device name -- "Riistakamera 16".

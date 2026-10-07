@@ -53,6 +53,7 @@ from .const import (
     SECURITY_MODES,
     SECURITY_RESULT_TOPIC_TEMPLATE,
     SECURITY_STATE_TOPIC_TEMPLATE,
+    SIGNAL_CAMERA_PHOTO,
     SIGNAL_CAMERA_REMOVED,
     SIGNAL_CAMERA_UPDATE,
     SIGNAL_LATEST_PHOTO,
@@ -167,6 +168,15 @@ class KameraportiCoordinator:
     def signal_latest_photo(self, camera_id: int) -> str:
         """Dispatcher signal fired when a known camera's latest photo changes."""
         return f"{SIGNAL_LATEST_PHOTO}_{self.entry.entry_id}_{camera_id}"
+
+    @property
+    def signal_camera_photo(self) -> str:
+        """Dispatcher signal fired when a known camera gets a photo after having none.
+
+        The image platform creates a camera's latest-photo entity only then: a
+        service that publishes no photos gets no (always unavailable) entity.
+        """
+        return f"{SIGNAL_CAMERA_PHOTO}_{self.entry.entry_id}"
 
     def camera_device_identifier(self, camera_id: int) -> tuple[str, str]:
         """The camera device's identifier, shared by all of the camera's entities."""
@@ -349,7 +359,10 @@ class KameraportiCoordinator:
         if state.latest_photo == photo:
             # A redelivered or reconnect copy of the same message: nothing to do.
             return
+        had_photo = state.latest_photo is not None
         state.latest_photo = photo
+        if photo is not None and not had_photo:
+            async_dispatcher_send(self.hass, self.signal_camera_photo, camera_id)
         async_dispatcher_send(self.hass, self.signal_latest_photo(camera_id))
 
     @callback

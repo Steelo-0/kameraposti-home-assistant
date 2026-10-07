@@ -1,14 +1,17 @@
 """Image platform for Kameraposti: each camera's latest photo (1.5.0).
 
-One "Latest photo" entity per camera, on the camera's device. Kameraposti
+One "Latest photo" entity per camera that has had a photo, on the camera's
+device: it is created with the camera's first photo, so a service that
+publishes no photos leaves no always-unavailable entity behind (after a
+restart it comes back when the retained photo arrives again). Kameraposti
 publishes the photo as a retained message with a signed, expiring URL
 (customers/<id>/cameras/<camera>/latest); the entity's image_url is that URL
 and image_last_updated the photo's captured_at. Home Assistant fetches the
 image only when the photo (or its URL) changes -- nothing is polled -- and
 the Generic Camera link copied from Kameraposti is no longer needed.
 
-No photo (an empty retained message) or an expired URL makes the entity
-unavailable until the next message; an expired URL is never fetched. The
+Once created the entity stays: no photo any more (an empty retained message)
+or an expired URL makes it unavailable until the next message; an expired URL is never fetched. The
 URL itself is never exposed: it is not an attribute and is not logged here.
 """
 
@@ -36,7 +39,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up one latest-photo entity per camera, adding new ones as cameras appear."""
+    """Set up a latest-photo entity for each camera as soon as it has a photo."""
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     async_setup_camera_entities(
@@ -45,6 +48,7 @@ async def async_setup_entry(
         coordinator,
         async_add_entities,
         lambda camera_id: [KameraportiLatestPhotoImage(hass, coordinator, camera_id)],
+        requires_photo=True,
     )
 
 
