@@ -11,9 +11,10 @@ The MQTT client is mocked out; image fetches go through respx.
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import AsyncGenerator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -74,11 +75,20 @@ def _detection() -> bytes:
     ).encode()
 
 
-def _roster(*cameras: tuple[int, str]) -> bytes:
+# Each roster defaults to a newer generated_at than the last, as the server's
+# publisher does on every change; only a strictly newer roster removes cameras.
+_GENERATED_AT = itertools.count()
+
+
+def _roster(*cameras: tuple[int, str], generated_at: str | None = None) -> bytes:
+    if generated_at is None:
+        generated_at = (
+            datetime(2026, 10, 7, 4, tzinfo=UTC) + timedelta(seconds=next(_GENERATED_AT))
+        ).isoformat()
     return json.dumps(
         {
             "schema_version": 1,
-            "generated_at": "2026-10-07T04:00:00+00:00",
+            "generated_at": generated_at,
             "cameras": [{"camera_id": camera_id, "name": name} for camera_id, name in cameras],
         }
     ).encode()

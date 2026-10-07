@@ -13,8 +13,10 @@ coordinator._handle_message, exactly what the client invokes on the HA loop.
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -31,11 +33,20 @@ CUSTOMER_ID = 3
 ROSTER_TOPIC = f"customers/{CUSTOMER_ID}/cameras"
 
 
-def _roster(*cameras: tuple[int, str]) -> bytes:
+# Each roster defaults to a newer generated_at than the last, as the server's
+# publisher does on every change; only a strictly newer roster removes cameras.
+_GENERATED_AT = itertools.count()
+
+
+def _roster(*cameras: tuple[int, str], generated_at: str | None = None) -> bytes:
+    if generated_at is None:
+        generated_at = (
+            datetime(2026, 10, 7, 4, tzinfo=UTC) + timedelta(seconds=next(_GENERATED_AT))
+        ).isoformat()
     return json.dumps(
         {
             "schema_version": 1,
-            "generated_at": "2026-10-07T09:12:00+00:00",
+            "generated_at": generated_at,
             "cameras": [{"camera_id": camera_id, "name": name} for camera_id, name in cameras],
         }
     ).encode()
@@ -298,3 +309,88 @@ async def test_camera_back_on_the_roster_gets_its_entities_again(
     assert _camera_device(hass, 35) is not None
     assert len(_camera_entity_ids(hass, 35)) == entity_count
     assert hass.states.get("sensor.riistapolku_last_detection") is not None
+
+
+# -- M-1: only a strictly newer roster removes cameras -----------------------
+# The roster is retained, so the same (or, in a race, an older) roster arrives
+# again on every reconnect and Home Assistant restart. Removing on that would
+# delete a camera created from detections (or added while the server's roster
+# job failed) on each restart, and the next detection would create it again.
+
+T1 = "2026-10-07T09:00:00+00:00"
+T2 = "2026-10-07T10:00:00+00:00"
+T0 = "2026-10-07T08:00:00+00:00"
+
+
+async def test_same_retained_roster_after_a_restart_keeps_a_detection_created_camera(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_storage: dict
+) -> None:
+    coordinator = _coordinator(hass, setup_entry)
+    coordinator._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera"), generated_at=T1))
+    await hass.async_block_till_done()
+    coordinator._handle_message(*_detection(40))
+    await hass.async_block_till_done()
+    assert _camera_device(hass, 40) is not None
+    # The applied roster time is stored per config entry.
+    assert hass_storage[f"{DOMAIN}.roster.{setup_entry.entry_id}"]["data"] == {"generated_at": T1}
+
+    assert await hass.config_entries.async_reload(setup_entry.entry_id)
+    await hass.async_block_till_done()
+    reloaded = _coordinator(hass, setup_entry)
+    reloaded._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera"), generated_at=T1))
+    await hass.async_block_till_done()
+
+    device = _camera_device(hass, 40)
+    assert device is not None
+    assert _camera_entity_ids(hass, 40)
+    assert _camera_device(hass, 12) is not None
+
+
+async def test_newer_roster_without_a_detection_created_camera_removes_it(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    coordinator = _coordinator(hass, setup_entry)
+    coordinator._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera"), generated_at=T1))
+    coordinator._handle_message(*_detection(40))
+    await hass.async_block_till_done()
+
+    coordinator._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera"), generated_at=T2))
+    await hass.async_block_till_done()
+
+    assert _camera_device(hass, 40) is None
+    assert 40 not in coordinator.cameras
+
+
+async def test_older_or_equal_roster_never_removes_but_still_adds_and_renames(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    coordinator = _coordinator(hass, setup_entry)
+    coordinator._handle_message(
+        ROSTER_TOPIC, _roster((12, "Pihakamera"), (35, "Riistapolku"), generated_at=T1)
+    )
+    await hass.async_block_till_done()
+
+    coordinator._handle_message(ROSTER_TOPIC, _roster((12, "Navetta"), (50, "Uusi"), generated_at=T0))
+    coordinator._handle_message(ROSTER_TOPIC, _roster((12, "Navetta"), generated_at=T1))
+    await hass.async_block_till_done()
+
+    assert _camera_device(hass, 35) is not None
+    assert 35 in coordinator.cameras
+    assert _camera_device(hass, 12).name == "Navetta"
+    assert _camera_device(hass, 50) is not None
+
+
+async def test_removing_the_entry_removes_its_stored_roster_time(
+    hass: HomeAssistant, setup_entry: MockConfigEntry, hass_storage: dict
+) -> None:
+    _coordinator(hass, setup_entry)._handle_message(
+        ROSTER_TOPIC, _roster((12, "Pihakamera"), generated_at=T1)
+    )
+    await hass.async_block_till_done()
+    key = f"{DOMAIN}.roster.{setup_entry.entry_id}"
+    assert key in hass_storage
+
+    assert await hass.config_entries.async_remove(setup_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert key not in hass_storage

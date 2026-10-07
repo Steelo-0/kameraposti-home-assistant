@@ -48,6 +48,11 @@ LATEST_PHOTO_TOPIC_PATTERN: Final = re.compile(
     r"^customers/(?P<customer_id>\d+)/cameras/(?P<camera_id>\d+)/latest$"
 )
 ROSTER_SCHEMA_VERSION: Final = 1
+# The newest applied roster's generated_at, stored per config entry: the roster
+# is retained, so the same (or an older) one arrives again on every reconnect and
+# restart -- only a strictly newer roster may remove cameras.
+ROSTER_STORE_KEY_TEMPLATE: Final = DOMAIN + ".roster.{entry_id}"
+ROSTER_STORE_VERSION: Final = 1
 LATEST_PHOTO_SCHEMA_VERSION: Final = 1
 
 EVENT_DETECTION: Final = "kameraposti_detection"

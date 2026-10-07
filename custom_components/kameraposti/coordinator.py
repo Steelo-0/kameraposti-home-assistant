@@ -9,9 +9,11 @@ all as one logical unit of work per incoming message).
 
 1.5.0: the account's camera roster (customers/<id>/cameras) is the
 authority on which cameras exist and what they are called -- listed cameras
-get their device, renamed with the roster, and a camera that leaves the
+get their device, renamed with the roster, and a camera that leaves a newer
 roster loses its device (and so its entities) from the registries, including
-stale devices from earlier runs. A detection for an unlisted camera still
+stale devices from earlier runs. The retained roster arrives again on every
+reconnect and restart, so removals happen only when its generated_at is
+strictly newer than the last applied one (stored per config entry). A detection for an unlisted camera still
 creates it as before (servers that publish no roster). Each camera's latest
 photo (customers/<id>/cameras/<camera>/latest) is kept here for the image
 platform.
@@ -38,6 +40,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.storage import Store
 
 from .const import (
     CONF_EXPORTED_ENTITIES,
@@ -47,6 +50,8 @@ from .const import (
     LATEST_PHOTO_TOPIC_PATTERN,
     MANUFACTURER,
     MODEL,
+    ROSTER_STORE_KEY_TEMPLATE,
+    ROSTER_STORE_VERSION,
     ROSTER_TOPIC_PATTERN,
     SECURITY_COMMAND_TOPIC_TEMPLATE,
     SECURITY_ERRORS,
@@ -83,6 +88,11 @@ SECURITY_RESULT_TIMEOUT_SECONDS = 10
 # Camera device identifier "<customer_id>:<camera_id>" (the security system's
 # device is "<customer_id>:security" and never matches).
 _CAMERA_IDENTIFIER = re.compile(r"(?P<customer_id>[0-9]+):(?P<camera_id>[0-9]+)")
+
+
+def roster_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, str]]:
+    """Where one config entry keeps the generated_at of its newest applied roster."""
+    return Store(hass, ROSTER_STORE_VERSION, ROSTER_STORE_KEY_TEMPLATE.format(entry_id=entry_id))
 
 
 @dataclass(slots=True)
@@ -128,6 +138,9 @@ class KameraportiCoordinator:
         # the camera appears, never a reason to create the camera.
         self._roster_camera_ids: set[int] | None = None
         self._unlisted_photos: dict[int, LatestPhoto] = {}
+        self._roster_store = roster_store(hass, entry.entry_id)
+        # generated_at of the newest roster applied with removals (None = none yet).
+        self._roster_applied_at: datetime | None = None
 
         self._dedup = EventDedupCache()
         self._client = KameraportiMqttClient(
@@ -200,6 +213,8 @@ class KameraportiCoordinator:
 
     async def async_start(self) -> None:
         """Start the MQTT client (contract section 21/22 counterpart is async_stop)."""
+        # Before any message can arrive: the retained roster comes right after connecting.
+        self._roster_applied_at = await self._async_load_roster_applied_at()
         self._exporter.async_start()
         await self._client.async_start()
 
@@ -232,6 +247,17 @@ class KameraportiCoordinator:
             # retrying with backoff regardless -- reauth just gives the
             # user a fast path to fix a rotated/typo'd password.
             self.entry.async_start_reauth(self.hass)
+
+    async def _async_load_roster_applied_at(self) -> datetime | None:
+        data = await self._roster_store.async_load()
+        raw = data.get("generated_at") if isinstance(data, dict) else None
+        if not isinstance(raw, str):
+            return None
+        try:
+            applied_at = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        return applied_at if applied_at.tzinfo is not None else None
 
     @callback
     def _handle_message(self, topic: str, payload: bytes) -> None:
@@ -292,12 +318,41 @@ class KameraportiCoordinator:
 
     @callback
     def _apply_roster(self, roster: CameraRoster) -> None:
-        """Make the camera devices match the roster: remove, add, rename."""
+        """Make the camera devices match the roster: remove (newer roster only), add, rename."""
         listed = {camera.camera_id: camera.name for camera in roster.cameras}
-        _LOGGER.debug("Kameraposti camera roster: %s", sorted(listed))
+        newer = self._roster_applied_at is None or roster.generated_at > self._roster_applied_at
+        _LOGGER.debug(
+            "Kameraposti camera roster generated_at=%s (%s): %s",
+            roster.generated_at.isoformat(),
+            "newer, applying removals" if newer else "not newer, adding and renaming only",
+            sorted(listed),
+        )
         self._roster_camera_ids = set(listed)
         device_registry = dr.async_get(self.hass)
 
+        if newer:
+            self._remove_unlisted_cameras(device_registry, listed)
+            self._roster_applied_at = roster.generated_at
+            self.hass.async_create_task(
+                self._roster_store.async_save({"generated_at": roster.generated_at.isoformat()}),
+                name="kameraposti save roster generated_at",
+            )
+
+        for camera_id, name in listed.items():
+            state = self.cameras.get(camera_id)
+            if state is None:
+                # The new entities' DeviceInfo carries the roster name, which also
+                # renames a device left from an earlier run.
+                self.cameras[camera_id] = self._new_camera_state(camera_id, name=name)
+                async_dispatcher_send(self.hass, self.signal_new_camera, camera_id)
+            elif state.name != name:
+                state.name = name
+                self._sync_device_name(device_registry, camera_id)
+
+    @callback
+    def _remove_unlisted_cameras(
+        self, device_registry: dr.DeviceRegistry, listed: dict[int, str | None]
+    ) -> None:
         # Every camera device of this entry that is not listed -- also a stale
         # one from an earlier run that this run never saw. Removing the entry
         # from the device removes the device and its entities (registry and
@@ -310,17 +365,6 @@ class KameraportiCoordinator:
         for camera_id in [camera_id for camera_id in self.cameras if camera_id not in listed]:
             del self.cameras[camera_id]
             async_dispatcher_send(self.hass, self.signal_camera_removed, camera_id)
-
-        for camera_id, name in listed.items():
-            state = self.cameras.get(camera_id)
-            if state is None:
-                # The new entities' DeviceInfo carries the roster name, which also
-                # renames a device left from an earlier run.
-                self.cameras[camera_id] = self._new_camera_state(camera_id, name=name)
-                async_dispatcher_send(self.hass, self.signal_new_camera, camera_id)
-            elif state.name != name:
-                state.name = name
-                self._sync_device_name(device_registry, camera_id)
 
     def _new_camera_state(self, camera_id: int, *, name: str | None = None) -> CameraState:
         # A photo that arrived before the roster listed the camera shows at once.
