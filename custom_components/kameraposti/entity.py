@@ -2,7 +2,8 @@
 
 Every platform adds its entities for a camera when the coordinator first
 knows it (a roster entry, a detection or a latest photo) -- the image
-platform only once the camera has a photo -- exactly once per camera, and
+platform only once the camera has (or in an earlier run had) a photo --
+exactly once per camera, and
 forgets the camera when the roster drops it: the coordinator
 removes the camera's device, which removes the entities from the registry
 and from Home Assistant, and the camera gets new entities if it comes back.
@@ -29,12 +30,13 @@ def async_setup_camera_entities(
     async_add_entities: AddEntitiesCallback,
     entities_for_camera: Callable[[int], Iterable[Entity]],
     *,
-    requires_photo: bool = False,
+    include: Callable[[int], bool] | None = None,
 ) -> None:
     """Add entities_for_camera(camera_id) for every camera, now and as cameras appear.
 
-    requires_photo: add them only once the camera has a latest photo (and then
-    keep them, also when the photo goes away).
+    include: add a camera's entities only once include(camera_id) is true --
+    checked when the camera appears and whenever it gets a photo -- and then
+    keep them, also when it turns false again.
     """
     known_cameras: set[int] = set()
 
@@ -46,10 +48,8 @@ def async_setup_camera_entities(
             # dispatcher signal could in principle be re-sent, entity
             # creation itself must not be re-triggerable.
             return
-        if requires_photo:
-            state = coordinator.cameras.get(camera_id)
-            if state is None or state.latest_photo is None:
-                return
+        if include is not None and not include(camera_id):
+            return
         known_cameras.add(camera_id)
         async_add_entities(list(entities_for_camera(camera_id)))
 
@@ -59,7 +59,7 @@ def async_setup_camera_entities(
 
     entry.async_on_unload(async_dispatcher_connect(hass, coordinator.signal_new_camera, _add_camera))
     entry.async_on_unload(async_dispatcher_connect(hass, coordinator.signal_camera_removed, _forget_camera))
-    if requires_photo:
+    if include is not None:
         entry.async_on_unload(async_dispatcher_connect(hass, coordinator.signal_camera_photo, _add_camera))
 
     # Entities for cameras the coordinator already knows about (e.g. a

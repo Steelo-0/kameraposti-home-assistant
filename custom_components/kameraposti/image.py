@@ -2,8 +2,9 @@
 
 One "Latest photo" entity per camera that has had a photo, on the camera's
 device: it is created with the camera's first photo, so a service that
-publishes no photos leaves no always-unavailable entity behind (after a
-restart it comes back when the retained photo arrives again). Kameraposti
+publishes no photos leaves no always-unavailable entity behind. After a
+restart it is back as soon as the camera is (its registry entry shows it had
+a photo), showing the photo when the retained message arrives again. Kameraposti
 publishes the photo as a retained message with a signed, expiring URL
 (customers/<id>/cameras/<camera>/latest); the entity's image_url is that URL
 and image_last_updated the photo's captured_at. Home Assistant fetches the
@@ -31,7 +32,9 @@ from typing import Any
 import httpx
 from homeassistant.components.image import Image, ImageEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_point_in_utc_time
@@ -56,6 +59,17 @@ async def async_setup_entry(
 ) -> None:
     """Set up a latest-photo entity for each camera as soon as it has a photo."""
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
+    entity_registry = er.async_get(hass)
+
+    @callback
+    def _has_or_had_photo(camera_id: int) -> bool:
+        state = coordinator.cameras.get(camera_id)
+        if state is not None and state.latest_photo is not None:
+            return True
+        # Created in an earlier run: once created it stays (unavailable without a
+        # photo) instead of a restored "no longer provided" registry orphan.
+        unique_id = latest_photo_unique_id(coordinator.customer_id, camera_id)
+        return entity_registry.async_get_entity_id(Platform.IMAGE, DOMAIN, unique_id) is not None
 
     async_setup_camera_entities(
         hass,
@@ -63,8 +77,12 @@ async def async_setup_entry(
         coordinator,
         async_add_entities,
         lambda camera_id: [KameraportiLatestPhotoImage(hass, coordinator, camera_id)],
-        requires_photo=True,
+        include=_has_or_had_photo,
     )
+
+
+def latest_photo_unique_id(customer_id: int, camera_id: int) -> str:
+    return f"{DOMAIN}:{customer_id}:{camera_id}:latest_photo"
 
 
 class KameraportiLatestPhotoImage(ImageEntity):
@@ -80,7 +98,7 @@ class KameraportiLatestPhotoImage(ImageEntity):
         super().__init__(hass, verify_ssl=True)
         self._coordinator = coordinator
         self._camera_id = camera_id
-        self._attr_unique_id = f"{DOMAIN}:{coordinator.customer_id}:{camera_id}:latest_photo"
+        self._attr_unique_id = latest_photo_unique_id(coordinator.customer_id, camera_id)
         self._attr_device_info = coordinator.camera_device_info(camera_id)
         # None, not UNDEFINED: this entity always serves a URL, never image().
         self._attr_image_url = None

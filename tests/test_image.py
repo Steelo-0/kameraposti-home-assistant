@@ -183,8 +183,9 @@ async def test_no_latest_photo_entity_until_the_cameras_first_photo(
 async def test_only_cameras_that_had_a_photo_get_the_entity_and_it_comes_back_after_a_reload(
     hass: HomeAssistant, coordinator: KameraportiCoordinator
 ) -> None:
-    """After a reload/restart the entity is recreated when the retained photo arrives
-    again; a camera that never had a photo has no entity (or registry entry) at all."""
+    """After a reload/restart the entity is back as soon as the camera is (it had a
+    photo before), and shows the photo when the retained message arrives again; a
+    camera that never had a photo has no entity (or registry entry) at all."""
     await _send(hass, coordinator, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera"), (7, "Navetta")))
     await _send(hass, coordinator, LATEST_TOPIC, _latest())
     navetta_unique_id = f"{DOMAIN}:{CUSTOMER_ID}:7:latest_photo"
@@ -198,13 +199,40 @@ async def test_only_cameras_that_had_a_photo_get_the_entity_and_it_comes_back_af
 
     # Retained messages arrive again on subscribe: roster first, then the photo.
     await _send(hass, reloaded, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera"), (7, "Navetta")))
-    assert hass.data["image"].get_entity(entity_id) is None
+    assert hass.data["image"].get_entity(entity_id) is not None
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
     await _send(hass, reloaded, LATEST_TOPIC, _latest())
 
     assert _entity_id(hass) == entity_id  # same registry entry, same entity id
     assert hass.data["image"].get_entity(entity_id) is not None
     assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
     assert er.async_get(hass).async_get_entity_id("image", DOMAIN, navetta_unique_id) is None
+
+
+async def test_reload_with_the_retained_photo_cleared_keeps_the_entity_unavailable(
+    hass: HomeAssistant, coordinator: KameraportiCoordinator
+) -> None:
+    """Fable M-3: "once created it stays" also across restarts -- not a restored orphan
+    ("no longer provided") registry entry when the photo was deleted meanwhile."""
+    await _send(hass, coordinator, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera")))
+    await _send(hass, coordinator, LATEST_TOPIC, _latest())
+    entry = coordinator.entry
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    reloaded: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
+    await _send(hass, reloaded, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera")))
+    await _send(hass, reloaded, LATEST_TOPIC, b"")
+
+    entity_id = "image.pihakamera_latest_photo"
+    assert hass.data["image"].get_entity(entity_id) is not None
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_UNAVAILABLE
+    assert "restored" not in state.attributes
+
+    # The next photo shows on the same entity.
+    await _send(hass, reloaded, LATEST_TOPIC, _latest(photo_id=5502, url=URL_2))
+    assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
 
 
 async def test_photo_entity_is_kept_when_the_photo_goes_away(
