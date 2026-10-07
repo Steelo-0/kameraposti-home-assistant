@@ -284,6 +284,16 @@ async def test_image_is_fetched_once_per_photo_and_again_when_the_photo_changes(
     assert route_2.call_count == 1
 
 
+async def test_detection_without_a_confidence_shows_its_label(
+    hass: HomeAssistant, coordinator: KameraportiCoordinator
+) -> None:
+    await _send(hass, coordinator, LATEST_TOPIC, _latest(detection={"label": "ihminen", "confidence": None}))
+
+    state = hass.states.get(_entity_id(hass))
+    assert state.attributes["label"] == "ihminen"
+    assert state.attributes["confidence"] is None
+
+
 @respx.mock
 async def test_new_detection_for_the_same_photo_updates_attributes_without_refetching(
     hass: HomeAssistant, coordinator: KameraportiCoordinator

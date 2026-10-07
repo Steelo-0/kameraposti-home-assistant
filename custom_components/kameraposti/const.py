@@ -48,6 +48,10 @@ LATEST_PHOTO_TOPIC_PATTERN: Final = re.compile(
     r"^customers/(?P<customer_id>\d+)/cameras/(?P<camera_id>\d+)/latest$"
 )
 ROSTER_SCHEMA_VERSION: Final = 1
+# Sanity caps: a broken server must not grow device names or memory without bound.
+ROSTER_MAX_CAMERAS: Final = 1000
+ROSTER_MAX_NAME_LENGTH: Final = 255
+LATEST_PHOTO_MAX_URL_LENGTH: Final = 2048
 # The newest applied roster's generated_at, stored per config entry: the roster
 # is retained, so the same (or an older) one arrives again on every reconnect and
 # restart -- only a strictly newer roster may remove cameras.

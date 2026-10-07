@@ -355,6 +355,53 @@ def test_valid_latest_photo_parses() -> None:
     assert photo.confidence == 0.93
 
 
+@pytest.mark.parametrize(
+    "detection",
+    [{"label": "Ihminen", "confidence": None}, {"label": "ihminen"}],
+)
+def test_detection_without_a_confidence_keeps_its_label(detection: dict) -> None:
+    """MegaDetector-only classes (ihminen, ajoneuvo) can come without a species score:
+    confidence null -- or missing -- is accepted, the label is kept."""
+    _, photo = parse_latest_photo(LATEST_TOPIC, _latest(detection=detection), expected_customer_id=3)
+
+    assert photo is not None
+    assert photo.label == "ihminen"
+    assert photo.confidence is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["roster_name_over_255", "roster_over_1000_cameras", "url_over_2048"],
+)
+def test_oversized_fields_are_rejected(case: str) -> None:
+    """L-2 caps: a broken or hostile server must not grow device names or memory without bound."""
+    if case == "roster_name_over_255":
+        with pytest.raises(RosterRejected, match="name"):
+            parse_roster(
+                ROSTER_TOPIC, _roster(cameras=[{"camera_id": 12, "name": "n" * 256}]), expected_customer_id=3
+            )
+    elif case == "roster_over_1000_cameras":
+        cameras = [{"camera_id": i, "name": "x"} for i in range(1, 1002)]
+        with pytest.raises(RosterRejected, match="cameras"):
+            parse_roster(ROSTER_TOPIC, _roster(cameras=cameras), expected_customer_id=3)
+    else:
+        url = "https://cam.steels.me/" + "a" * (2049 - len("https://cam.steels.me/"))
+        with pytest.raises(LatestPhotoRejected, match="url"):
+            parse_latest_photo(LATEST_TOPIC, _latest(url=url), expected_customer_id=3)
+
+
+def test_url_and_roster_caps_accept_the_limits_themselves() -> None:
+    url = "https://cam.steels.me/" + "a" * (2048 - len("https://cam.steels.me/"))
+    _, photo = parse_latest_photo(LATEST_TOPIC, _latest(url=url), expected_customer_id=3)
+    assert photo is not None
+    assert photo.url == url
+
+    cameras = [{"camera_id": i, "name": "n" * 255} for i in range(1, 1001)]
+    roster = parse_roster(ROSTER_TOPIC, _roster(cameras=cameras), expected_customer_id=3)
+    assert roster is not None
+    assert len(roster.cameras) == 1000
+
+
 def test_latest_photo_without_a_detection_and_with_unknown_fields_parses() -> None:
     _, photo = parse_latest_photo(LATEST_TOPIC, _latest(detection=None, extra=[1]), expected_customer_id=3)
     assert photo is not None
@@ -399,7 +446,9 @@ def test_latest_photo_with_an_unsupported_schema_version_is_rejected(schema_vers
         (_latest(expires_at="soon"), "expires_at"),
         (_latest(detection=["hirvi", 0.9]), "detection"),
         (_latest(detection={"label": "", "confidence": 0.9}), "label"),
-        (_latest(detection={"label": "hirvi"}), "confidence"),
+        (_latest(detection={"label": "hirvi", "confidence": "0.9"}), "confidence"),
+        # L-1: urlsplit raises ValueError on a broken IPv6 host.
+        (_latest(url="https://[cam.steels.me/riistakamera/ha/kuva/5501"), "url"),
         (_latest(detection={"label": "hirvi", "confidence": 1.5}), "confidence"),
         (_latest(detection={"label": "hirvi", "confidence": True}), "confidence"),
     ],

@@ -25,8 +25,11 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from .const import (
+    LATEST_PHOTO_MAX_URL_LENGTH,
     LATEST_PHOTO_SCHEMA_VERSION,
     LATEST_PHOTO_TOPIC_PATTERN,
+    ROSTER_MAX_CAMERAS,
+    ROSTER_MAX_NAME_LENGTH,
     ROSTER_SCHEMA_VERSION,
     ROSTER_TOPIC_PATTERN,
     SCHEMA_VERSION_SUPPORTED,
@@ -261,6 +264,8 @@ def parse_roster(topic: str, payload: bytes | str, *, expected_customer_id: int)
     raw_cameras = data.get("cameras")
     if not isinstance(raw_cameras, list):
         raise RosterRejected(f"cameras missing or not a list: {type(raw_cameras).__name__}")
+    if len(raw_cameras) > ROSTER_MAX_CAMERAS:
+        raise RosterRejected(f"cameras has {len(raw_cameras)} entries, more than {ROSTER_MAX_CAMERAS}")
 
     cameras: list[RosterCamera] = []
     seen: set[int] = set()
@@ -278,6 +283,8 @@ def parse_roster(topic: str, payload: bytes | str, *, expected_customer_id: int)
         name = raw.get("name")
         if not isinstance(name, str):
             raise RosterRejected(f"cameras[{index}].name missing or not a string: {name!r}")
+        if len(name) > ROSTER_MAX_NAME_LENGTH:
+            raise RosterRejected(f"cameras[{index}].name is longer than {ROSTER_MAX_NAME_LENGTH} characters")
         cameras.append(RosterCamera(camera_id=camera_id, name=name.strip() or None))
 
     return CameraRoster(generated_at=generated_at, cameras=tuple(cameras))
@@ -331,12 +338,18 @@ def parse_latest_photo(
     if not isinstance(is_video, bool):
         raise LatestPhotoRejected(f"is_video missing or not a boolean: {is_video!r}")
 
+    # Never echo the URL itself in a reason: it is a signed capability for the photo.
     url = data.get("url")
     if not isinstance(url, str):
         raise LatestPhotoRejected(f"url missing or not a string: {type(url).__name__}")
-    parts = urlsplit(url)
-    if parts.scheme != "https" or not parts.hostname:
-        # Never echo the URL itself: it is a signed capability for the photo.
+    if len(url) > LATEST_PHOTO_MAX_URL_LENGTH:
+        raise LatestPhotoRejected(f"url is longer than {LATEST_PHOTO_MAX_URL_LENGTH} characters")
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+    except ValueError as err:
+        raise LatestPhotoRejected("url is not a valid URL") from err
+    if parts.scheme != "https" or not hostname:
         raise LatestPhotoRejected(f"url is not an https URL (scheme {parts.scheme!r})")
 
     label: str | None = None
@@ -348,13 +361,16 @@ def parse_latest_photo(
         raw_label = detection.get("label")
         if not isinstance(raw_label, str) or raw_label.strip() == "":
             raise LatestPhotoRejected(f"detection label missing or empty: {raw_label!r}")
-        raw_confidence = detection.get("confidence")
-        if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
-            raise LatestPhotoRejected(f"detection confidence missing or not numeric: {raw_confidence!r}")
-        if not (0.0 <= float(raw_confidence) <= 1.0):
-            raise LatestPhotoRejected(f"detection confidence out of range [0.0, 1.0]: {raw_confidence}")
         label = raw_label.strip().lower()
-        confidence = float(raw_confidence)
+        # null (or missing): a MegaDetector-only class (ihminen, ajoneuvo) has no
+        # species score -- keep the label, no confidence.
+        raw_confidence = detection.get("confidence")
+        if raw_confidence is not None:
+            if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
+                raise LatestPhotoRejected(f"detection confidence not numeric or null: {raw_confidence!r}")
+            if not (0.0 <= float(raw_confidence) <= 1.0):
+                raise LatestPhotoRejected(f"detection confidence out of range [0.0, 1.0]: {raw_confidence}")
+            confidence = float(raw_confidence)
 
     return topic_camera_id, LatestPhoto(
         camera_id=topic_camera_id,
