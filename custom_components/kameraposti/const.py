@@ -105,4 +105,5 @@ SECURITY_ERRORS: Final = ("invalid_code", "locked", "code_not_set", "code_requir
 SIGNAL_NEW_CAMERA: Final = f"{DOMAIN}_new_camera"
 SIGNAL_CAMERA_UPDATE: Final = f"{DOMAIN}_camera_update"
 SIGNAL_CAMERA_REMOVED: Final = f"{DOMAIN}_camera_removed"
+SIGNAL_LATEST_PHOTO: Final = f"{DOMAIN}_latest_photo"
 SIGNAL_SECURITY: Final = f"{DOMAIN}_security"

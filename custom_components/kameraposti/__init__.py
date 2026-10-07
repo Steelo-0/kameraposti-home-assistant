@@ -19,7 +19,7 @@ from .coordinator import KameraportiCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.ALARM_CONTROL_PANEL]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.IMAGE, Platform.ALARM_CONTROL_PANEL]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

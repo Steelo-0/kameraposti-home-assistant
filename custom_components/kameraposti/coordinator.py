@@ -12,7 +12,9 @@ authority on which cameras exist and what they are called -- listed cameras
 get their device, renamed with the roster, and a camera that leaves the
 roster loses its device (and so its entities) from the registries, including
 stale devices from earlier runs. A detection for an unlisted camera still
-creates it as before (servers that publish no roster).
+creates it as before (servers that publish no roster). Each camera's latest
+photo (customers/<id>/cameras/<camera>/latest) is kept here for the image
+platform.
 
 Not a homeassistant.helpers.update_coordinator.DataUpdateCoordinator --
 this integration is push-based (MQTT), not polling, so the usual
@@ -42,6 +44,7 @@ from .const import (
     DEFAULT_CAMERA_NAME_TEMPLATE,
     DOMAIN,
     EVENT_DETECTION,
+    LATEST_PHOTO_TOPIC_PATTERN,
     MANUFACTURER,
     MODEL,
     ROSTER_TOPIC_PATTERN,
@@ -52,6 +55,7 @@ from .const import (
     SECURITY_STATE_TOPIC_TEMPLATE,
     SIGNAL_CAMERA_REMOVED,
     SIGNAL_CAMERA_UPDATE,
+    SIGNAL_LATEST_PHOTO,
     SIGNAL_NEW_CAMERA,
     SIGNAL_SECURITY,
 )
@@ -60,8 +64,11 @@ from .models import (
     CameraRoster,
     Detection,
     DetectionRejected,
+    LatestPhoto,
+    LatestPhotoRejected,
     RosterRejected,
     parse_detection,
+    parse_latest_photo,
     parse_roster,
 )
 from .mqtt_client import ConnectionState, KameraportiMqttClient
@@ -87,6 +94,8 @@ class CameraState:
     last_detection_time: datetime | None = None
     # 1.5.0: the camera's name on the roster (None = not named / no roster).
     name: str | None = None
+    # 1.5.0: the camera's latest photo (None = no photo).
+    latest_photo: LatestPhoto | None = None
 
 
 class KameraportiCoordinator:
@@ -113,6 +122,11 @@ class KameraportiCoordinator:
         self._security_state_topic = SECURITY_STATE_TOPIC_TEMPLATE.format(customer_id=customer_id)
         self._security_result_topic = SECURITY_RESULT_TOPIC_TEMPLATE.format(customer_id=customer_id)
         self._security_command_topic = SECURITY_COMMAND_TOPIC_TEMPLATE.format(customer_id=customer_id)
+        # 1.5.0: camera ids on the last roster (None = no roster received), and
+        # photos of cameras the roster does not list (yet) -- shown as soon as
+        # the camera appears, never a reason to create the camera.
+        self._roster_camera_ids: set[int] | None = None
+        self._unlisted_photos: dict[int, LatestPhoto] = {}
 
         self._dedup = EventDedupCache()
         self._client = KameraportiMqttClient(
@@ -149,6 +163,10 @@ class KameraportiCoordinator:
     def signal_camera_update(self, camera_id: int) -> str:
         """Dispatcher signal fired on every subsequent update for a known camera_id."""
         return f"{SIGNAL_CAMERA_UPDATE}_{self.entry.entry_id}_{camera_id}"
+
+    def signal_latest_photo(self, camera_id: int) -> str:
+        """Dispatcher signal fired when a known camera's latest photo changes."""
+        return f"{SIGNAL_LATEST_PHOTO}_{self.entry.entry_id}_{camera_id}"
 
     def camera_device_identifier(self, camera_id: int) -> tuple[str, str]:
         """The camera device's identifier, shared by all of the camera's entities."""
@@ -223,6 +241,9 @@ class KameraportiCoordinator:
         if ROSTER_TOPIC_PATTERN.match(topic):
             self._handle_roster(topic, payload)
             return
+        if LATEST_PHOTO_TOPIC_PATTERN.match(topic):
+            self._handle_latest_photo(topic, payload)
+            return
 
         try:
             detection = parse_detection(topic, payload, expected_customer_id=self.customer_id)
@@ -264,6 +285,7 @@ class KameraportiCoordinator:
         """Make the camera devices match the roster: remove, add, rename."""
         listed = {camera.camera_id: camera.name for camera in roster.cameras}
         _LOGGER.debug("Kameraposti camera roster: %s", sorted(listed))
+        self._roster_camera_ids = set(listed)
         device_registry = dr.async_get(self.hass)
 
         # Every camera device of this entry that is not listed -- also a stale
@@ -282,13 +304,53 @@ class KameraportiCoordinator:
         for camera_id, name in listed.items():
             state = self.cameras.get(camera_id)
             if state is None:
-                self.cameras[camera_id] = CameraState(camera_id=camera_id, name=name)
+                self.cameras[camera_id] = self._new_camera_state(camera_id, name=name)
                 # A device left from an earlier run takes the current name too.
                 self._sync_device_name(device_registry, camera_id)
                 async_dispatcher_send(self.hass, self.signal_new_camera, camera_id)
             elif state.name != name:
                 state.name = name
                 self._sync_device_name(device_registry, camera_id)
+
+    def _new_camera_state(self, camera_id: int, *, name: str | None = None) -> CameraState:
+        # A photo that arrived before the roster listed the camera shows at once.
+        return CameraState(
+            camera_id=camera_id, name=name, latest_photo=self._unlisted_photos.pop(camera_id, None)
+        )
+
+    @callback
+    def _handle_latest_photo(self, topic: str, payload: bytes) -> None:
+        try:
+            camera_id, photo = parse_latest_photo(topic, payload, expected_customer_id=self.customer_id)
+        except LatestPhotoRejected as err:
+            _LOGGER.debug("Ignoring invalid Kameraposti latest photo message on %s: %s", topic, err)
+            return
+        # Never log the URL: it is a signed capability for the photo.
+        _LOGGER.debug(
+            "Kameraposti latest photo camera_id=%s photo_id=%s",
+            camera_id,
+            photo.photo_id if photo is not None else None,
+        )
+
+        state = self.cameras.get(camera_id)
+        if state is None:
+            if photo is None:
+                self._unlisted_photos.pop(camera_id, None)
+            elif self._roster_camera_ids is not None and camera_id not in self._roster_camera_ids:
+                # The roster decides which cameras exist: a photo never brings back
+                # a removed camera, it waits for the roster to list the camera.
+                self._unlisted_photos[camera_id] = photo
+            else:
+                # No roster (yet): the photo makes the camera known, as a detection does.
+                self.cameras[camera_id] = CameraState(camera_id=camera_id, latest_photo=photo)
+                async_dispatcher_send(self.hass, self.signal_new_camera, camera_id)
+            return
+
+        if state.latest_photo == photo:
+            # A redelivered or reconnect copy of the same message: nothing to do.
+            return
+        state.latest_photo = photo
+        async_dispatcher_send(self.hass, self.signal_latest_photo(camera_id))
 
     @callback
     def _sync_device_name(self, device_registry: dr.DeviceRegistry, camera_id: int) -> None:
@@ -372,14 +434,16 @@ class KameraportiCoordinator:
             detection.label,
         )
 
-        state = self.cameras.setdefault(detection.camera_id, CameraState(camera_id=detection.camera_id))
+        if is_new_camera:
+            self.cameras[detection.camera_id] = self._new_camera_state(detection.camera_id)
+        state = self.cameras[detection.camera_id]
         state.label = detection.label
         state.confidence = detection.confidence
         state.last_detection_time = detection.timestamp
 
         if is_new_camera:
-            # sensor.py creates the device + 3 entities on this signal
-            # and immediately reflects the state already stored above --
+            # The platforms create the device + entities on this signal
+            # and immediately reflect the state already stored above --
             # no separate "update" signal needed for the very first event.
             async_dispatcher_send(self.hass, self.signal_new_camera, detection.camera_id)
         else:

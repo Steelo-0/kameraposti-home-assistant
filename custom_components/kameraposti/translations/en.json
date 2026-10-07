@@ -41,6 +41,11 @@
         "name": "Last detection time"
       }
     },
+    "image": {
+      "latest_photo": {
+        "name": "Latest photo"
+      }
+    },
     "alarm_control_panel": {
       "security": {
         "name": "Security system"

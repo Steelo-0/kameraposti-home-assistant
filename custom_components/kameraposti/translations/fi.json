@@ -41,6 +41,11 @@
         "name": "Viimeisimmän havainnon aika"
       }
     },
+    "image": {
+      "latest_photo": {
+        "name": "Viimeisin kuva"
+      }
+    },
     "alarm_control_panel": {
       "security": {
         "name": "Turvajärjestelmä"
