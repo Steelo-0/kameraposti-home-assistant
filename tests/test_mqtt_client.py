@@ -378,13 +378,17 @@ class TestBlockingConnectionTestReasonCodes:
         mock_paho_client.disconnect.assert_called_once()
 
     @pytest.mark.parametrize("v3_rc", [4, 5])
-    def test_auth_failure_reasoncode_maps_to_invalid_auth(self, mock_paho_client: MagicMock, v3_rc: int) -> None:
+    def test_auth_failure_reasoncode_maps_to_invalid_auth(
+        self, mock_paho_client: MagicMock, v3_rc: int
+    ) -> None:
         self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(v3_rc))
 
         with pytest.raises(InvalidAuth):
             _blocking_test_connection(**PROBE, password="wrong")
 
-    def test_non_auth_connect_failure_reasoncode_maps_to_cannot_connect(self, mock_paho_client: MagicMock) -> None:
+    def test_non_auth_connect_failure_reasoncode_maps_to_cannot_connect(
+        self, mock_paho_client: MagicMock
+    ) -> None:
         # v3 CONNACK code 3 -> "Server unavailable", ReasonCode value 136.
         self._connect_with(mock_paho_client, mqtt.convert_connack_rc_to_reason_code(3))
 
@@ -435,8 +439,12 @@ class TestBlockingConnectionTestReasonCodes:
         for connack_value in (0, 128, 132, 133, 134, 135, 136):
             for suback_value in (0, 1, 2, 128):
                 mock_paho_client.reset_mock(side_effect=True)
-                self._connect_with(mock_paho_client, ReasonCode(PacketTypes.CONNACK, identifier=connack_value))
-                self._subscribe_with(mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=suback_value))
+                self._connect_with(
+                    mock_paho_client, ReasonCode(PacketTypes.CONNACK, identifier=connack_value)
+                )
+                self._subscribe_with(
+                    mock_paho_client, ReasonCode(PacketTypes.SUBACK, identifier=suback_value)
+                )
                 try:
                     _blocking_test_connection(**PROBE, password="secret")
                 except (CannotConnect, InvalidAuth):

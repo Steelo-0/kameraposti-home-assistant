@@ -105,18 +105,14 @@ async def test_second_detection_for_the_same_camera_updates_state_without_new_en
 
     coordinator._handle_message(f"customers/{CUSTOMER_ID}/detections/{CAMERA_ID}", _payload(event_id="01A"))
     await hass.async_block_till_done()
-    count_after_first = len(
-        [e for e in entity_registry.entities.values() if e.platform == DOMAIN]
-    )
+    count_after_first = len([e for e in entity_registry.entities.values() if e.platform == DOMAIN])
 
     coordinator._handle_message(
         f"customers/{CUSTOMER_ID}/detections/{CAMERA_ID}",
         _payload(event_id="01B", label="person", confidence=0.5),
     )
     await hass.async_block_till_done()
-    count_after_second = len(
-        [e for e in entity_registry.entities.values() if e.platform == DOMAIN]
-    )
+    count_after_second = len([e for e in entity_registry.entities.values() if e.platform == DOMAIN])
 
     assert count_after_second == count_after_first
 
@@ -129,8 +125,12 @@ async def test_two_different_cameras_get_two_separate_devices(
 ) -> None:
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][setup_entry.entry_id]
 
-    coordinator._handle_message(f"customers/{CUSTOMER_ID}/detections/16", _payload(event_id="01A", camera_id=16))
-    coordinator._handle_message(f"customers/{CUSTOMER_ID}/detections/17", _payload(event_id="01B", camera_id=17))
+    coordinator._handle_message(
+        f"customers/{CUSTOMER_ID}/detections/16", _payload(event_id="01A", camera_id=16)
+    )
+    coordinator._handle_message(
+        f"customers/{CUSTOMER_ID}/detections/17", _payload(event_id="01B", camera_id=17)
+    )
     await hass.async_block_till_done()
 
     device_registry = dr.async_get(hass)

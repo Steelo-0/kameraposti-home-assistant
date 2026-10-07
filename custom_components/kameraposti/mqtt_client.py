@@ -245,7 +245,9 @@ class KameraportiMqttClient:
         except (OSError, ssl.SSLError) as err:
             _LOGGER.debug("Kameraposti MQTT connect() raised %s: %s", type(err).__name__, err)
             self._client = None
-            self._report_state(ConnectionState.TLS_FAILURE if isinstance(err, ssl.SSLError) else ConnectionState.RECONNECTING)
+            self._report_state(
+                ConnectionState.TLS_FAILURE if isinstance(err, ssl.SSLError) else ConnectionState.RECONNECTING
+            )
             self._schedule_reconnect()
             return
         client.loop_start()
@@ -358,7 +360,9 @@ def _blocking_test_connection(host: str, customer_id: int, username: str, passwo
     subscribed = threading.Event()
     outcome: dict[str, Any] = {}
 
-    def on_connect(client: mqtt.Client, userdata: Any, connect_flags: Any, reason_code: Any, properties: Any = None) -> None:
+    def on_connect(
+        client: mqtt.Client, userdata: Any, connect_flags: Any, reason_code: Any, properties: Any = None
+    ) -> None:
         try:
             rc = _reason_code_value(reason_code)
             if rc == 0:
@@ -376,7 +380,9 @@ def _blocking_test_connection(host: str, customer_id: int, username: str, passwo
         outcome["connect_failed"] = True
         connected.set()
 
-    def on_subscribe(client: mqtt.Client, userdata: Any, mid: int, reason_code_list: Any, properties: Any = None) -> None:
+    def on_subscribe(
+        client: mqtt.Client, userdata: Any, mid: int, reason_code_list: Any, properties: Any = None
+    ) -> None:
         try:
             if any(_reason_code_is_failure(rc) for rc in reason_code_list):
                 outcome["subscribe_failed"] = True
