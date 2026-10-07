@@ -74,14 +74,14 @@ migrated automatically and Home Assistant asks for the new MQTT password
 
 Each camera is one device, named as in Kameraposti ("Riistakamera
 {camera_id}", e.g. "Riistakamera 16", when the service sends no name), with
-three sensors and the camera's latest photo:
+three sensors, and the camera's latest photo once it has one:
 
 | Entity | Example entity ID | Description |
 |---|---|---|
 | Last detection | `sensor.riistakamera_16_last_detection` | Label of the most recent detection (e.g. `moose`) |
 | Detection confidence | `sensor.riistakamera_16_detection_confidence` | Confidence of the most recent detection, 0–1 |
 | Last detection time | `sensor.riistakamera_16_last_detection_time` | Timestamp of the most recent detection |
-| Latest photo | `image.riistakamera_16_latest_photo` | The camera's latest photo, see [Latest photo](#latest-photo) |
+| Latest photo | `image.riistakamera_16_latest_photo` | The camera's latest photo (from its first photo on), see [Latest photo](#latest-photo) |
 
 Entity IDs follow the device name when the entities are first created (a
 camera named "Pihakamera" gets `sensor.pihakamera_last_detection`); renaming
@@ -135,11 +135,13 @@ camera that is not on the list still creates the camera, as before.
 
 ## Latest photo
 
-Since 1.5.0 every camera has a **Latest photo** ("Viimeisin kuva") image
-entity on its device. Kameraposti sends the photo's address when a new photo
-arrives, and Home Assistant fetches the photo (JPEG, long side at most
-1280 px; a video shows its poster frame) only then — nothing is polled. Show
-it on a dashboard with a **Picture entity** card, or open the entity.
+Since 1.5.0 a camera gets a **Latest photo** ("Viimeisin kuva") image
+entity on its device with its first photo — on a Kameraposti service that
+does not publish photos, no such entity appears. Kameraposti sends the
+photo's address when a new photo arrives, and Home Assistant fetches the
+photo (JPEG, long side at most 1280 px; a video shows its poster frame) only
+then — nothing is polled. Show it on a dashboard with a **Picture entity**
+card, or open the entity.
 
 - **State**: the time the photo was taken (`captured_at`).
 - **Attributes**: `label` and `confidence` of the photo's detection (empty
@@ -147,8 +149,10 @@ it on a dashboard with a **Picture entity** card, or open the entity.
 - The address is a signed link to that one photo, valid for 30 days and
   renewed by Kameraposti before it expires. It is never shown as an
   attribute.
-- With no photo, or if the link has expired, the entity is unavailable until
-  the next photo or renewed link arrives.
+- Once created, the entity stays: if the photo is gone (e.g. deleted in
+  Kameraposti) or the link has expired, it is unavailable until the next
+  photo or renewed link arrives. After a Home Assistant restart it is back
+  as soon as Kameraposti's stored photo message arrives again.
 
 To react to each new photo, trigger on the entity's state with `to: ~`
 (a state trigger without `to`/`from` also fires on Home Assistant's routine
@@ -236,7 +240,7 @@ in Home Assistant right away, so automations can react to them too.
   restart, so a detection retried by the broker across a restart could
   in theory be delivered twice.
 - The latest photo needs a Kameraposti service that publishes it; on a
-  service that does not (yet), the Latest photo entity stays unavailable.
+  service that does not (yet), cameras have no Latest photo entity.
 - The three sensors reflect only the *most recent* detection per camera;
   historical detections are available through Home Assistant's own
   recorder/history for the sensors, and through the `kameraposti_detection`
