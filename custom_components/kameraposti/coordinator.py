@@ -318,8 +318,19 @@ class KameraportiCoordinator:
 
     @callback
     def _apply_roster(self, roster: CameraRoster) -> None:
-        """Make the camera devices match the roster: remove (newer roster only), add, rename."""
+        """Make the camera devices match the roster: remove (newer roster only), add, rename.
+
+        A strictly older roster (reordered or stale delivery) changes nothing, so it cannot bring
+        back a camera a newer roster removed; an equal one (the retained re-delivery after a
+        restart) adds and renames.
+        """
         listed = {camera.camera_id: camera.name for camera in roster.cameras}
+        if self._roster_applied_at is not None and roster.generated_at < self._roster_applied_at:
+            _LOGGER.debug(
+                "Kameraposti camera roster generated_at=%s is older than the applied one, ignored",
+                roster.generated_at.isoformat(),
+            )
+            return
         newer = self._roster_applied_at is None or roster.generated_at > self._roster_applied_at
         _LOGGER.debug(
             "Kameraposti camera roster generated_at=%s (%s): %s",

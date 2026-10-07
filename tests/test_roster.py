@@ -361,7 +361,7 @@ async def test_newer_roster_without_a_detection_created_camera_removes_it(
     assert 40 not in coordinator.cameras
 
 
-async def test_older_or_equal_roster_never_removes_but_still_adds_and_renames(
+async def test_older_roster_changes_nothing_and_equal_roster_adds_and_renames(
     hass: HomeAssistant, setup_entry: MockConfigEntry
 ) -> None:
     coordinator = _coordinator(hass, setup_entry)
@@ -376,8 +376,10 @@ async def test_older_or_equal_roster_never_removes_but_still_adds_and_renames(
 
     assert _camera_device(hass, 35) is not None
     assert 35 in coordinator.cameras
+    # The equal roster renames; the strictly older one cannot add camera 50 (Fable re-check LOW-3).
     assert _camera_device(hass, 12).name == "Navetta"
-    assert _camera_device(hass, 50) is not None
+    assert _camera_device(hass, 50) is None
+    assert 50 not in coordinator.cameras
 
 
 async def test_removing_the_entry_removes_its_stored_roster_time(
