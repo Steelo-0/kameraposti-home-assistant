@@ -114,6 +114,42 @@ async def test_connect_subscribes_detections_security_roster_and_latest_photos(
     await client.async_stop()
 
 
+@pytest.mark.parametrize("refused", [[], ["customers/3/cameras", "customers/3/cameras/+/latest"]])
+async def test_refused_subscriptions_are_logged_once_without_changing_anything(
+    hass: HomeAssistant, mock_paho_client: MagicMock, caplog: pytest.LogCaptureFixture, refused: list[str]
+) -> None:
+    """Fable L-4: a broker whose ACL does not (yet) allow the 1.5.0 topics refuses them
+    in its SUBACK; one debug line names them, the connection carries on as before."""
+    caplog.set_level(logging.DEBUG, logger="custom_components.kameraposti.mqtt_client")
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    await client.async_start()
+    await hass.async_block_till_done()
+    mids = iter(range(1, 100))
+    mock_paho_client.subscribe.side_effect = lambda topic, qos: (mqtt.MQTT_ERR_SUCCESS, next(mids))
+
+    client._handle_connect(mock_paho_client, None, None, 0)
+    await hass.async_block_till_done()
+    topics = [c.args[0] for c in mock_paho_client.subscribe.call_args_list]
+    for mid, topic in enumerate(topics, start=1):
+        code = 135 if topic in refused else 1  # 135 = not authorized
+        client._handle_subscribe(
+            mock_paho_client, None, mid, [ReasonCode(PacketTypes.SUBACK, identifier=code)], None
+        )
+    await hass.async_block_till_done()
+
+    lines = [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
+    if refused:
+        assert len(lines) == 1
+        assert all(topic in lines[0] for topic in refused)
+        assert "detections" not in lines[0]
+    else:
+        assert lines == []
+    assert states[-1] == ConnectionState.CONNECTED
+    mock_paho_client.disconnect.assert_not_called()
+    await client.async_stop()
+
+
 async def test_publish_is_qos1_and_only_while_connected(
     hass: HomeAssistant, mock_paho_client: MagicMock
 ) -> None:

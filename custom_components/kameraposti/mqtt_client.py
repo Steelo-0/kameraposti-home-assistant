@@ -161,6 +161,10 @@ class KameraportiMqttClient:
 
         self._client: mqtt.Client | None = None
         self._backoff = _Backoff()
+        # SUBACK bookkeeping for one connection (paho's network thread only):
+        # message id -> topic still waiting for its SUBACK, and refused topics.
+        self._suback_pending: dict[int, str] = {}
+        self._suback_refused: list[str] = []
         self._closing = False
         self._reconnect_handle: Any | None = None
 
@@ -247,6 +251,7 @@ class KameraportiMqttClient:
         client.on_disconnect = self._handle_disconnect
         client.on_connect_fail = self._handle_connect_fail
         client.on_message = self._handle_message
+        client.on_subscribe = self._handle_subscribe
         return client
 
     def _connect_once(self) -> None:
@@ -283,8 +288,13 @@ class KameraportiMqttClient:
     ) -> None:
         rc = _reason_code_value(reason_code)
         if rc == 0:
+            self._suback_pending = {}
+            self._suback_refused = []
             for topic in self.topics:
-                client.subscribe(topic, qos=1)
+                result = client.subscribe(topic, qos=1)
+                mid = result[1] if isinstance(result, tuple) else None
+                if mid is not None:
+                    self._suback_pending[mid] = topic
             self._hass.loop.call_soon_threadsafe(self._on_connected)
             return
 
@@ -312,6 +322,28 @@ class KameraportiMqttClient:
             return
         self._hass.loop.call_soon_threadsafe(self._report_state, ConnectionState.RECONNECTING)
         self._hass.loop.call_soon_threadsafe(self._schedule_reconnect)
+
+    def _handle_subscribe(
+        self, client: mqtt.Client, userdata: Any, mid: int, reason_code_list: Any, properties: Any = None
+    ) -> None:
+        """Log, once per connection, the topics the broker refused (its ACL).
+
+        Diagnostics only: a refused 1.5.0 topic (roster / latest photos) on a
+        broker that does not allow it yet changes nothing else.
+        """
+        try:
+            topic = self._suback_pending.pop(mid, None)
+            if topic is None:
+                return
+            if any(_reason_code_is_failure(rc) for rc in reason_code_list):
+                self._suback_refused.append(topic)
+            if not self._suback_pending and self._suback_refused:
+                _LOGGER.debug(
+                    "Kameraposti broker refused the subscriptions %s (not allowed for this login)",
+                    ", ".join(self._suback_refused),
+                )
+        except Exception:  # noqa: BLE001 - must never break paho's network thread
+            _LOGGER.debug("Could not check a Kameraposti SUBACK", exc_info=True)
 
     def _handle_message(self, client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
         topic = message.topic
