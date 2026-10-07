@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kameraposti-home-assistant"
-version = "1.4.1"
+version = "1.4.2"
 description = "Home Assistant custom integration receiving Kameraposti AI detection events over MQTT (WSS)."
 readme = "README.md"
 license = { text = "MIT" }

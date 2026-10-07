@@ -142,9 +142,11 @@ follows the device name: if the name has several of these words (a combined
 smoke and gas detector, say), the last one decides. A carbon monoxide
 detector is a gas sensor in Kameraposti.
 
-Kameraposti creates each sensor automatically (named after the entity's
-friendly name) and handles the alarms, quiet hours and notifications
-itself. The topic is `kameraposti/<account>/anturit/<entity_id>`.
+Kameraposti creates each sensor automatically, named after its device
+(since 1.4.2; the entity's friendly name when you have named the entity yourself, when it has no
+device, or when two chosen sensors of the same kind share a device). A name you give the sensor in
+Kameraposti stays (the server keeps it). Kameraposti handles the alarms, quiet hours and
+notifications itself. The topic is `kameraposti/<account>/anturit/<entity_id>`.
 
 On every (re)connect, and every 15 minutes, the sensors are described
 again and their current state is sent, so a leak that started while Home

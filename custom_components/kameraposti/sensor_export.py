@@ -48,6 +48,8 @@ from homeassistant.core import (
     State,
     callback,
 )
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
     async_call_later,
     async_track_state_change_event,
@@ -231,9 +233,15 @@ def mqtt_name_for(entity_id: str) -> str:
     return f"{entity_id[: _MAX_NAME_LENGTH - 9]}-{digest}"
 
 
+def _clean_name(name: str) -> str:
+    return _CONTROL_CHARS.sub("", name).strip()[:_MAX_DISPLAY_NAME_LENGTH].strip()
+
+
 def _display_name(state: State) -> str:
-    name = _CONTROL_CHARS.sub("", str(state.attributes.get("friendly_name") or "")).strip()
-    return (name or state.entity_id)[:_MAX_DISPLAY_NAME_LENGTH].strip()
+    return (
+        _clean_name(str(state.attributes.get("friendly_name") or ""))
+        or state.entity_id[:_MAX_DISPLAY_NAME_LENGTH]
+    )
 
 
 class KameraportiSensorExporter:
@@ -262,6 +270,39 @@ class KameraportiSensorExporter:
         self._reading_pending: dict[str, CALLBACK_TYPE] = {}
 
     @callback
+    def _name_for(self, state: State) -> str:
+        """Name shown in Kameraposti (1.4.2, steelo 2026-10-07 "friendly nimet, nyt sanasotkua").
+
+        The device's name ("Keitttio-Vuoto", "Takaovi") instead of Home Assistant's device + entity
+        combination ("Keitttio-Vuoto Keitttio-Vuoto_event_water_leak"); Kameraposti shows the kind
+        separately. The friendly name stays when the user named the entity, when it has no device,
+        or when another chosen entity of the same kind shares the device (two thermometers).
+        """
+        entry = er.async_get(self._hass).async_get(state.entity_id)
+        if entry is None or entry.name is not None or entry.device_id is None:
+            return _display_name(state)
+        device = dr.async_get(self._hass).async_get(entry.device_id)
+        device_name = (
+            _clean_name(str((device.name_by_user or device.name) or "")) if device is not None else ""
+        )
+        if not device_name or self._shares_device_and_kind(state.entity_id, entry.device_id, kind_for(state)):
+            return _display_name(state)
+        return device_name
+
+    def _shares_device_and_kind(self, entity_id: str, device_id: str, kind: str | None) -> bool:
+        registry = er.async_get(self._hass)
+        for other_id in self._entity_ids:
+            if other_id == entity_id:
+                continue
+            other = registry.async_get(other_id)
+            if (
+                other is not None
+                and other.device_id == device_id
+                and kind_for(self._hass.states.get(other_id)) == kind
+            ):
+                return True
+        return False
+
     def async_start(self) -> None:
         if self._unsub is None and self._entity_ids:
             self._unsub = async_track_state_change_event(
@@ -311,7 +352,7 @@ class KameraportiSensorExporter:
         kind = kind_for(new_state)
         if new_state is None or kind is None:
             return
-        if self._described.get(new_state.entity_id) != (_display_name(new_state), kind):
+        if self._described.get(new_state.entity_id) != (self._name_for(new_state), kind):
             if not self._describe(new_state, kind):
                 return
         if old_state is not None and old_state.state == new_state.state:
@@ -322,7 +363,7 @@ class KameraportiSensorExporter:
         return SENSOR_TOPIC_TEMPLATE.format(customer_id=self._customer_id, name=mqtt_name_for(entity_id))
 
     def _describe(self, state: State, kind: str) -> bool:
-        name = _display_name(state)
+        name = self._name_for(state)
         payload = json.dumps({"name": name, "kind": kind, "format": "simple"}, ensure_ascii=False)
         if not self._publish(f"{self._topic(state.entity_id)}/config", payload, False):
             return False

@@ -810,3 +810,67 @@ async def test_co_meter_sends_only_when_the_alarm_state_changes(hass: HomeAssist
     assert states == ["clear", "gas", "clear"]
     config = [json.loads(payload) for topic, payload, _ in published if topic == f"{state_topic}/config"]
     assert config[0]["kind"] == "gas"
+
+
+async def test_sensors_are_named_after_their_device(hass: HomeAssistant) -> None:
+    """1.4.2 (steelo 2026-10-07 "friendly nimet, nyt yhtä sanasotkua"): the device's name instead of
+    "<device> <device>_event_water_leak"; the friendly name stays when the user named the entity, when
+    the entity has no device, or when two chosen entities of the same kind share the device."""
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    config_entry = MockConfigEntry(domain="mqtt")
+    config_entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    kitchen = devices.async_get_or_create(
+        config_entry_id=config_entry.entry_id, identifiers={("mqtt", "zwave_30")}, name="Keitttio-Vuoto"
+    )
+    hall = devices.async_get_or_create(
+        config_entry_id=config_entry.entry_id, identifiers={("mqtt", "zwave_24")}, name="Takaovi"
+    )
+    devices.async_update_device(hall.id, name_by_user="Takaovi (eteinen)")
+
+    def entity(domain: str, uid: str, device_id: str | None, original_name: str) -> str:
+        return entities.async_get_or_create(
+            domain, "mqtt", uid, device_id=device_id, suggested_object_id=uid, original_name=original_name
+        ).entity_id
+
+    leak = entity(
+        "binary_sensor", "keitttio_vuoto_event_water_leak", kitchen.id, "Keitttio-Vuoto_event_water_leak"
+    )
+    temp_1 = entity("sensor", "keitttio_vuoto_temperature_air", kitchen.id, "temperature_air")
+    temp_2 = entity("sensor", "keitttio_vuoto_temperature_air_2", kitchen.id, "temperature_air_2")
+    door = entity("binary_sensor", "takaovi_door_state_simple", hall.id, "Takaovi_door_state_simple")
+    named = entity("binary_sensor", "kellari_water_leak", hall.id, "water_leak")
+    entities.async_update_entity(named, name="Kellarin vuoto")
+    loose = entity("binary_sensor", "irrallinen_vuoto", None, "Irrallinen vuoto")
+
+    _set(hass, leak, "off", "problem", "Keitttio-Vuoto Keitttio-Vuoto_event_water_leak")
+    _set(hass, temp_1, "21.5", "temperature", "Keitttio-Vuoto temperature_air", unit="°C")
+    _set(hass, temp_2, "22.1", "temperature", "Keitttio-Vuoto temperature_air_2", unit="°C")
+    _set(hass, door, "off", "door", "Takaovi Takaovi_door_state_simple")
+    _set(hass, named, "off", "moisture", "Takaovi (eteinen) Kellarin vuoto")
+    _set(hass, loose, "off", "moisture", "Irrallinen vuoto")
+
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=[leak, temp_1, temp_2, door, named, loose], publish=publish
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    names = {
+        topic.split("/")[3]: json.loads(payload)["name"]
+        for topic, payload, _ in published
+        if topic.endswith("/config")
+    }
+    exporter.async_stop()
+
+    assert names[leak] == "Keitttio-Vuoto"
+    assert names[door] == "Takaovi (eteinen)"
+    # Two thermometers on one device keep their own names.
+    assert names[temp_1] == "Keitttio-Vuoto temperature_air"
+    assert names[temp_2] == "Keitttio-Vuoto temperature_air_2"
+    # The user named this entity: their name stays.
+    assert names[named] == "Takaovi (eteinen) Kellarin vuoto"
+    assert names[loose] == "Irrallinen vuoto"
