@@ -156,8 +156,11 @@ card, or open the entity.
   photo fails, the log names the entity, the photo's id and the reason (e.g.
   `HTTP 403`, `ConnectError`), once.
 - Once created, the entity stays: if the photo is gone (e.g. deleted in
-  Kameraposti), the link has expired or loading it failed, it is unavailable
-  until the next photo or renewed link arrives. After a Home Assistant
+  Kameraposti), the link has expired or Kameraposti refused it (e.g.
+  `HTTP 403`), it is unavailable until the next photo or renewed link
+  arrives. After a temporary failure (timeout, connection error, `HTTP 5xx`
+  or `429`) it is unavailable for 5 minutes and then tries again; the wait
+  doubles for each failure in a row, up to an hour. After a Home Assistant
   restart it is back as soon as the camera is, and shows the photo when
   Kameraposti's stored photo message arrives again.
 

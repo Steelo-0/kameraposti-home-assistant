@@ -35,6 +35,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, DOMAIN, EVENT_DETECTION
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
+from custom_components.kameraposti.image import retry_cooldown
 
 CUSTOMER_ID = 3
 CAMERA_ID = 12
@@ -479,15 +480,15 @@ async def test_detections_keep_their_sensors_and_event_next_to_the_photo(
     ("failure", "reason"),
     [
         ("forbidden", "HTTP 403"),
-        ("connect_error", "ConnectError"),
-        ("timeout", "ReadTimeout"),
+        ("not_found", "HTTP 404"),
         ("not_an_image", "not an image"),
     ],
 )
-async def test_failed_fetch_never_logs_the_url_and_is_not_retried_until_a_new_message(
+async def test_definitive_fetch_failure_never_logs_the_url_and_waits_for_a_new_message(
     hass: HomeAssistant,
     coordinator: KameraportiCoordinator,
     caplog: pytest.LogCaptureFixture,
+    freezer: FrozenDateTimeFactory,
     failure: str,
     reason: str,
 ) -> None:
@@ -501,10 +502,8 @@ async def test_failed_fetch_never_logs_the_url_and_is_not_retried_until_a_new_me
         route = respx.get(URL_1)
         if failure == "forbidden":
             route.respond(403)
-        elif failure == "connect_error":
-            route.mock(side_effect=httpx.ConnectError("down"))
-        elif failure == "timeout":
-            route.mock(side_effect=httpx.ReadTimeout("slow"))
+        elif failure == "not_found":
+            route.respond(404)
         else:
             route.respond(200, content=b"<html>login</html>", headers={"Content-Type": "text/html"})
         route_2 = respx.get(URL_2).respond(200, content=JPEG_2, headers={"Content-Type": "image/jpeg"})
@@ -518,6 +517,14 @@ async def test_failed_fetch_never_logs_the_url_and_is_not_retried_until_a_new_me
 
         assert route.call_count == 1
         assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+        # Not retried later either: a 4xx / wrong content stays until the next message.
+        freezer.tick(timedelta(hours=2))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+        with pytest.raises(HomeAssistantError):
+            await async_get_image(hass, entity_id)
+        assert route.call_count == 1
         assert "signature" not in caplog.text
         assert "riistakamera/ha/kuva" not in caplog.text
         failures = [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -531,6 +538,120 @@ async def test_failed_fetch_never_logs_the_url_and_is_not_retried_until_a_new_me
         assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
         assert (await async_get_image(hass, entity_id)).content == JPEG_2
         assert route_2.call_count == 1
+
+
+async def _advance(hass: HomeAssistant, freezer: FrozenDateTimeFactory, delta: timedelta) -> None:
+    freezer.tick(delta)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ("connect_error", "ConnectError"),
+        ("timeout", "ReadTimeout"),
+        ("server_error", "HTTP 503"),
+        ("rate_limited", "HTTP 429"),
+    ],
+)
+async def test_transient_fetch_failure_is_retried_after_a_doubling_cooldown(
+    hass: HomeAssistant,
+    coordinator: KameraportiCoordinator,
+    caplog: pytest.LogCaptureFixture,
+    freezer: FrozenDateTimeFactory,
+    failure: str,
+    reason: str,
+) -> None:
+    """Timeouts, connection errors, 5xx and 429 are transient: unavailable, then one new
+    attempt after 5 min, 10 min, ... (max 1 h). Home Assistant's image component rewrites
+    every image entity's state on its 5-minute token rotation, so the clock is stepped past
+    that refresh before the cooldown ends: only the entity's own timer can make it available."""
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # as Home Assistant's bootstrap does
+    caplog.set_level(logging.DEBUG)
+    entity_id = "image.pihakamera_latest_photo"
+    with respx.mock:
+        route = respx.get(URL_1)
+        if failure == "connect_error":
+            route.mock(side_effect=httpx.ConnectError("down"))
+        elif failure == "timeout":
+            route.mock(side_effect=httpx.ReadTimeout("slow"))
+        elif failure == "server_error":
+            route.respond(503)
+        else:
+            route.respond(429)
+        await _send(hass, coordinator, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera")))
+        await _send(hass, coordinator, LATEST_TOPIC, _latest())
+        await _advance(hass, freezer, timedelta(minutes=1))  # 05:01, off the token-refresh grid
+
+        # 1st failure at 05:01 -> retry allowed from 05:06.
+        with pytest.raises(HomeAssistantError):
+            await async_get_image(hass, entity_id)
+        assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+        with pytest.raises(HomeAssistantError):
+            await async_get_image(hass, entity_id)
+        assert route.call_count == 1
+        await _advance(hass, freezer, timedelta(minutes=4, seconds=30))  # 05:05:30, token refresh
+        assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+        await _advance(hass, freezer, timedelta(seconds=31))  # 05:06:01, only our timer is due
+        assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
+
+        # 2nd failure at 05:06:01 -> cooldown doubles to 10 min (05:16:01).
+        with pytest.raises(HomeAssistantError):
+            await async_get_image(hass, entity_id)
+        assert route.call_count == 2
+        await _advance(hass, freezer, timedelta(minutes=5))  # 05:11:01 (5 min would have been enough before)
+        assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+
+        # The server is back: the next attempt after the cooldown loads the photo.
+        route.mock(side_effect=None)
+        route.respond(200, content=JPEG_1, headers={"Content-Type": "image/jpeg"})
+        await _advance(hass, freezer, timedelta(minutes=4, seconds=30))  # 05:15:31, token refresh
+        assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+        await _advance(hass, freezer, timedelta(seconds=31))  # 05:16:02, only our timer is due
+        assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
+        assert (await async_get_image(hass, entity_id)).content == JPEG_1
+        assert route.call_count == 3
+
+    failures = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(failures) == 2
+    assert all(reason in line and "photo_id=5501" in line and entity_id in line for line in failures)
+    assert "retrying in 5 min" in failures[0]
+    assert "retrying in 10 min" in failures[1]
+    assert "signature" not in caplog.text
+    assert "riistakamera/ha/kuva" not in caplog.text
+
+
+async def test_a_new_photo_resets_the_transient_retry_cooldown(
+    hass: HomeAssistant, coordinator: KameraportiCoordinator, freezer: FrozenDateTimeFactory
+) -> None:
+    entity_id = "image.pihakamera_latest_photo"
+    with respx.mock:
+        respx.get(URL_1).respond(503)
+        route_2 = respx.get(URL_2).respond(503)
+        await _send(hass, coordinator, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera")))
+        await _send(hass, coordinator, LATEST_TOPIC, _latest())
+        await _advance(hass, freezer, timedelta(minutes=1))
+        with pytest.raises(HomeAssistantError):
+            await async_get_image(hass, entity_id)
+
+        # A new photo: available at once, and its own first failure waits only 5 min.
+        await _send(hass, coordinator, LATEST_TOPIC, _latest(photo_id=5502, url=URL_2))
+        assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
+        with pytest.raises(HomeAssistantError):
+            await async_get_image(hass, entity_id)
+        assert route_2.call_count == 1
+        await _advance(hass, freezer, timedelta(minutes=4, seconds=30))  # 05:05:30
+        await _advance(hass, freezer, timedelta(seconds=31))  # 05:06:01
+        assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
+
+
+@pytest.mark.parametrize(
+    ("failures", "minutes"),
+    [(1, 5), (2, 10), (3, 20), (4, 40), (5, 60), (6, 60), (50, 60)],
+)
+def test_retry_cooldown_doubles_up_to_an_hour(failures: int, minutes: int) -> None:
+    assert retry_cooldown(failures) == timedelta(minutes=minutes)
 
 
 @respx.mock
