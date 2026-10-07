@@ -46,7 +46,7 @@ from .const import (
     USERNAME_TEMPLATE,
 )
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .sensor_export import kind_for
+from .sensor_export import kameraposti_name, kind_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,6 +68,28 @@ STEP_REAUTH_DATA_SCHEMA = vol.Schema(
 )
 
 
+KIND_LABELS_FI: dict[str, str] = {
+    "leak": "Vuoto",
+    "smoke": "Savu",
+    "gas": "Kaasu",
+    "door": "Ovi",
+    "window": "Ikkuna",
+    "motion": "Liike",
+    "temperature": "Lämpötila",
+    "co2": "CO₂",
+}
+KIND_LABELS_EN: dict[str, str] = {
+    "leak": "Leak",
+    "smoke": "Smoke",
+    "gas": "Gas",
+    "door": "Door",
+    "window": "Window",
+    "motion": "Motion",
+    "temperature": "Temperature",
+    "co2": "CO₂",
+}
+
+
 def exportable_entity_options(hass: HomeAssistant, current: list[str]) -> list[SelectOptionDict]:
     """1.4.1: the export list offers exactly the entities this integration can send.
 
@@ -75,11 +97,25 @@ def exportable_entity_options(hass: HomeAssistant, current: list[str]) -> list[S
     Z-Wave JS UI publishes gas levels (CO, CO2 ppm) without one. Chosen entities stay listed even if
     they are unavailable right now, so saving the form does not drop them.
     """
+    # 1.4.2 (steelo 2026-10-07 "liian pitkät nimet"): "<name in Kameraposti> · <kind>", not
+    # "<friendly name> (<entity_id>)"; the entity id is added only when two rows would read the same.
+    kind_labels = KIND_LABELS_FI if (hass.config.language or "").startswith("fi") else KIND_LABELS_EN
+    candidates = [
+        state for state in hass.states.async_all(("binary_sensor", "sensor")) if kind_for(state) is not None
+    ]
+    candidate_ids = [state.entity_id for state in candidates]
     labels: dict[str, str] = {}
-    for state in hass.states.async_all(("binary_sensor", "sensor")):
-        if kind_for(state) is not None:
-            name = str(state.attributes.get("friendly_name") or state.entity_id)
-            labels[state.entity_id] = f"{name} ({state.entity_id})"
+    for state in candidates:
+        kind = kind_for(state)
+        labels[state.entity_id] = (
+            f"{kameraposti_name(hass, state, candidate_ids)} · {kind_labels.get(kind, kind)}"
+        )
+    seen: dict[str, int] = {}
+    for label in labels.values():
+        seen[label] = seen.get(label, 0) + 1
+    for entity_id, label in labels.items():
+        if seen[label] > 1:
+            labels[entity_id] = f"{label} ({entity_id.split('.', 1)[-1]})"
     for entity_id in current:
         labels.setdefault(entity_id, entity_id)
     return [

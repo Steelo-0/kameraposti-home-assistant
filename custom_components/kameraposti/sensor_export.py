@@ -244,6 +244,39 @@ def _display_name(state: State) -> str:
     )
 
 
+def kameraposti_name(hass: HomeAssistant, state: State, chosen: list[str]) -> str:
+    """Name shown in Kameraposti (1.4.2, steelo 2026-10-07 "friendly nimet, nyt sanasotkua").
+
+    The device's name ("Keitttio-Vuoto", "Takaovi") instead of Home Assistant's device + entity
+    combination ("Keitttio-Vuoto Keitttio-Vuoto_event_water_leak"); Kameraposti shows the kind
+    separately. The friendly name stays when the user named the entity, when it has no device,
+    or when another entity of ``chosen`` with the same kind shares the device (two thermometers).
+    """
+    entry = er.async_get(hass).async_get(state.entity_id)
+    if entry is None or entry.name is not None or entry.device_id is None:
+        return _display_name(state)
+    device = dr.async_get(hass).async_get(entry.device_id)
+    device_name = _clean_name(str((device.name_by_user or device.name) or "")) if device is not None else ""
+    if not device_name or _shares_device_and_kind(
+        hass, state.entity_id, entry.device_id, kind_for(state), chosen
+    ):
+        return _display_name(state)
+    return device_name
+
+
+def _shares_device_and_kind(
+    hass: HomeAssistant, entity_id: str, device_id: str, kind: str | None, chosen: list[str]
+) -> bool:
+    registry = er.async_get(hass)
+    for other_id in chosen:
+        if other_id == entity_id:
+            continue
+        other = registry.async_get(other_id)
+        if other is not None and other.device_id == device_id and kind_for(hass.states.get(other_id)) == kind:
+            return True
+    return False
+
+
 class KameraportiSensorExporter:
     """Publishes the chosen entities' descriptions and state changes."""
 
@@ -271,37 +304,7 @@ class KameraportiSensorExporter:
 
     @callback
     def _name_for(self, state: State) -> str:
-        """Name shown in Kameraposti (1.4.2, steelo 2026-10-07 "friendly nimet, nyt sanasotkua").
-
-        The device's name ("Keitttio-Vuoto", "Takaovi") instead of Home Assistant's device + entity
-        combination ("Keitttio-Vuoto Keitttio-Vuoto_event_water_leak"); Kameraposti shows the kind
-        separately. The friendly name stays when the user named the entity, when it has no device,
-        or when another chosen entity of the same kind shares the device (two thermometers).
-        """
-        entry = er.async_get(self._hass).async_get(state.entity_id)
-        if entry is None or entry.name is not None or entry.device_id is None:
-            return _display_name(state)
-        device = dr.async_get(self._hass).async_get(entry.device_id)
-        device_name = (
-            _clean_name(str((device.name_by_user or device.name) or "")) if device is not None else ""
-        )
-        if not device_name or self._shares_device_and_kind(state.entity_id, entry.device_id, kind_for(state)):
-            return _display_name(state)
-        return device_name
-
-    def _shares_device_and_kind(self, entity_id: str, device_id: str, kind: str | None) -> bool:
-        registry = er.async_get(self._hass)
-        for other_id in self._entity_ids:
-            if other_id == entity_id:
-                continue
-            other = registry.async_get(other_id)
-            if (
-                other is not None
-                and other.device_id == device_id
-                and kind_for(self._hass.states.get(other_id)) == kind
-            ):
-                return True
-        return False
+        return kameraposti_name(self._hass, state, self._entity_ids)
 
     def async_start(self) -> None:
         if self._unsub is None and self._entity_ids:

@@ -874,3 +874,38 @@ async def test_sensors_are_named_after_their_device(hass: HomeAssistant) -> None
     # The user named this entity: their name stays.
     assert names[named] == "Takaovi (eteinen) Kellarin vuoto"
     assert names[loose] == "Irrallinen vuoto"
+
+
+async def test_export_list_rows_are_short(hass: HomeAssistant) -> None:
+    """1.4.3 (steelo 2026-10-07 "liian pitkät nimet"): a row reads "<name in Kameraposti> · <kind>";
+    the entity id is added only when two rows would otherwise read the same."""
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    config_entry = MockConfigEntry(domain="mqtt")
+    config_entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    kitchen = devices.async_get_or_create(
+        config_entry_id=config_entry.entry_id, identifiers={("mqtt", "zwave_7")}, name="Keittiö palovaroitin"
+    )
+    smoke = entities.async_get_or_create(
+        "binary_sensor",
+        "mqtt",
+        "keittio_palovaroitin_smoke_alarm",
+        device_id=kitchen.id,
+        suggested_object_id="keittio_palovaroitin_keittio_palovaroitin_smoke_alarm",
+    ).entity_id
+    _set(hass, smoke, "off", "smoke", "Keittiö palovaroitin Keittiö palovaroitin_smoke_alarm")
+    _set(hass, "binary_sensor.ovi_a", "off", "door", "Ovi")
+    _set(hass, "binary_sensor.ovi_b", "off", "door", "Ovi")
+
+    hass.config.language = "fi"
+    labels = {option["value"]: option["label"] for option in exportable_entity_options(hass, [])}
+    assert labels[smoke] == "Keittiö palovaroitin · Savu"
+    assert labels["binary_sensor.ovi_a"] == "Ovi · Ovi (ovi_a)"
+    assert labels["binary_sensor.ovi_b"] == "Ovi · Ovi (ovi_b)"
+
+    hass.config.language = "en"
+    labels = {option["value"]: option["label"] for option in exportable_entity_options(hass, [])}
+    assert labels[smoke] == "Keittiö palovaroitin · Smoke"
