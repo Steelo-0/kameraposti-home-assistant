@@ -909,3 +909,43 @@ async def test_export_list_rows_are_short(hass: HomeAssistant) -> None:
     hass.config.language = "en"
     labels = {option["value"]: option["label"] for option in exportable_entity_options(hass, [])}
     assert labels[smoke] == "Keittiö palovaroitin · Smoke"
+
+
+async def test_device_name_does_not_decide_and_tamper_is_no_door(hass: HomeAssistant) -> None:
+    """1.4.4 (steelo 2026-10-07): "Eteinen Smoke_alarm_status" (a smoke detector's OK / Problem alarm
+    status) is not a smoke alarm although the device is called "Eteinen Smoke", and a Z-Wave sensor's
+    cover switch ("nodeID_11_cover_status", Closed / Open) is not a door."""
+    cases = {
+        (
+            "binary_sensor.eteinen_smoke_eteinen_smoke_alarm_status",
+            "problem",
+            "Eteinen Smoke Eteinen Smoke_alarm_status",
+        ): None,
+        (
+            "binary_sensor.keitttio_vuoto_keitttio_vuoto_event_water_leak",
+            "problem",
+            "Keitttio-Vuoto Keitttio-Vuoto_event_water_leak",
+        ): "leak",
+        (
+            "binary_sensor.nodeid_11_nodeid_11_cover_status",
+            "opening",
+            "nodeID_11 nodeID_11_cover_status",
+        ): None,
+        (
+            "binary_sensor.takaovi_takaovi_door_state_simple",
+            "door",
+            "Takaovi Takaovi_door_state_simple",
+        ): "door",
+        (
+            "binary_sensor.eteinen_smoke_eteinen_smoke_smoke_alarm",
+            "smoke",
+            "Eteinen Smoke Eteinen Smoke_smoke_alarm",
+        ): "smoke",
+        ("binary_sensor.varaston_tamper", "tamper", "Varaston tamper"): None,
+    }
+    for (entity_id, device_class, name), kind in cases.items():
+        _set(hass, entity_id, "off", device_class, name)
+        assert kind_for(hass.states.get(entity_id)) == kind, entity_id
+    offered = {option["value"] for option in exportable_entity_options(hass, [])}
+    assert "binary_sensor.eteinen_smoke_eteinen_smoke_alarm_status" not in offered
+    assert "binary_sensor.nodeid_11_nodeid_11_cover_status" not in offered

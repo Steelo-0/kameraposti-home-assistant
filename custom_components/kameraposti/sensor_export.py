@@ -134,6 +134,10 @@ def kind_for(state: State | None) -> str | None:
     device_class = state.attributes.get("device_class")
     if state.domain == "binary_sensor":
         kind = KIND_BY_BINARY_DEVICE_CLASS.get(device_class)
+        # 1.4.4 (steelo 2026-10-07): a Z-Wave device's cover / tamper switch ("<node>_cover_status",
+        # Closed / Open) is no door: it tells that the sensor's own case was opened.
+        if kind in ("door", "window") and _TAMPER_PART.search(_value_part(state.entity_id.split(".", 1)[-1])):
+            return None
         if kind is None and device_class in INFERRED_DEVICE_CLASSES:
             kind = _kind_from_name(state)
         return kind
@@ -160,15 +164,31 @@ def kind_for(state: State | None) -> str | None:
     return None
 
 
+_TAMPER_PART = re.compile(r"(?:^|_)(?:cover|tamper)(?:_|$)")
+
+
+def _value_part(name: str) -> str:
+    """The value part of a Z-Wave JS UI name: Home Assistant puts the device name in front of the
+    entity name, which itself starts with the node name, so the id reads "<device>_<device>_<value>"
+    ("eteinen_smoke_eteinen_smoke_alarm_status" -> "alarm_status"). Other names are returned whole.
+    """
+    parts = name.split("_")
+    for size in range(len(parts) // 2, 0, -1):
+        if parts[:size] == parts[size : 2 * size] and len(parts) > 2 * size:
+            return "_".join(parts[2 * size :])
+    return name
+
+
 def _kind_from_name(state: State) -> str | None:
     """Kind from the entity id, else the friendly name (spaces and dashes read as underscores).
 
-    Within a name the last kind word wins: it belongs to the value part, which follows the device
-    name. The entity id decides first (it comes from the integration's own name and stays put when
-    the user renames the entity), so a renamed friendly name cannot turn a leak sensor into a gas one.
+    Only the value part counts (1.4.4, steelo 2026-10-07: "Eteinen Smoke_alarm_status" is a smoke
+    detector's alarm status, not a smoke alarm, although the device is called "Eteinen Smoke").
+    Within it the last kind word wins. The entity id decides first (it stays put when the user
+    renames the entity), so a renamed friendly name cannot turn a leak sensor into a gas one.
     """
-    for name in (state.entity_id, str(state.attributes.get("friendly_name") or "")):
-        text = re.sub(r"[\s-]+", "_", name.lower())
+    for name in (state.entity_id.split(".", 1)[-1], str(state.attributes.get("friendly_name") or "")):
+        text = _value_part(re.sub(r"[\s-]+", "_", name.lower()))
         last: tuple[int, str] | None = None
         for pattern, kind in _KIND_BY_NAME:
             for match in pattern.finditer(text):
