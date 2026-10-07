@@ -37,6 +37,19 @@ TOPIC_PATTERN: Final = re.compile(r"^customers/(?P<customer_id>\d+)/detections/(
 
 SCHEMA_VERSION_SUPPORTED: Final = 1
 
+# 1.5.0: the account's camera list (retained, the authority on which cameras
+# exist and what they are called) and each camera's latest photo (retained,
+# a signed image URL; an empty retained message = no photo). Both payloads
+# carry their own schema_version 1.
+ROSTER_TOPIC_TEMPLATE: Final = "customers/{customer_id}/cameras"
+ROSTER_TOPIC_PATTERN: Final = re.compile(r"^customers/(?P<customer_id>\d+)/cameras$")
+LATEST_PHOTO_SUBSCRIBE_TEMPLATE: Final = "customers/{customer_id}/cameras/+/latest"
+LATEST_PHOTO_TOPIC_PATTERN: Final = re.compile(
+    r"^customers/(?P<customer_id>\d+)/cameras/(?P<camera_id>\d+)/latest$"
+)
+ROSTER_SCHEMA_VERSION: Final = 1
+LATEST_PHOTO_SCHEMA_VERSION: Final = 1
+
 EVENT_DETECTION: Final = "kameraposti_detection"
 
 CONF_CUSTOMER_ID: Final = "customer_id"

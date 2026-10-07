@@ -10,7 +10,14 @@ import json
 
 import pytest
 
-from custom_components.kameraposti.models import DetectionRejected, parse_detection
+from custom_components.kameraposti.models import (
+    DetectionRejected,
+    LatestPhotoRejected,
+    RosterRejected,
+    parse_detection,
+    parse_latest_photo,
+    parse_roster,
+)
 
 VALID_PAYLOAD = {
     "schema_version": 1,
@@ -221,3 +228,197 @@ def test_payload_that_is_not_a_json_object_is_rejected() -> None:
             json.dumps([1, 2, 3]).encode(),
             expected_customer_id=3,
         )
+
+
+# -- camera roster: customers/<id>/cameras (1.5.0) ---------------------------
+
+ROSTER_TOPIC = "customers/3/cameras"
+VALID_ROSTER = {
+    "schema_version": 1,
+    "generated_at": "2026-10-07T09:12:00+00:00",
+    "cameras": [
+        {"camera_id": 12, "name": "Kamera 1"},
+        {"camera_id": 35, "name": "S12HD"},
+    ],
+}
+
+
+def _roster(**overrides: object) -> bytes:
+    return json.dumps({**VALID_ROSTER, **overrides}).encode()
+
+
+def test_valid_roster_parses_cameras_in_order() -> None:
+    roster = parse_roster(ROSTER_TOPIC, _roster(), expected_customer_id=3)
+
+    assert roster is not None
+    assert [(c.camera_id, c.name) for c in roster.cameras] == [(12, "Kamera 1"), (35, "S12HD")]
+    assert roster.generated_at.isoformat() == "2026-10-07T09:12:00+00:00"
+
+
+def test_roster_tolerates_unknown_fields_and_an_empty_camera_list() -> None:
+    roster = parse_roster(
+        ROSTER_TOPIC,
+        _roster(future={"x": 1}, cameras=[{"camera_id": 12, "name": "Piha", "model": "S12HD"}]),
+        expected_customer_id=3,
+    )
+    assert roster is not None
+    assert [(c.camera_id, c.name) for c in roster.cameras] == [(12, "Piha")]
+
+    empty = parse_roster(ROSTER_TOPIC, _roster(cameras=[]), expected_customer_id=3)
+    assert empty is not None
+    assert empty.cameras == ()
+
+
+def test_empty_retained_roster_payload_means_no_roster() -> None:
+    assert parse_roster(ROSTER_TOPIC, b"", expected_customer_id=3) is None
+
+
+def test_blank_roster_name_falls_back_to_no_name() -> None:
+    roster = parse_roster(
+        ROSTER_TOPIC, _roster(cameras=[{"camera_id": 12, "name": "  "}]), expected_customer_id=3
+    )
+    assert roster is not None
+    assert roster.cameras[0].name is None
+
+
+@pytest.mark.parametrize("schema_version", [2, "1", None, True])
+def test_roster_with_an_unsupported_schema_version_is_rejected(schema_version: object) -> None:
+    with pytest.raises(RosterRejected, match="schema_version"):
+        parse_roster(ROSTER_TOPIC, _roster(schema_version=schema_version), expected_customer_id=3)
+
+
+@pytest.mark.parametrize(
+    "payload,reason",
+    [
+        (b"{not json", "JSON"),
+        (json.dumps([1, 2]).encode(), "object"),
+        (_roster(cameras={"camera_id": 12}), "cameras"),
+        (_roster(cameras=None), "cameras"),
+        (_roster(cameras=["12"]), "object"),
+        (_roster(cameras=[{"name": "x"}]), "camera_id"),
+        (_roster(cameras=[{"camera_id": "12", "name": "x"}]), "camera_id"),
+        (_roster(cameras=[{"camera_id": True, "name": "x"}]), "camera_id"),
+        (_roster(cameras=[{"camera_id": 0, "name": "x"}]), "camera_id"),
+        (_roster(cameras=[{"camera_id": 12}]), "name"),
+        (_roster(cameras=[{"camera_id": 12, "name": None}]), "name"),
+        (_roster(cameras=[{"camera_id": 12, "name": 5}]), "name"),
+        (_roster(cameras=[{"camera_id": 12, "name": "a"}, {"camera_id": 12, "name": "b"}]), "duplicate"),
+        (_roster(generated_at=None), "generated_at"),
+        (_roster(generated_at="2026-10-07T09:12:00"), "generated_at"),
+        (_roster(generated_at="yesterday"), "generated_at"),
+    ],
+)
+def test_junk_roster_is_rejected_as_a_whole(payload: bytes, reason: str) -> None:
+    """One bad camera rejects the whole roster: a partial list would remove real cameras."""
+    with pytest.raises(RosterRejected, match=reason):
+        parse_roster(ROSTER_TOPIC, payload, expected_customer_id=3)
+
+
+@pytest.mark.parametrize("topic", ["customers/4/cameras", "customers/3/cameras/12", "customers/x/cameras"])
+def test_roster_on_a_foreign_or_malformed_topic_is_rejected(topic: str) -> None:
+    with pytest.raises(RosterRejected):
+        parse_roster(topic, _roster(), expected_customer_id=3)
+
+
+# -- latest photo: customers/<id>/cameras/<camera>/latest (1.5.0) ------------
+
+LATEST_TOPIC = "customers/3/cameras/12/latest"
+VALID_LATEST = {
+    "schema_version": 1,
+    "camera_id": 12,
+    "photo_id": 5501,
+    "captured_at": "2026-10-07T04:31:10Z",
+    "received_at": "2026-10-07T04:31:40Z",
+    "is_video": False,
+    "url": "https://cam.steels.me/riistakamera/ha/kuva/5501?expires=1&signature=abc",
+    "expires_at": "2026-11-06T04:31:40Z",
+    "detection": {"label": "Hirvi", "confidence": 0.93},
+}
+
+
+def _latest(**overrides: object) -> bytes:
+    return json.dumps({**VALID_LATEST, **overrides}).encode()
+
+
+def test_valid_latest_photo_parses() -> None:
+    camera_id, photo = parse_latest_photo(LATEST_TOPIC, _latest(), expected_customer_id=3)
+
+    assert camera_id == 12
+    assert photo is not None
+    assert photo.camera_id == 12
+    assert photo.photo_id == 5501
+    assert photo.captured_at.isoformat() == "2026-10-07T04:31:10+00:00"
+    assert photo.expires_at.isoformat() == "2026-11-06T04:31:40+00:00"
+    assert photo.is_video is False
+    assert photo.url == VALID_LATEST["url"]
+    assert photo.label == "hirvi"
+    assert photo.confidence == 0.93
+
+
+def test_latest_photo_without_a_detection_and_with_unknown_fields_parses() -> None:
+    _, photo = parse_latest_photo(LATEST_TOPIC, _latest(detection=None, extra=[1]), expected_customer_id=3)
+    assert photo is not None
+    assert photo.label is None
+    assert photo.confidence is None
+
+    payload = {k: v for k, v in VALID_LATEST.items() if k != "detection"}
+    _, photo = parse_latest_photo(LATEST_TOPIC, json.dumps(payload).encode(), expected_customer_id=3)
+    assert photo is not None
+    assert photo.label is None
+
+
+def test_empty_retained_latest_payload_means_no_photo_for_that_camera() -> None:
+    assert parse_latest_photo(LATEST_TOPIC, b"", expected_customer_id=3) == (12, None)
+
+
+@pytest.mark.parametrize("schema_version", [2, "1", None])
+def test_latest_photo_with_an_unsupported_schema_version_is_rejected(schema_version: object) -> None:
+    with pytest.raises(LatestPhotoRejected, match="schema_version"):
+        parse_latest_photo(LATEST_TOPIC, _latest(schema_version=schema_version), expected_customer_id=3)
+
+
+@pytest.mark.parametrize(
+    "payload,reason",
+    [
+        (b"{not json", "JSON"),
+        (json.dumps("photo").encode(), "object"),
+        (_latest(camera_id=13), "camera_id"),
+        (_latest(camera_id="12"), "camera_id"),
+        (_latest(photo_id="5501"), "photo_id"),
+        (_latest(photo_id=True), "photo_id"),
+        (_latest(photo_id=0), "photo_id"),
+        (_latest(captured_at=None), "captured_at"),
+        (_latest(captured_at="2026-10-07T04:31:10"), "captured_at"),
+        (_latest(is_video=0), "is_video"),
+        (_latest(is_video="false"), "is_video"),
+        (_latest(url=None), "url"),
+        (_latest(url="http://cam.steels.me/riistakamera/ha/kuva/5501"), "url"),
+        (_latest(url="javascript:alert(1)"), "url"),
+        (_latest(url="https:///riistakamera/ha/kuva/5501"), "url"),
+        (_latest(expires_at=None), "expires_at"),
+        (_latest(expires_at="soon"), "expires_at"),
+        (_latest(detection=["hirvi", 0.9]), "detection"),
+        (_latest(detection={"label": "", "confidence": 0.9}), "label"),
+        (_latest(detection={"label": "hirvi"}), "confidence"),
+        (_latest(detection={"label": "hirvi", "confidence": 1.5}), "confidence"),
+        (_latest(detection={"label": "hirvi", "confidence": True}), "confidence"),
+    ],
+)
+def test_junk_latest_photo_is_rejected(payload: bytes, reason: str) -> None:
+    with pytest.raises(LatestPhotoRejected, match=reason):
+        parse_latest_photo(LATEST_TOPIC, payload, expected_customer_id=3)
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "customers/4/cameras/12/latest",  # another account
+        "customers/3/cameras/abc/latest",
+        "customers/3/cameras/12/latest/x",
+        "customers/3/cameras/12",
+        "customers/3/cameras/+/latest",
+    ],
+)
+def test_latest_photo_on_a_foreign_or_malformed_topic_is_rejected(topic: str) -> None:
+    with pytest.raises(LatestPhotoRejected):
+        parse_latest_photo(topic, _latest(), expected_customer_id=3)
