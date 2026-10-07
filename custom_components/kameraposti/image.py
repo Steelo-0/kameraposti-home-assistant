@@ -10,17 +10,26 @@ and image_last_updated the photo's captured_at. Home Assistant fetches the
 image only when the photo (or its URL) changes -- nothing is polled -- and
 the Generic Camera link copied from Kameraposti is no longer needed.
 
-Once created the entity stays: no photo any more (an empty retained message)
-or an expired URL makes it unavailable until the next message; an expired URL is never fetched. The
-URL itself is never exposed: it is not an attribute and is not logged here.
+Once created the entity stays: no photo any more (an empty retained message),
+an expired URL or a failed fetch makes it unavailable until the next message.
+
+The URL is a signed capability for the photo and is never exposed: not an
+attribute, and never logged. That is why the entity fetches the image itself
+instead of Home Assistant's ImageEntity URL loader, which logs the whole URL
+at ERROR on every failure and fetches (and logs) again on every image
+request. A failed fetch logs entity_id, photo_id and the reason only, once,
+and is not retried for the same URL.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime
 from typing import Any
 
-from homeassistant.components.image import ImageEntity
+import httpx
+from homeassistant.components.image import Image, ImageEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -32,6 +41,12 @@ from .const import DOMAIN
 from .coordinator import KameraportiCoordinator
 from .entity import async_setup_camera_entities
 from .models import LatestPhoto
+
+_LOGGER = logging.getLogger(__name__)
+
+FETCH_TIMEOUT_SECONDS = 10
+# JPEG magic bytes, for a response without a Content-Type header.
+_JPEG_MAGIC = b"\xff\xd8\xff"
 
 
 async def async_setup_entry(
@@ -71,6 +86,10 @@ class KameraportiLatestPhotoImage(ImageEntity):
         self._attr_image_url = None
         self._photo: LatestPhoto | None = None
         self._cancel_expiry: CALLBACK_TYPE | None = None
+        # (photo_id, url) whose fetch failed: unavailable, not fetched again,
+        # until a message brings another photo or URL.
+        self._failed_fetch: tuple[int, str] | None = None
+        self._fetch_lock = asyncio.Lock()
         self._adopt(self._coordinator_photo())
 
     def _coordinator_photo(self) -> LatestPhoto | None:
@@ -103,9 +122,13 @@ class KameraportiLatestPhotoImage(ImageEntity):
 
     @property
     def available(self) -> bool:
-        """A photo whose signed URL has not expired."""
+        """A photo whose signed URL has not expired and has not failed to load."""
         photo = self._photo
-        return photo is not None and photo.expires_at > dt_util.utcnow()
+        return (
+            photo is not None
+            and photo.expires_at > dt_util.utcnow()
+            and (photo.photo_id, photo.url) != self._failed_fetch
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -120,10 +143,53 @@ class KameraportiLatestPhotoImage(ImageEntity):
         }
 
     async def async_image(self) -> bytes | None:
-        """The photo's bytes -- never fetched without a photo or with an expired URL."""
-        if not self.available:
-            return None
-        return await super().async_image()
+        """The photo's bytes: fetched once per photo/URL, never when unavailable."""
+        # One fetch at a time: concurrent image requests wait for it and use its result.
+        async with self._fetch_lock:
+            photo = self._photo
+            if photo is None or not self.available:
+                return None
+            if self._cached_image is not None:
+                return self._cached_image.content
+            image = await self._async_fetch(photo)
+            current = self._photo
+            still_current = current is not None and (current.photo_id, current.url) == (
+                photo.photo_id,
+                photo.url,
+            )
+            if image is None:
+                self._failed_fetch = (photo.photo_id, photo.url)
+                if still_current:
+                    self.async_write_ha_state()
+                return None
+            if still_current:
+                self._cached_image = image
+                self._attr_content_type = image.content_type
+            return image.content
+
+    async def _async_fetch(self, photo: LatestPhoto) -> Image | None:
+        """GET the signed URL; on failure log why -- never the URL itself."""
+        try:
+            response = await self._client.get(photo.url, timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True)
+        except (httpx.HTTPError, httpx.InvalidURL) as err:
+            reason = type(err).__name__
+        else:
+            content_type = response.headers.get("content-type")
+            if content_type is None and response.content.startswith(_JPEG_MAGIC):
+                content_type = "image/jpeg"
+            if not response.is_success:
+                reason = f"HTTP {response.status_code}"
+            elif content_type is not None and content_type.split("/", 1)[0].strip().lower() == "image":
+                return Image(content_type=content_type, content=response.content)
+            else:
+                reason = f"not an image ({content_type or 'no content type'})"
+        _LOGGER.warning(
+            "%s: could not load the latest photo (photo_id=%s): %s; waiting for the next photo or link",
+            self.entity_id,
+            photo.photo_id,
+            reason,
+        )
+        return None
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

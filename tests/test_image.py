@@ -11,8 +11,10 @@ The MQTT client is mocked out; image fetches go through respx.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
+import logging
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -435,15 +437,77 @@ async def test_detections_keep_their_sensors_and_event_next_to_the_photo(
     assert hass.states.get("image.pihakamera_latest_photo").attributes["label"] == "hirvi"
 
 
-async def test_image_fetch_errors_do_not_break_the_entity(
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ("forbidden", "HTTP 403"),
+        ("connect_error", "ConnectError"),
+        ("timeout", "ReadTimeout"),
+        ("not_an_image", "not an image"),
+    ],
+)
+async def test_failed_fetch_never_logs_the_url_and_is_not_retried_until_a_new_message(
+    hass: HomeAssistant,
+    coordinator: KameraportiCoordinator,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+    reason: str,
+) -> None:
+    """Fable M-2: Home Assistant core's fetch logs the whole signed URL at ERROR and
+    retries (and logs again) on every image request. The entity fetches itself: it
+    logs entity_id, photo_id and the reason only, and after a failure it is
+    unavailable without fetching again until a new message brings another URL."""
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # as Home Assistant's bootstrap does
+    caplog.set_level(logging.DEBUG)
+    with respx.mock:
+        route = respx.get(URL_1)
+        if failure == "forbidden":
+            route.respond(403)
+        elif failure == "connect_error":
+            route.mock(side_effect=httpx.ConnectError("down"))
+        elif failure == "timeout":
+            route.mock(side_effect=httpx.ReadTimeout("slow"))
+        else:
+            route.respond(200, content=b"<html>login</html>", headers={"Content-Type": "text/html"})
+        route_2 = respx.get(URL_2).respond(200, content=JPEG_2, headers={"Content-Type": "image/jpeg"})
+        await _send(hass, coordinator, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera")))
+        await _send(hass, coordinator, LATEST_TOPIC, _latest())
+        entity_id = "image.pihakamera_latest_photo"
+
+        for _ in range(3):
+            with pytest.raises(HomeAssistantError):
+                await async_get_image(hass, entity_id)
+
+        assert route.call_count == 1
+        assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+        assert "signature" not in caplog.text
+        assert "riistakamera/ha/kuva" not in caplog.text
+        failures = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(failures) == 1
+        assert entity_id in failures[0].getMessage()
+        assert "photo_id=5501" in failures[0].getMessage()
+        assert reason in failures[0].getMessage()
+
+        # The next message (a new photo, or the same one re-signed) brings it back.
+        await _send(hass, coordinator, LATEST_TOPIC, _latest(photo_id=5502, url=URL_2))
+        assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
+        assert (await async_get_image(hass, entity_id)).content == JPEG_2
+        assert route_2.call_count == 1
+
+
+@respx.mock
+async def test_concurrent_image_requests_fetch_once(
     hass: HomeAssistant, coordinator: KameraportiCoordinator
 ) -> None:
+    async def _slow_response(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0)  # let the other requests run while this one is in flight
+        return httpx.Response(200, content=JPEG_1, headers={"Content-Type": "image/jpeg"})
+
+    route = respx.get(URL_1).mock(side_effect=_slow_response)
     await _send(hass, coordinator, LATEST_TOPIC, _latest())
     entity_id = _entity_id(hass)
 
-    with respx.mock:
-        respx.get(URL_1).mock(side_effect=httpx.ConnectError("down"))
-        with pytest.raises(HomeAssistantError):
-            await async_get_image(hass, entity_id)
+    images = await asyncio.gather(*(async_get_image(hass, entity_id) for _ in range(3)))
 
-    assert hass.states.get(entity_id).state == "2026-10-07T04:31:10+00:00"
+    assert [image.content for image in images] == [JPEG_1] * 3
+    assert route.call_count == 1
