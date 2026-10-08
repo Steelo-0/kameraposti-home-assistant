@@ -268,20 +268,45 @@ class KameraportiMqttClient:
         return client
 
     def _connect_once(self) -> None:
-        """Blocking connect attempt. Must run on the executor thread."""
+        """Blocking connect attempt. Must run on the executor thread.
+
+        1.5.1: async_stop (on the event loop) can run while this blocks in connect(), or
+        before this executor job even starts. async_stop sets _closing before it takes
+        self._client, and this sets self._client before connect() and checks _closing after
+        it (and again after loop_start()), so either async_stop disconnects this client or
+        this does -- never a network loop left running after unload/reload (a zombie with
+        the same client id would kick the reloaded entry off the broker).
+        """
+        if self._closing:
+            return
         client = self._build_client()
         self._client = client
         try:
             client.connect(self._host, MQTT_PORT, keepalive=MQTT_KEEPALIVE_SECONDS)
         except (OSError, ssl.SSLError) as err:
             _LOGGER.debug("Kameraposti MQTT connect() raised %s: %s", type(err).__name__, err)
-            self._client = None
+            if self._client is client:
+                self._client = None
+            if self._closing:
+                return
             self._report_state(
                 ConnectionState.TLS_FAILURE if isinstance(err, ssl.SSLError) else ConnectionState.RECONNECTING
             )
             self._schedule_reconnect()
             return
+        if self._closing:
+            self._abandon_client(client)
+            return
         client.loop_start()
+        if self._closing:
+            self._abandon_client(client)
+
+    def _abandon_client(self, client: mqtt.Client) -> None:
+        """Disconnect a client that connected after async_stop. Executor thread only."""
+        _LOGGER.debug("Kameraposti MQTT connected after stop; disconnecting it")
+        if self._client is client:
+            self._client = None
+        self._disconnect_client(client)
 
     def _disconnect_client(self, client: mqtt.Client) -> None:
         try:
@@ -299,6 +324,10 @@ class KameraportiMqttClient:
         reason_code: Any,
         properties: Any = None,
     ) -> None:
+        if self._closing:
+            # A CONNACK (or refusal) that arrives after async_stop: async_stop or
+            # _connect_once disconnects this client; never subscribe or report it.
+            return
         rc = _reason_code_value(reason_code)
         if rc == 0:
             self._suback_pending = {}
@@ -320,6 +349,8 @@ class KameraportiMqttClient:
     def _handle_connect_fail(self, client: mqtt.Client, userdata: Any) -> None:
         # TCP/TLS handshake itself never completed -- never an auth
         # failure (no CONNACK was ever received to carry that verdict).
+        if self._closing:
+            return
         self._hass.loop.call_soon_threadsafe(self._report_state, ConnectionState.RECONNECTING)
         self._hass.loop.call_soon_threadsafe(self._schedule_reconnect)
 
@@ -365,6 +396,8 @@ class KameraportiMqttClient:
     # -- state/reconnect bookkeeping (always run on the HA event loop) --
 
     def _on_connected(self) -> None:
+        if self._closing:
+            return
         # Not self._backoff.reset(): a CONNACK alone does not make the connection stable
         # (see STABLE_CONNECTION_SECONDS). _on_stable resets it once the connection stays up.
         self._cancel_stable_timer()

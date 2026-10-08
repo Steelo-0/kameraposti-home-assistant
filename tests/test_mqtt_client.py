@@ -16,6 +16,8 @@ still missed a bug that broke every real connection attempt.
 from __future__ import annotations
 
 import logging
+import ssl
+import threading
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
@@ -524,6 +526,104 @@ async def test_occasional_or_stable_drops_do_not_warn_about_a_shared_login(
 
     assert _shared_login_warnings(caplog) == []
     await client.async_stop()
+
+
+def _loop_calls(paho: MagicMock) -> list[str]:
+    relevant = ("connect", "loop_start", "disconnect", "loop_stop")
+    return [name for name, _, _ in paho.method_calls if name in relevant]
+
+
+async def test_stop_during_an_in_flight_connect_leaves_no_running_connection(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """1.5.1: unload/reload while connect() is still blocking on the executor. async_stop disconnected
+    a client that was not connected yet, then connect() returned and loop_start() brought the
+    connection up anyway -- a zombie with the same client id that kicks the reloaded entry."""
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    connecting = threading.Event()
+    release = threading.Event()
+
+    def slow_connect(*args: object, **kwargs: object) -> int:
+        connecting.set()
+        release.wait(5)
+        return mqtt.MQTT_ERR_SUCCESS
+
+    mock_paho_client.connect.side_effect = slow_connect
+    start = hass.async_create_task(client.async_start())
+    assert await hass.async_add_executor_job(connecting.wait, 5)
+
+    await client.async_stop()
+    release.set()
+    await start
+    await hass.async_block_till_done()
+
+    calls = _loop_calls(mock_paho_client)
+    assert "loop_start" not in calls, calls
+    assert calls[-1] in ("disconnect", "loop_stop"), calls
+    assert states[-1] == ConnectionState.STOPPED
+
+
+async def test_a_reconnect_that_runs_after_stop_never_connects(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """The executor job of a reconnect can start after async_stop has finished."""
+    client = _make_client(hass, [])
+    await client.async_start()
+    await hass.async_block_till_done()
+    await client.async_stop()
+    mock_paho_client.reset_mock()
+
+    await hass.async_add_executor_job(client._connect_once)
+    await hass.async_block_till_done()
+
+    mock_paho_client.connect.assert_not_called()
+    mock_paho_client.loop_start.assert_not_called()
+
+
+async def test_a_connack_or_failure_after_stop_changes_nothing(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    await client.async_start()
+    await hass.async_block_till_done()
+    await client.async_stop()
+
+    client._handle_connect(mock_paho_client, None, None, 0)
+    client._handle_connect(mock_paho_client, None, None, 135)
+    client._handle_connect_fail(mock_paho_client, None)
+    await hass.async_block_till_done()
+
+    mock_paho_client.subscribe.assert_not_called()
+    assert states[-1] == ConnectionState.STOPPED
+    assert client._reconnect_handle is None
+    assert client._stable_handle is None
+
+
+async def test_a_connect_error_after_stop_reports_nothing(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    connecting = threading.Event()
+    release = threading.Event()
+
+    def failing_connect(*args: object, **kwargs: object) -> int:
+        connecting.set()
+        release.wait(5)
+        raise ssl.SSLError("handshake interrupted")
+
+    mock_paho_client.connect.side_effect = failing_connect
+    start = hass.async_create_task(client.async_start())
+    assert await hass.async_add_executor_job(connecting.wait, 5)
+    await client.async_stop()
+    release.set()
+    await start
+    await hass.async_block_till_done()
+
+    assert states[-1] == ConnectionState.STOPPED
+    assert client._reconnect_handle is None
 
 
 class TestBackoff:
