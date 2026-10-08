@@ -17,7 +17,8 @@ and then crosses back into the HA event loop via
 ``hass.loop.call_soon_threadsafe`` before calling any consumer-supplied
 callback. Blocking paho-mqtt calls (connect/reconnect/disconnect/
 loop_start/loop_stop) are run through ``hass.async_add_executor_job`` so
-they never block the event loop either.
+they never block the event loop either; that executor thread follows the
+same rule (no state report, timer or dispatcher call from it).
 
 Reconnection is fully owned by this module (paho-mqtt's own
 ``reconnect_on_failure`` is disabled) so the exponential backoff +
@@ -270,6 +271,12 @@ class KameraportiMqttClient:
     def _connect_once(self) -> None:
         """Blocking connect attempt. Must run on the executor thread.
 
+        Never touches Home Assistant or the event loop from here: a failed connect() is handed to
+        the loop (_on_connect_failed) with call_soon_threadsafe. Reporting the state from this
+        thread raised RuntimeError in Home Assistant's thread-safety check (dispatcher send), which
+        failed setup when the network was down at boot and killed the reconnect task on a TLS
+        error during an outage.
+
         1.5.1: async_stop (on the event loop) can run while this blocks in connect(), or
         before this executor job even starts. async_stop sets _closing before it takes
         self._client, and this sets self._client before connect() and checks _closing after
@@ -289,10 +296,9 @@ class KameraportiMqttClient:
                 self._client = None
             if self._closing:
                 return
-            self._report_state(
-                ConnectionState.TLS_FAILURE if isinstance(err, ssl.SSLError) else ConnectionState.RECONNECTING
-            )
-            self._schedule_reconnect()
+            tls = isinstance(err, ssl.SSLError)
+            state = ConnectionState.TLS_FAILURE if tls else ConnectionState.RECONNECTING
+            self._hass.loop.call_soon_threadsafe(self._on_connect_failed, state)
             return
         if self._closing:
             self._abandon_client(client)
@@ -340,19 +346,16 @@ class KameraportiMqttClient:
             self._hass.loop.call_soon_threadsafe(self._on_connected)
             return
 
-        if rc in _AUTH_FAILURE_REASON_CODES:
-            self._hass.loop.call_soon_threadsafe(self._report_state, ConnectionState.AUTH_FAILURE)
-        else:
-            self._hass.loop.call_soon_threadsafe(self._report_state, ConnectionState.RECONNECTING)
-        self._hass.loop.call_soon_threadsafe(self._schedule_reconnect)
+        auth = rc in _AUTH_FAILURE_REASON_CODES
+        state = ConnectionState.AUTH_FAILURE if auth else ConnectionState.RECONNECTING
+        self._hass.loop.call_soon_threadsafe(self._on_connect_failed, state)
 
     def _handle_connect_fail(self, client: mqtt.Client, userdata: Any) -> None:
         # TCP/TLS handshake itself never completed -- never an auth
         # failure (no CONNACK was ever received to carry that verdict).
         if self._closing:
             return
-        self._hass.loop.call_soon_threadsafe(self._report_state, ConnectionState.RECONNECTING)
-        self._hass.loop.call_soon_threadsafe(self._schedule_reconnect)
+        self._hass.loop.call_soon_threadsafe(self._on_connect_failed, ConnectionState.RECONNECTING)
 
     def _handle_disconnect(
         self,
@@ -403,6 +406,15 @@ class KameraportiMqttClient:
         self._cancel_stable_timer()
         self._stable_handle = self._hass.loop.call_later(STABLE_CONNECTION_SECONDS, self._on_stable)
         self._report_state(ConnectionState.CONNECTED)
+
+    def _on_connect_failed(self, state: ConnectionState) -> None:
+        """A connection attempt failed: connect() raised, the broker refused it, or the handshake
+        never completed. Checks for stop again here: the thread that handed this over may have
+        checked just before async_stop ran (a refusal must not start a reauth during unload)."""
+        if self._closing:
+            return
+        self._report_state(state)
+        self._schedule_reconnect()
 
     def _on_stable(self) -> None:
         self._stable_handle = None

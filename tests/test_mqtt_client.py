@@ -601,6 +601,26 @@ async def test_a_connack_or_failure_after_stop_changes_nothing(
     assert client._stable_handle is None
 
 
+async def test_a_refusal_handled_on_the_loop_after_stop_starts_no_reauth(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """A CONNACK refusal that paho receives just before unload is handed to the event loop, which
+    runs it while async_stop waits for the disconnect: it must not report AUTH_FAILURE (the
+    coordinator would start a reauth flow for an entry that is being unloaded)."""
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    await client.async_start()
+    await hass.async_block_till_done()
+
+    client._handle_connect(mock_paho_client, None, None, 135)
+    await client.async_stop()
+    await hass.async_block_till_done()
+
+    assert ConnectionState.AUTH_FAILURE not in states
+    assert states[-1] == ConnectionState.STOPPED
+    assert client._reconnect_handle is None
+
+
 async def test_a_connect_error_after_stop_reports_nothing(
     hass: HomeAssistant, mock_paho_client: MagicMock
 ) -> None:
