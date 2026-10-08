@@ -601,6 +601,49 @@ async def test_a_connack_or_failure_after_stop_changes_nothing(
     assert client._stable_handle is None
 
 
+async def test_publishes_not_acknowledged_before_a_drop_are_handed_back_before_reconnecting(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """paho accepts a QoS 1 publish long before the broker's PUBACK, and a new paho client (with
+    an empty retry queue) is built for every attempt: what was not acknowledged when the connection
+    dropped is handed to the exporter before the drop is reported. Acknowledged publishes are not,
+    and nothing is handed over twice."""
+    events: list[object] = []
+    client = KameraportiMqttClient(
+        hass,
+        host="cam.steels.me",
+        customer_id=CUSTOMER_ID,
+        username="kp-3",
+        password="secret",
+        on_message=lambda topic, payload: None,
+        on_state_change=events.append,
+        on_publishes_lost=lambda topics: events.append(list(topics)),
+    )
+    await client.async_start()
+    await hass.async_block_till_done()
+    await _connack(hass, mock_paho_client)
+    mock_paho_client.is_connected.return_value = True
+    mids = iter(range(1, 100))
+    mock_paho_client.publish.side_effect = lambda *args, **kwargs: MagicMock(
+        rc=mqtt.MQTT_ERR_SUCCESS, mid=next(mids)
+    )
+    for topic in ("kameraposti/3/anturit/a", "kameraposti/3/anturit/b", "kameraposti/3/anturit/c"):
+        assert client.publish(topic, "leak") is True
+    mock_paho_client.on_publish(mock_paho_client, None, 2, ReasonCode(PacketTypes.PUBACK), None)
+    await hass.async_block_till_done()
+    events.clear()
+
+    await _drop(hass, client, mock_paho_client)
+
+    assert events == [["kameraposti/3/anturit/a", "kameraposti/3/anturit/c"], ConnectionState.RECONNECTING]
+
+    await _connack(hass, mock_paho_client)
+    events.clear()
+    await _drop(hass, client, mock_paho_client)
+    assert events == [ConnectionState.RECONNECTING]
+    await client.async_stop()
+
+
 async def test_a_refusal_handled_on_the_loop_after_stop_starts_no_reauth(
     hass: HomeAssistant, mock_paho_client: MagicMock
 ) -> None:

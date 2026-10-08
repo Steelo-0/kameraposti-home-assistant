@@ -157,6 +157,7 @@ class KameraportiMqttClient:
         password: str,
         on_message: Callable[[str, bytes], None],
         on_state_change: Callable[[ConnectionState], None],
+        on_publishes_lost: Callable[[list[str]], None] | None = None,
     ) -> None:
         self._hass = hass
         self._host = host
@@ -165,6 +166,7 @@ class KameraportiMqttClient:
         self._password = password
         self._on_message = on_message
         self._on_state_change = on_state_change
+        self._on_publishes_lost = on_publishes_lost
 
         self._client: mqtt.Client | None = None
         self._backoff = _Backoff()
@@ -180,6 +182,10 @@ class KameraportiMqttClient:
         # shared-login warning has been logged since the last stable connection.
         self._short_drops: deque[float] = deque()
         self._shared_login_warned = False
+        # 1.5.1: QoS 1 publishes paho accepted that the broker has not acknowledged yet (event
+        # loop only): message id -> topic. A drop loses them -- every attempt builds a new paho
+        # client, so paho's own retry queue goes with the old one -- and they are handed back.
+        self._unacked: dict[int, str] = {}
 
     @property
     def topic(self) -> str:
@@ -219,6 +225,7 @@ class KameraportiMqttClient:
             self._reconnect_handle.cancel()
             self._reconnect_handle = None
         self._cancel_stable_timer()
+        self._unacked.clear()
 
         client = self._client
         self._client = None
@@ -233,13 +240,18 @@ class KameraportiMqttClient:
         paho-mqtt's publish() only queues the packet for its network thread,
         so this is safe to call from the event loop. Nothing is buffered
         while disconnected -- the exporter re-sends descriptions and current
-        states on the next connect instead.
+        states on the next connect instead. 1.5.1: a publish queued here is
+        remembered until the broker acknowledges it; if the connection drops
+        first, its topic is handed to on_publishes_lost (see _on_disconnected).
         """
         client = self._client
         if client is None or not client.is_connected():
             return False
         info = client.publish(topic, payload, qos=1, retain=retain)
-        return info.rc == mqtt.MQTT_ERR_SUCCESS
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            return False
+        self._unacked[info.mid] = topic
+        return True
 
     # -- setup helpers (always run on the executor thread) --------------
 
@@ -266,6 +278,7 @@ class KameraportiMqttClient:
         client.on_connect_fail = self._handle_connect_fail
         client.on_message = self._handle_message
         client.on_subscribe = self._handle_subscribe
+        client.on_publish = self._handle_publish
         return client
 
     def _connect_once(self) -> None:
@@ -391,6 +404,12 @@ class KameraportiMqttClient:
         except Exception:  # noqa: BLE001 - must never break paho's network thread
             _LOGGER.debug("Could not check a Kameraposti SUBACK", exc_info=True)
 
+    def _handle_publish(
+        self, client: mqtt.Client, userdata: Any, mid: int, reason_code: Any = None, properties: Any = None
+    ) -> None:
+        # The broker acknowledged a QoS 1 publish (PUBACK).
+        self._hass.loop.call_soon_threadsafe(self._on_published, client, mid)
+
     def _handle_message(self, client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
         topic = message.topic
         payload = message.payload
@@ -427,6 +446,11 @@ class KameraportiMqttClient:
             self._stable_handle.cancel()
             self._stable_handle = None
 
+    def _on_published(self, client: mqtt.Client, mid: int) -> None:
+        # Only the current client's ids: every connection attempt starts its ids from 1 again.
+        if client is self._client:
+            self._unacked.pop(mid, None)
+
     def _on_disconnected(self) -> None:
         if self._closing:
             return
@@ -434,8 +458,20 @@ class KameraportiMqttClient:
             # Dropped before it became stable.
             self._cancel_stable_timer()
             self._note_short_connection()
+        # Before RECONNECTING: the exporter knows what to send again before it can reconnect.
+        self._hand_back_unacked()
         self._report_state(ConnectionState.RECONNECTING)
         self._schedule_reconnect()
+
+    def _hand_back_unacked(self) -> None:
+        """Hand the publishes the broker had not acknowledged to on_publishes_lost."""
+        if not self._unacked:
+            return
+        lost = list(dict.fromkeys(self._unacked.values()))
+        self._unacked.clear()
+        _LOGGER.debug("Kameraposti MQTT connection dropped before %d publishes were acknowledged", len(lost))
+        if self._on_publishes_lost is not None:
+            self._on_publishes_lost(lost)
 
     def _note_short_connection(self) -> None:
         """Warn once when connections keep being dropped right after connecting.

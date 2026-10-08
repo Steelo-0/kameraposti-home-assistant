@@ -151,6 +151,7 @@ class KameraportiCoordinator:
             password=password,
             on_message=self._handle_message,
             on_state_change=self._handle_state_change,
+            on_publishes_lost=self._handle_publishes_lost,
         )
         self._exporter = KameraportiSensorExporter(
             hass,
@@ -250,6 +251,15 @@ class KameraportiCoordinator:
             # retrying with backoff regardless -- reauth just gives the
             # user a fast path to fix a rotated/typo'd password.
             self.entry.async_start_reauth(self.hass)
+
+    @callback
+    def _handle_publishes_lost(self, topics: list[str]) -> None:
+        """Runs on the HA event loop, before the drop is reported (marshaled by KameraportiMqttClient).
+
+        1.5.1: publishes the connection dropped before the broker acknowledged them; the exporter
+        sends its sensors among them again as soon as the connection is back.
+        """
+        self._exporter.async_on_publishes_lost(topics)
 
     async def _async_load_roster_applied_at(self) -> datetime | None:
         data = await self._roster_store.async_load()

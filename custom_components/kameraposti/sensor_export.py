@@ -19,7 +19,10 @@ Kameraposti drops a repeated leak/dry/open/closed state on its own.
 clients at once reconnects every few seconds, and a snapshot on each connect
 used up the account's message budget; within the minute only the sensors whose
 messages could not be sent during the break go out at once, and the full
-snapshot follows when the minute is up.
+snapshot follows when the minute is up. A message paho accepted but the
+broker had not acknowledged when the connection dropped counts as not sent
+(the MQTT client hands such topics back), so an alarm is never left waiting
+for the snapshot.
 The same snapshot is repeated every 15 minutes: Kameraposti's listener
 reconnects hourly (and after a crash), and a message published in that gap
 would otherwise be lost until the next state change.
@@ -382,6 +385,26 @@ class KameraportiSensorExporter:
                 SNAPSHOT_MIN_INTERVAL_SECONDS - elapsed,
                 HassJob(self._send_pending_snapshot, cancel_on_shutdown=True),
             )
+
+    @callback
+    def async_on_publishes_lost(self, topics: list[str]) -> None:
+        """The connection dropped before the broker acknowledged these publishes.
+
+        paho had accepted them (publish returned True), but a new paho client is built for every
+        connection attempt, so they are gone. Their sensors are sent again like those whose messages
+        could not be sent during the break: at once on reconnect, without waiting for the full
+        snapshot. A lost description is sent again before the state.
+        """
+        lost = set(topics)
+        for entity_id in self._entity_ids:
+            topic = self._topic(entity_id)
+            if f"{topic}/config" in lost:
+                self._described.pop(entity_id, None)
+                self._unsent.add(entity_id)
+            if topic in lost:
+                # Not sent after all: a CO meter's alarm state must go out again.
+                self._co_sent.pop(entity_id, None)
+                self._unsent.add(entity_id)
 
     @callback
     def _send_pending_snapshot(self, _now: datetime) -> None:
