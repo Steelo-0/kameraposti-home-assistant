@@ -665,6 +665,39 @@ async def test_a_refusal_handled_on_the_loop_after_stop_starts_no_reauth(
     assert client._reconnect_handle is None
 
 
+async def test_no_message_reaches_the_consumer_once_stopping(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """A message paho receives while async_stop stops its loop, or hands to the event loop just
+    before, must not reach the coordinator once unload has begun (or after STOPPED)."""
+    received: list[str] = []
+    states: list[ConnectionState] = []
+    client = KameraportiMqttClient(
+        hass,
+        host="cam.steels.me",
+        customer_id=CUSTOMER_ID,
+        username="kp-3",
+        password="secret",
+        on_message=lambda topic, payload: received.append(topic),
+        on_state_change=states.append,
+    )
+    await client.async_start()
+    await hass.async_block_till_done()
+    await _connack(hass, mock_paho_client)
+
+    # Handed to the loop just before unload; the loop runs it while async_stop waits for paho.
+    client._handle_message(
+        mock_paho_client, None, MagicMock(topic="customers/3/detections/16", payload=b"{}")
+    )
+    await client.async_stop()
+    # Received on paho's thread while/after its loop is being stopped.
+    client._handle_message(mock_paho_client, None, MagicMock(topic="customers/3/security", payload=b"{}"))
+    await hass.async_block_till_done()
+
+    assert received == []
+    assert states[-1] == ConnectionState.STOPPED
+
+
 async def test_a_connect_error_after_stop_reports_nothing(
     hass: HomeAssistant, mock_paho_client: MagicMock
 ) -> None:

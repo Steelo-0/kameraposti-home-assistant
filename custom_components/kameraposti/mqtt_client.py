@@ -425,9 +425,12 @@ class KameraportiMqttClient:
         self._hass.loop.call_soon_threadsafe(self._on_published, client, mid)
 
     def _handle_message(self, client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
+        if self._closing:
+            # Received while async_stop stops the loop: never reaches the coordinator after unload.
+            return
         topic = message.topic
         payload = message.payload
-        self._hass.loop.call_soon_threadsafe(self._on_message, topic, payload)
+        self._hass.loop.call_soon_threadsafe(self._deliver_message, topic, payload)
 
     # -- state/reconnect bookkeeping (always run on the HA event loop) --
 
@@ -459,6 +462,12 @@ class KameraportiMqttClient:
         if self._stable_handle is not None:
             self._stable_handle.cancel()
             self._stable_handle = None
+
+    def _deliver_message(self, topic: str, payload: bytes) -> None:
+        # Checked again here: the message may have been handed over just before async_stop began.
+        if self._closing:
+            return
+        self._on_message(topic, payload)
 
     def _on_published(self, client: mqtt.Client, mid: int) -> None:
         # Only the current client's ids: every connection attempt starts its ids from 1 again.
