@@ -376,6 +376,114 @@ async def test_coordinator_describes_exported_sensors_when_connected(hass: HomeA
         await coordinator.async_stop()
 
 
+async def _connected_coordinator(
+    hass: HomeAssistant, entity_ids: list[str]
+) -> tuple[KameraportiCoordinator, MagicMock]:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        options={CONF_EXPORTED_ENTITIES: entity_ids},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    client = MagicMock()
+    client.async_start = AsyncMock()
+    client.async_stop = AsyncMock()
+    client.publish.return_value = True
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient", return_value=client):
+        coordinator = KameraportiCoordinator(
+            hass, entry, host="cam.steels.me", customer_id=CUSTOMER_ID, username="kp-3", password="x"
+        )
+    await coordinator.async_start()
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    await hass.async_block_till_done()
+    return coordinator, client
+
+
+def _published_topics(client: MagicMock) -> list[str]:
+    return [c.args[0] for c in client.publish.call_args_list]
+
+
+async def test_a_reconnect_storm_sends_the_full_snapshot_at_most_once_a_minute(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """1.5.1: two clients on one login kick each other out every few seconds. Kameraposti counts
+    every message against the account's 120/min before reading it, so a full snapshot (two
+    messages per sensor) on each reconnect crowded out real leak/smoke/door alarms."""
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    _set(hass, "binary_sensor.ovi", "off", "door", "Etuovi")
+    coordinator, client = await _connected_coordinator(hass, ["binary_sensor.kellari", "binary_sensor.ovi"])
+    snapshot = [
+        "kameraposti/3/anturit/binary_sensor.kellari/config",
+        "kameraposti/3/anturit/binary_sensor.kellari",
+        "kameraposti/3/anturit/binary_sensor.ovi/config",
+        "kameraposti/3/anturit/binary_sensor.ovi",
+    ]
+    assert _published_topics(client) == snapshot  # the first connect sends it at once
+
+    for _ in range(10):
+        freezer.tick(5)
+        coordinator._handle_state_change(ConnectionState.RECONNECTING)
+        coordinator._handle_state_change(ConnectionState.CONNECTED)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert _published_topics(client) == snapshot
+
+    # A minute after the first one, the (deferred) snapshot goes out once.
+    freezer.tick(10)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _published_topics(client) == snapshot * 2
+
+    freezer.tick(59)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _published_topics(client) == snapshot * 2
+
+    # A deferred snapshot dies with the entry.
+    coordinator._handle_state_change(ConnectionState.RECONNECTING)
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    await coordinator.async_stop()
+    freezer.tick(5)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _published_topics(client) == snapshot * 2
+
+
+async def test_an_alarm_from_a_break_goes_out_at_once_on_a_rate_limited_reconnect(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The snapshot limit never delays an alarm: a sensor whose message could not be sent during
+    the break is sent as soon as the connection is back; only the full snapshot waits."""
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    _set(hass, "binary_sensor.ovi", "off", "door", "Etuovi")
+    coordinator, client = await _connected_coordinator(hass, ["binary_sensor.kellari", "binary_sensor.ovi"])
+    client.publish.reset_mock()
+
+    freezer.tick(5)
+    client.publish.return_value = False  # disconnected
+    coordinator._handle_state_change(ConnectionState.RECONNECTING)
+    _set(hass, "binary_sensor.kellari", "on", "moisture", "Kellarin vuoto")
+    await hass.async_block_till_done()
+    client.publish.reset_mock()
+
+    freezer.tick(2)
+    client.publish.return_value = True
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    await hass.async_block_till_done()
+    assert [c.args for c in client.publish.call_args_list] == [
+        ("kameraposti/3/anturit/binary_sensor.kellari", "leak", False)
+    ]
+
+    # Sent once: the next rate-limited reconnect does not repeat it.
+    freezer.tick(2)
+    coordinator._handle_state_change(ConnectionState.RECONNECTING)
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    await hass.async_block_till_done()
+    assert len(client.publish.call_args_list) == 1
+    await coordinator.async_stop()
+
+
 async def test_options_flow_selects_the_entities_to_export(hass: HomeAssistant) -> None:
     _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
     entry = MockConfigEntry(

@@ -21,9 +21,11 @@ from unittest.mock import MagicMock, patch
 
 import paho.mqtt.client as mqtt
 import pytest
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.kameraposti.mqtt_client import (
     CannotConnect,
@@ -357,6 +359,171 @@ async def test_disconnect_after_stop_does_not_schedule_a_new_reconnect(
     await hass.async_block_till_done()
 
     assert client._reconnect_handle is None
+
+
+@pytest.fixture
+def no_jitter() -> Generator[None]:
+    with patch("custom_components.kameraposti.mqtt_client.random.uniform", return_value=0.0):
+        yield
+
+
+async def _connack(hass: HomeAssistant, paho: MagicMock) -> None:
+    paho.on_connect(paho, None, MagicMock(), 0, None)
+    await hass.async_block_till_done()
+
+
+async def _drop(hass: HomeAssistant, client: KameraportiMqttClient, paho: MagicMock) -> float:
+    """The broker drops the connection; returns the scheduled reconnect delay and runs that reconnect."""
+    paho.on_disconnect(paho, None, MagicMock(), None, None)
+    await hass.async_block_till_done()
+    handle = client._reconnect_handle
+    assert handle is not None
+    delay = round(handle.when() - hass.loop.time(), 3)
+    # Run the reconnect now instead of waiting out the delay (and never twice).
+    handle.cancel()
+    client._start_reconnect_task()
+    await hass.async_block_till_done()
+    return delay
+
+
+async def test_a_connection_dropped_right_after_connack_keeps_backing_off(
+    hass: HomeAssistant, mock_paho_client: MagicMock, freezer: FrozenDateTimeFactory, no_jitter: None
+) -> None:
+    """1.5.1: a login also used by another client (the broker pins client id == login) gets its
+    CONNACK and is kicked out seconds later. Resetting the backoff on CONNACK made both sides
+    reconnect every 1-2 s forever; the delay keeps doubling until a connection stays up."""
+    client = _make_client(hass, [])
+    await client.async_start()
+    await hass.async_block_till_done()
+
+    delays = []
+    for _ in range(7):
+        await _connack(hass, mock_paho_client)
+        freezer.tick(2)
+        delays.append(await _drop(hass, client, mock_paho_client))
+
+    assert delays == [1, 2, 4, 8, 16, 30, 30]
+    await client.async_stop()
+
+
+async def test_only_a_connection_that_stays_up_a_minute_resets_the_backoff(
+    hass: HomeAssistant, mock_paho_client: MagicMock, freezer: FrozenDateTimeFactory, no_jitter: None
+) -> None:
+    client = _make_client(hass, [])
+    await client.async_start()
+    await hass.async_block_till_done()
+    for expected in (1, 2, 4):
+        await _connack(hass, mock_paho_client)
+        assert await _drop(hass, client, mock_paho_client) == expected
+
+    # Up for 59 s: not stable yet, the next drop still backs off further.
+    await _connack(hass, mock_paho_client)
+    freezer.tick(59)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert await _drop(hass, client, mock_paho_client) == 8
+
+    # Up for a full minute: stable, a later drop reconnects after 1 s again.
+    await _connack(hass, mock_paho_client)
+    freezer.tick(60)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    freezer.tick(600)
+    assert await _drop(hass, client, mock_paho_client) == 1
+    await client.async_stop()
+
+
+async def test_stop_cancels_the_stable_connection_timer(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    client = _make_client(hass, [])
+    await client.async_start()
+    await hass.async_block_till_done()
+    await _connack(hass, mock_paho_client)
+    handle = client._stable_handle
+    assert handle is not None
+
+    await client.async_stop()
+
+    assert handle.cancelled()
+    assert client._stable_handle is None
+
+
+def _shared_login_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "custom_components.kameraposti.mqtt_client"
+    ]
+
+
+async def test_repeated_drops_right_after_connecting_warn_once_about_a_shared_login(
+    hass: HomeAssistant,
+    mock_paho_client: MagicMock,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """1.5.1: three drops within two minutes, each soon after connecting, are the signature of a
+    second Home Assistant or bridge using the same login: say so once, in a WARNING."""
+    client = _make_client(hass, [])
+    await client.async_start()
+    await hass.async_block_till_done()
+
+    for _ in range(2):
+        await _connack(hass, mock_paho_client)
+        freezer.tick(3)
+        await _drop(hass, client, mock_paho_client)
+    assert _shared_login_warnings(caplog) == []
+
+    await _connack(hass, mock_paho_client)
+    freezer.tick(3)
+    await _drop(hass, client, mock_paho_client)
+    warnings = _shared_login_warnings(caplog)
+    assert len(warnings) == 1
+    assert "kp-3" in warnings[0]
+    assert "another Home Assistant" in warnings[0]
+    assert "extra login" in warnings[0]
+
+    for _ in range(4):
+        await _connack(hass, mock_paho_client)
+        freezer.tick(3)
+        await _drop(hass, client, mock_paho_client)
+    assert len(_shared_login_warnings(caplog)) == 1
+    await client.async_stop()
+
+
+async def test_occasional_or_stable_drops_do_not_warn_about_a_shared_login(
+    hass: HomeAssistant,
+    mock_paho_client: MagicMock,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _make_client(hass, [])
+    await client.async_start()
+    await hass.async_block_till_done()
+
+    # Drops of connections that had been up for a minute or more: an ordinary network.
+    for _ in range(4):
+        await _connack(hass, mock_paho_client)
+        freezer.tick(61)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        await _drop(hass, client, mock_paho_client)
+    # Quick drops, but more than two minutes apart.
+    for _ in range(4):
+        await _connack(hass, mock_paho_client)
+        freezer.tick(2)
+        await _drop(hass, client, mock_paho_client)
+        mock_paho_client.on_connect_fail(mock_paho_client, None)
+        await hass.async_block_till_done()
+        client._reconnect_handle.cancel()
+        client._reconnect_handle = None
+        freezer.tick(70)
+        client._start_reconnect_task()
+        await hass.async_block_till_done()
+
+    assert _shared_login_warnings(caplog) == []
+    await client.async_stop()
 
 
 class TestBackoff:

@@ -97,6 +97,19 @@ DEDUP_CACHE_SIZE: Final = 500
 RECONNECT_MIN_DELAY_SECONDS: Final = 1
 RECONNECT_MAX_DELAY_SECONDS: Final = 30
 RECONNECT_JITTER_SECONDS: Final = 1.0
+# 1.5.1: the backoff starts again from the minimum only after a connection has stayed up this
+# long, not on CONNACK. A login also used by another client is accepted and then kicked out
+# seconds later (the broker pins client id == login); resetting on CONNACK made both clients
+# reconnect every 1-2 s forever.
+STABLE_CONNECTION_SECONDS: Final = 60
+# 1.5.1: this many drops of not-yet-stable connections within the window mean the login is
+# probably used by another Home Assistant or bridge -- one WARNING says so.
+SHORT_CONNECTION_DROPS_WARN_COUNT: Final = 3
+SHORT_CONNECTION_DROPS_WINDOW_SECONDS: Final = 120
+# 1.5.1: the full sensor snapshot (two messages per exported sensor) goes out at most this often.
+# Kameraposti counts every message against the account's 120 a minute before reading it, so a
+# reconnect storm must not use the budget that leak/smoke/door alarms need.
+SNAPSHOT_MIN_INTERVAL_SECONDS: Final = 60
 
 # How long the config flow's connection test waits for CONNACK+SUBACK
 # before declaring the broker unreachable.

@@ -27,10 +27,12 @@ implementation detail of the underlying library.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import ssl
 import threading
+from collections import deque
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
@@ -51,6 +53,9 @@ from .const import (
     ROSTER_TOPIC_TEMPLATE,
     SECURITY_RESULT_TOPIC_TEMPLATE,
     SECURITY_STATE_TOPIC_TEMPLATE,
+    SHORT_CONNECTION_DROPS_WARN_COUNT,
+    SHORT_CONNECTION_DROPS_WINDOW_SECONDS,
+    STABLE_CONNECTION_SECONDS,
     TOPIC_SUBSCRIBE_TEMPLATE,
 )
 
@@ -114,7 +119,8 @@ class _Backoff:
     1s -> 2s -> 4s -> 8s -> 16s -> 30s max, each with up to
     RECONNECT_JITTER_SECONDS of extra random delay so many clients
     reconnecting at once don't all retry in lockstep. A stable connection
-    resets it back to the minimum.
+    (up for STABLE_CONNECTION_SECONDS, not merely a CONNACK) resets it back
+    to the minimum.
     """
 
     def __init__(
@@ -167,6 +173,12 @@ class KameraportiMqttClient:
         self._suback_refused: list[str] = []
         self._closing = False
         self._reconnect_handle: Any | None = None
+        # 1.5.1: pending while the current connection is not yet stable (event loop only).
+        self._stable_handle: asyncio.TimerHandle | None = None
+        # loop.time() of recent drops of not-yet-stable connections, and whether the
+        # shared-login warning has been logged since the last stable connection.
+        self._short_drops: deque[float] = deque()
+        self._shared_login_warned = False
 
     @property
     def topic(self) -> str:
@@ -205,6 +217,7 @@ class KameraportiMqttClient:
         if self._reconnect_handle is not None:
             self._reconnect_handle.cancel()
             self._reconnect_handle = None
+        self._cancel_stable_timer()
 
         client = self._client
         self._client = None
@@ -320,8 +333,7 @@ class KameraportiMqttClient:
     ) -> None:
         if self._closing:
             return
-        self._hass.loop.call_soon_threadsafe(self._report_state, ConnectionState.RECONNECTING)
-        self._hass.loop.call_soon_threadsafe(self._schedule_reconnect)
+        self._hass.loop.call_soon_threadsafe(self._on_disconnected)
 
     def _handle_subscribe(
         self, client: mqtt.Client, userdata: Any, mid: int, reason_code_list: Any, properties: Any = None
@@ -353,8 +365,58 @@ class KameraportiMqttClient:
     # -- state/reconnect bookkeeping (always run on the HA event loop) --
 
     def _on_connected(self) -> None:
-        self._backoff.reset()
+        # Not self._backoff.reset(): a CONNACK alone does not make the connection stable
+        # (see STABLE_CONNECTION_SECONDS). _on_stable resets it once the connection stays up.
+        self._cancel_stable_timer()
+        self._stable_handle = self._hass.loop.call_later(STABLE_CONNECTION_SECONDS, self._on_stable)
         self._report_state(ConnectionState.CONNECTED)
+
+    def _on_stable(self) -> None:
+        self._stable_handle = None
+        self._backoff.reset()
+        self._short_drops.clear()
+        self._shared_login_warned = False
+
+    def _cancel_stable_timer(self) -> None:
+        if self._stable_handle is not None:
+            self._stable_handle.cancel()
+            self._stable_handle = None
+
+    def _on_disconnected(self) -> None:
+        if self._closing:
+            return
+        if self._stable_handle is not None:
+            # Dropped before it became stable.
+            self._cancel_stable_timer()
+            self._note_short_connection()
+        self._report_state(ConnectionState.RECONNECTING)
+        self._schedule_reconnect()
+
+    def _note_short_connection(self) -> None:
+        """Warn once when connections keep being dropped right after connecting.
+
+        The broker accepts one connection per login (client id == login): a second Home
+        Assistant or a bridge with the same login kicks this one out, this one kicks it back.
+        """
+        now = self._hass.loop.time()
+        self._short_drops.append(now)
+        while self._short_drops and now - self._short_drops[0] > SHORT_CONNECTION_DROPS_WINDOW_SECONDS:
+            self._short_drops.popleft()
+        if len(self._short_drops) < SHORT_CONNECTION_DROPS_WARN_COUNT or self._shared_login_warned:
+            return
+        self._shared_login_warned = True
+        _LOGGER.warning(
+            "Kameraposti dropped the MQTT connection of login %s %d times within %d s, each time "
+            "soon after connecting. The login is probably also used by another Home Assistant or a "
+            "bridge: Kameraposti allows one connection per login, so the two keep disconnecting each "
+            "other (reconnects now back off up to %d s). Give the other one its own extra login "
+            "(%s-<n>) on Kameraposti's Sensors page.",
+            self._username,
+            len(self._short_drops),
+            SHORT_CONNECTION_DROPS_WINDOW_SECONDS,
+            RECONNECT_MAX_DELAY_SECONDS,
+            f"kp-{self._customer_id}",
+        )
 
     def _report_state(self, state: ConnectionState) -> None:
         self._on_state_change(state)

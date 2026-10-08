@@ -237,8 +237,11 @@ class KameraportiCoordinator:
 
         if state == ConnectionState.CONNECTED:
             # Describe the exported sensors and send their current state on
-            # every (re)connect -- nothing is buffered while disconnected.
-            self._exporter.publish_snapshot()
+            # (re)connect -- nothing is buffered while disconnected. 1.5.1: the
+            # full snapshot at most once a minute (a reconnect storm must not use
+            # up the account's message budget); what failed during the break
+            # goes out at once.
+            self._exporter.async_on_connected()
 
         if state == ConnectionState.AUTH_FAILURE:
             # Proactively surface Home Assistant's own reauth flow

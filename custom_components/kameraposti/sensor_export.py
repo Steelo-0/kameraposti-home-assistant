@@ -15,6 +15,11 @@ On every (re)connect the sensors are described again and their current state
 is sent (not motion: a motion sensor that happens to be "on" at reconnect is
 not a new movement), so an alarm that started during a break is not lost.
 Kameraposti drops a repeated leak/dry/open/closed state on its own.
+1.5.1: that full snapshot goes out at most once a minute. A login used by two
+clients at once reconnects every few seconds, and a snapshot on each connect
+used up the account's message budget; within the minute only the sensors whose
+messages could not be sent during the break go out at once, and the full
+snapshot follows when the minute is up.
 The same snapshot is repeated every 15 minutes: Kameraposti's listener
 reconnects hourly (and after a crash), and a message published in that gap
 would otherwise be lost until the next state change.
@@ -57,7 +62,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .const import SENSOR_TOPIC_TEMPLATE
+from .const import SENSOR_TOPIC_TEMPLATE, SNAPSHOT_MIN_INTERVAL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -321,6 +326,11 @@ class KameraportiSensorExporter:
         # Reading throttle: last sent time and the pending trailing send.
         self._reading_sent_at: dict[str, datetime] = {}
         self._reading_pending: dict[str, CALLBACK_TYPE] = {}
+        # 1.5.1: when the last full snapshot sent anything, and the deferred one.
+        self._snapshot_sent_at: datetime | None = None
+        self._snapshot_pending: CALLBACK_TYPE | None = None
+        # 1.5.1: entities whose description or state could not be sent (disconnected).
+        self._unsent: set[str] = set()
 
     @callback
     def _name_for(self, state: State) -> str:
@@ -346,22 +356,76 @@ class KameraportiSensorExporter:
         for cancel in self._reading_pending.values():
             cancel()
         self._reading_pending.clear()
+        if self._snapshot_pending is not None:
+            self._snapshot_pending()
+            self._snapshot_pending = None
         self._described.clear()
         self._co_sent.clear()
+        self._unsent.clear()
+
+    @callback
+    def async_on_connected(self) -> None:
+        """(Re)connected: the full snapshot, at most once per SNAPSHOT_MIN_INTERVAL_SECONDS.
+
+        Within the interval only what could not be sent during the break goes out now, so the
+        limit never delays an alarm; the full snapshot follows when the interval is up.
+        """
+        sent_at = self._snapshot_sent_at
+        elapsed = (dt_util.utcnow() - sent_at).total_seconds() if sent_at is not None else None
+        if elapsed is None or elapsed >= SNAPSHOT_MIN_INTERVAL_SECONDS:
+            self.publish_snapshot()
+            return
+        self._publish_unsent()
+        if self._snapshot_pending is None:
+            self._snapshot_pending = async_call_later(
+                self._hass,
+                SNAPSHOT_MIN_INTERVAL_SECONDS - elapsed,
+                HassJob(self._send_pending_snapshot, cancel_on_shutdown=True),
+            )
+
+    @callback
+    def _send_pending_snapshot(self, _now: datetime) -> None:
+        self._snapshot_pending = None
+        self.publish_snapshot()
 
     @callback
     def publish_snapshot(self) -> None:
-        """On (re)connect: describe every exportable entity and send its current state."""
+        """Describe every exportable entity and send its current state."""
         self._described.clear()
+        sent = False
         for entity_id in self._entity_ids:
             state = self._hass.states.get(entity_id)
             kind = kind_for(state)
             if state is None or kind is None:
+                self._unsent.discard(entity_id)
                 continue
             if not self._describe(state, kind):
-                return
-            if kind != "motion":
+                break
+            sent = True
+            if kind == "motion":
+                self._unsent.discard(entity_id)
+            else:
                 self._publish_state(state, kind, throttle=False)
+        if sent:
+            self._snapshot_sent_at = dt_util.utcnow()
+            if self._snapshot_pending is not None:
+                self._snapshot_pending()
+                self._snapshot_pending = None
+
+    @callback
+    def _publish_unsent(self) -> None:
+        """Send what could not be sent during the break: its description if needed, its state."""
+        for entity_id in [entity_id for entity_id in self._entity_ids if entity_id in self._unsent]:
+            self._unsent.discard(entity_id)
+            state = self._hass.states.get(entity_id)
+            kind = kind_for(state)
+            if state is None or kind is None:
+                continue
+            if self._described.get(entity_id) != (self._name_for(state), kind):
+                if not self._describe(state, kind):
+                    return
+            if kind != "motion":
+                self._publish_state(state, kind)
 
     @callback
     def _handle_resync(self, _now: datetime) -> None:
@@ -389,6 +453,7 @@ class KameraportiSensorExporter:
         name = self._name_for(state)
         payload = json.dumps({"name": name, "kind": kind, "format": "simple"}, ensure_ascii=False)
         if not self._publish(f"{self._topic(state.entity_id)}/config", payload, False):
+            self._unsent.add(state.entity_id)
             return False
         self._described[state.entity_id] = (name, kind)
         return True
@@ -417,10 +482,13 @@ class KameraportiSensorExporter:
                 return
         _LOGGER.debug("Kameraposti exporting %s -> %s", entity_id, payload)
         if self._publish(self._topic(entity_id), payload, False):
+            self._unsent.discard(entity_id)
             if kind in READING_KINDS:
                 self._reading_sent_at[entity_id] = dt_util.utcnow()
             if co_meter:
                 self._co_sent[entity_id] = payload
+        else:
+            self._unsent.add(entity_id)
 
     @callback
     def _send_pending_reading(self, entity_id: str, _now: datetime) -> None:

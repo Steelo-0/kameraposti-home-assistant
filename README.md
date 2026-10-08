@@ -34,6 +34,12 @@ MQTT → Extra logins) and type that login, e.g. `kp-2-2`, in the
 **MQTT login or account number** field (since 1.3.1; just the account number
 means the main login). Bridges use their extra login directly.
 
+Since 1.5.1 a connection that keeps being dropped right after connecting backs
+off up to 30 seconds between attempts (the delay starts again from 1 second
+only after a connection has stayed up for a minute), and Home Assistant's log
+gets one warning that the login is probably also used by another Home
+Assistant or a bridge.
+
 ## Installation
 
 ### Via HACS (custom repository)
@@ -221,6 +227,13 @@ not lost; Kameraposti ignores repeated states, so this causes no extra
 alarms. Nothing is queued while disconnected. A sensor deleted only in
 Kameraposti comes back on the next connection — remove it from this list
 as well.
+
+Since 1.5.1 this full resend happens at most once a minute: Kameraposti
+counts every message against the account's limit (120 a minute) before
+reading it, so a connection that keeps dropping must not crowd out real
+alarms. A sensor whose message could not be sent during the break is still
+sent as soon as the connection is back; the full resend follows when the
+minute is up.
 
 ## Security system (arm / disarm)
 
