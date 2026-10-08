@@ -512,7 +512,7 @@ async def test_occasional_or_stable_drops_do_not_warn_about_a_shared_login(
         async_fire_time_changed(hass)
         await hass.async_block_till_done()
         await _drop(hass, client, mock_paho_client)
-    # Quick drops, but more than two minutes apart.
+    # Quick drops, but 72 s apart (2 s up + 70 s): never three within the two-minute window.
     for _ in range(4):
         await _connack(hass, mock_paho_client)
         freezer.tick(2)
