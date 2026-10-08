@@ -40,11 +40,10 @@ from .const import (
     CONF_HOST,
     DEFAULT_HOST,
     DOMAIN,
-    EXTRA_USERNAME_TEMPLATE,
-    LOGIN_PATTERN,
     MAX_EXPORTED_SENSORS,
     USERNAME_TEMPLATE,
 )
+from .login import entry_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
 from .sensor_export import kameraposti_name, kind_for
 
@@ -152,28 +151,27 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            await self.async_set_unique_id(str(user_input[CONF_CUSTOMER_ID]))
-            self._abort_if_unique_id_configured()
             if user_input[CONF_HOST] not in BROKER_HOSTS:
                 errors["base"] = "cannot_connect"
                 return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
-            match = LOGIN_PATTERN.match(str(user_input[CONF_CUSTOMER_ID]).strip())
-            if match is None:
+            parsed = parse_login(user_input[CONF_CUSTOMER_ID])
+            if parsed is None:
                 return self.async_show_form(
                     step_id="user",
                     data_schema=STEP_USER_DATA_SCHEMA,
                     errors={CONF_CUSTOMER_ID: "invalid_login"},
                 )
-            customer_id, login_number = int(match.group(1)), match.group(2)
-            user_input = {
-                **user_input,
-                CONF_CUSTOMER_ID: customer_id,
-                CONF_USERNAME: (
-                    EXTRA_USERNAME_TEMPLATE.format(customer_id=customer_id, login_number=int(login_number))
-                    if login_number
-                    else USERNAME_TEMPLATE.format(customer_id=customer_id)
-                ),
-            }
+            customer_id, username = parsed
+            is_extra_login = username != USERNAME_TEMPLATE.format(customer_id=customer_id)
+            # 1.5.1: the unique id is the canonical login ("3", "kp-3" and " KP-3 " are one
+            # login), checked before the test connection, which would kick a running entry with
+            # the same login off the broker. Entries from before 1.5.1 that have not been set up
+            # since (so still carry the raw input as unique id) are matched by their stored login.
+            await self.async_set_unique_id(username)
+            self._abort_if_unique_id_configured()
+            if any(entry_login(entry.data) == username for entry in self._async_current_entries()):
+                return self.async_abort(reason="already_configured")
+            user_input = {**user_input, CONF_CUSTOMER_ID: customer_id, CONF_USERNAME: username}
 
             try:
                 await _async_validate(self.hass, user_input)
@@ -186,11 +184,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 return self.async_create_entry(
-                    title=(
-                        f"Kameraposti ({user_input[CONF_USERNAME]})"
-                        if login_number
-                        else f"Kameraposti ({user_input[CONF_CUSTOMER_ID]})"
-                    ),
+                    title=f"Kameraposti ({username})" if is_extra_login else f"Kameraposti ({customer_id})",
                     data=user_input,
                 )
 

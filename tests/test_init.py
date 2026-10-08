@@ -9,6 +9,7 @@ running.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
@@ -126,3 +127,112 @@ async def test_version_1_entry_migrates_to_the_own_broker_and_kp_login(
     assert entry.data[CONF_USERNAME] == "kp-3"
     assert entry.data["host"] == "kameraposti.fi"
     assert entry.data[CONF_PASSWORD] == "secret"
+
+
+ENTRY_DATA = {"host": "cam.steels.me", CONF_CUSTOMER_ID: 3, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"}
+
+
+@pytest.mark.parametrize(
+    ("unique_id", "username", "expected"),
+    [
+        ("3", "kp-3", "kp-3"),
+        (" KP-3 ", "kp-3", "kp-3"),
+        ("kp-3", "kp-3", "kp-3"),
+        ("KP-3-2 ", "kp-3-2", "kp-3-2"),
+        ("kp-3-2", "kp-3-2", "kp-3-2"),
+        (None, "kp-3", "kp-3"),
+    ],
+)
+async def test_setup_rewrites_the_unique_id_to_the_login(
+    hass: HomeAssistant,
+    mqtt_client_instances: list[AsyncMock],
+    unique_id: str | None,
+    username: str,
+    expected: str,
+) -> None:
+    """1.5.1: entries created before 1.5.1 carry the raw setup input as their unique id."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={**ENTRY_DATA, CONF_USERNAME: username}, unique_id=unique_id, version=2
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.unique_id == expected
+    assert entry.state is ConfigEntryState.LOADED
+    assert len(mqtt_client_instances) == 1
+
+
+async def test_a_version_1_entry_gets_the_login_as_unique_id(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data=DATA, unique_id="3", version=1)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.unique_id == "kp-3"
+
+
+def _same_login_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.name == "custom_components.kameraposti"
+        and "kp-3" in r.getMessage()
+    ]
+
+
+async def test_two_entries_with_one_login_are_both_kept_and_warned_about(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Nothing is deleted: the older entry gets the login as its unique id, the newer one is left
+    as it is, and the log says that the two disconnect each other."""
+    older = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id="3", version=2, title="Vanha")
+    newer = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id=" KP-3 ", version=2, title="Uusi")
+    older.add_to_hass(hass)
+    newer.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(older.entry_id)
+    await hass.async_block_till_done()
+
+    assert older.unique_id == "kp-3"
+    assert newer.unique_id == " KP-3 "
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 2
+    assert older.state is ConfigEntryState.LOADED
+    assert newer.state is ConfigEntryState.LOADED
+    warnings = _same_login_warnings(caplog)
+    assert len(warnings) == 1
+    assert "Vanha" in warnings[0]
+    assert "Uusi" in warnings[0]
+    assert "extra login" in warnings[0]
+
+
+async def test_a_newer_duplicate_that_already_has_the_login_keeps_it(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two entries never get the same unique id; once the duplicate is removed, the remaining
+    entry takes the login on its next setup."""
+    older = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id="3", version=2, title="Vanha")
+    newer = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id="kp-3", version=2, title="Uusi")
+    older.add_to_hass(hass)
+    newer.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(older.entry_id)
+    await hass.async_block_till_done()
+
+    assert older.unique_id == "3"
+    assert newer.unique_id == "kp-3"
+    assert len(_same_login_warnings(caplog)) == 1
+    assert "already in use" not in caplog.text
+
+    assert await hass.config_entries.async_remove(newer.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_reload(older.entry_id)
+    await hass.async_block_till_done()
+
+    assert older.unique_id == "kp-3"
+    assert older.state is ConfigEntryState.LOADED

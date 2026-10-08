@@ -63,6 +63,11 @@ Copy `custom_components/kameraposti` into your Home Assistant
    subscribe) before saving — if anything fails, you'll see the reason
    before the entry is created.
 
+A login can be added only once, however it is typed (`3`, `kp-3` and
+` KP-3 ` are the same login; since 1.5.1). If two entries from an earlier
+version use the same login, both are kept and Home Assistant's log warns
+about them on every start: remove one, or add it again with an extra login.
+
 Your cameras appear automatically as devices, with no further
 configuration: since 1.5.0 straight from your account's camera list, named
 as in Kameraposti (on a service that does not publish the list, a camera

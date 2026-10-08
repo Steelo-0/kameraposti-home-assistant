@@ -25,7 +25,7 @@
       "invalid_login": "Unknown login. Type it as shown on the sensor page, e.g. kp-2 or kp-2-2 (or just the account number)."
     },
     "abort": {
-      "already_configured": "This Kameraposti account is already configured.",
+      "already_configured": "This Kameraposti MQTT login is already configured. Another Home Assistant on the same account needs its own extra login (e.g. kp-2-2) from Kameraposti's Sensors page.",
       "reauth_successful": "Re-authentication was successful."
     }
   },

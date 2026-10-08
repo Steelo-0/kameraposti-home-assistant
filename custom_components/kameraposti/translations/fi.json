@@ -25,7 +25,7 @@
       "invalid_login": "Tuntematon tunnus. Kirjoita se kuten Anturit-sivulla, esim. kp-2 tai kp-2-2 (tai pelkkä tilin numero)."
     },
     "abort": {
-      "already_configured": "Tämä Kameraposti-tili on jo määritetty.",
+      "already_configured": "Tämä Kamerapostin MQTT-tunnus on jo määritetty. Toinen Home Assistant samalla tilillä tarvitsee oman lisätunnuksen (esim. kp-2-2) Kamerapostin Anturit-sivulta.",
       "reauth_successful": "Uudelleentunnistautuminen onnistui."
     }
   },

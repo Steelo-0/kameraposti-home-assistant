@@ -210,3 +210,41 @@ async def test_an_unknown_login_format_shows_a_field_error(hass: HomeAssistant) 
         assert result["errors"] == {CONF_CUSTOMER_ID: "invalid_login"}, bad
         mock_test.assert_not_awaited()
 
+
+
+async def test_the_same_login_typed_differently_is_configured_only_once(hass: HomeAssistant) -> None:
+    """1.5.1: the unique id was the raw field value, so "3", "kp-3" and " KP-3 " became three
+    entries with one login -- which then kept disconnecting each other. The unique id is now the
+    login itself, and a duplicate is refused before any test connection (which would kick the
+    running entry off the broker)."""
+    result, _ = await _setup_with(hass, "3")
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == "kp-3"
+
+    for same in ("kp-3", " KP-3 ", "Kp-3", 3):
+        result, mock_test = await _setup_with(hass, same)
+        assert result["type"] is FlowResultType.ABORT, same
+        assert result["reason"] == "already_configured", same
+        mock_test.assert_not_awaited()
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+    # An extra login is a different login.
+    result, _ = await _setup_with(hass, " KP-3-2")
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == "kp-3-2"
+    result, _ = await _setup_with(hass, "kp-3-2")
+    assert result["type"] is FlowResultType.ABORT
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 2
+
+
+async def test_an_entry_from_before_1_5_1_blocks_the_same_login(hass: HomeAssistant) -> None:
+    """An entry whose unique id is still the raw input (not loaded, so not yet rewritten) is
+    recognised by its stored login."""
+    MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id=" KP-3 ", version=2).add_to_hass(hass)
+
+    result, mock_test = await _setup_with(hass, "3")
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    mock_test.assert_not_awaited()
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
