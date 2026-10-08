@@ -186,6 +186,9 @@ class KameraportiMqttClient:
         # loop only): message id -> topic. A drop loses them -- every attempt builds a new paho
         # client, so paho's own retry queue goes with the old one -- and they are handed back.
         self._unacked: dict[int, str] = {}
+        # Serialises _disconnect_client: async_stop and _abandon_client can disconnect the same
+        # paho client on two executor threads at once.
+        self._disconnect_lock = threading.Lock()
 
     @property
     def topic(self) -> str:
@@ -328,10 +331,21 @@ class KameraportiMqttClient:
         self._disconnect_client(client)
 
     def _disconnect_client(self, client: mqtt.Client) -> None:
-        try:
-            client.disconnect()
-        finally:
-            client.loop_stop()
+        """Disconnect and stop the network loop. Executor thread only; never raises from loop_stop.
+
+        paho's loop_stop() checks its network thread and then joins it without a lock, and the
+        thread clears itself when it ends: a second concurrent caller could join None
+        (AttributeError) and fail the unload. The lock serialises the two callers (async_stop,
+        _abandon_client); a loop_stop() that still fails is logged and ignored.
+        """
+        with self._disconnect_lock:
+            try:
+                client.disconnect()
+            finally:
+                try:
+                    client.loop_stop()
+                except Exception:  # noqa: BLE001 - teardown must not fail the unload
+                    _LOGGER.debug("Kameraposti MQTT loop_stop() failed", exc_info=True)
 
     # -- paho-mqtt callbacks (run on paho's network thread) --------------
 

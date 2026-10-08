@@ -15,6 +15,7 @@ still missed a bug that broke every real connection attempt.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import ssl
 import threading
@@ -687,6 +688,66 @@ async def test_a_connect_error_after_stop_reports_nothing(
 
     assert states[-1] == ConnectionState.STOPPED
     assert client._reconnect_handle is None
+
+
+class _PahoNetworkLoop:
+    """paho 2.1 loop_stop() without its network thread: ``if self._thread is None: return INVAL``,
+    then ``self._thread.join()``; the network thread sets ``_thread = None`` when it ends. paho has
+    no lock there, so a second caller that passed the check can join None (AttributeError)."""
+
+    def __init__(self) -> None:
+        self._thread: _PahoNetworkLoop | None = self
+        self._both_checked = threading.Barrier(2)
+        self._join_lock = threading.Lock()
+
+    def join(self) -> None:
+        self._thread = None  # the network thread ended
+
+    def loop_stop(self) -> int:
+        if self._thread is None:
+            return mqtt.MQTT_ERR_INVAL
+        try:
+            # Give a concurrent second caller the time to pass the same check.
+            self._both_checked.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        with self._join_lock:
+            self._thread.join()
+        return mqtt.MQTT_ERR_SUCCESS
+
+
+async def test_two_disconnects_of_one_client_at_once_never_fail(hass: HomeAssistant) -> None:
+    """async_stop (one executor thread) and _abandon_client (another, an in-flight connect that saw
+    _closing) can disconnect the same paho client at once; paho's loop_stop() then raised
+    AttributeError in one of them, which failed the unload."""
+    client = _make_client(hass, [])
+    paho = MagicMock(name="paho")
+    paho.loop_stop.side_effect = _PahoNetworkLoop().loop_stop
+
+    await asyncio.gather(
+        hass.async_add_executor_job(client._disconnect_client, paho),
+        hass.async_add_executor_job(client._disconnect_client, paho),
+    )
+
+    assert paho.disconnect.call_count == 2
+    assert paho.loop_stop.call_count == 2
+
+
+async def test_a_failing_loop_stop_is_logged_and_unload_still_completes(
+    hass: HomeAssistant, mock_paho_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="custom_components.kameraposti.mqtt_client")
+    states: list[ConnectionState] = []
+    client = _make_client(hass, states)
+    await client.async_start()
+    await hass.async_block_till_done()
+    mock_paho_client.loop_stop.side_effect = AttributeError("'NoneType' object has no attribute 'join'")
+
+    await client.async_stop()
+
+    mock_paho_client.disconnect.assert_called_once()
+    assert states[-1] == ConnectionState.STOPPED
+    assert any("loop_stop" in r.getMessage() and r.levelno == logging.DEBUG for r in caplog.records)
 
 
 class TestBackoff:
