@@ -42,6 +42,7 @@ import paho.mqtt.client as mqtt
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    CAPTURE_SUBSCRIBE_TEMPLATE,
     CONNECTION_TEST_TIMEOUT_SECONDS,
     LATEST_PHOTO_SUBSCRIBE_TEMPLATE,
     MQTT_KEEPALIVE_SECONDS,
@@ -197,14 +198,15 @@ class KameraportiMqttClient:
     @property
     def topics(self) -> list[str]:
         """Detections + the security system state and command results (2026-10-05)
-        + the camera roster and each camera's latest photo (1.5.0).
+        + the camera roster and each camera's latest photo (1.5.0) + Kameraposti
+        Turva's capture requests (1.6.0).
 
         The roster is subscribed before the latest photos so that, on a fresh
         connection, the broker hands over the retained camera list before the
-        retained photos. A broker whose ACL does not (yet) allow the 1.5.0
-        topics just refuses those subscriptions in its SUBACK; detections and
-        the security system keep working (the config-flow probe asks only for
-        detections).
+        retained photos. A broker whose ACL does not (yet) allow the 1.5.0 or
+        1.6.0 topics just refuses those subscriptions in its SUBACK; detections
+        and the security system keep working (the config-flow probe asks only
+        for detections).
         """
         return [
             self.topic,
@@ -212,6 +214,7 @@ class KameraportiMqttClient:
             SECURITY_RESULT_TOPIC_TEMPLATE.format(customer_id=self._customer_id),
             ROSTER_TOPIC_TEMPLATE.format(customer_id=self._customer_id),
             LATEST_PHOTO_SUBSCRIBE_TEMPLATE.format(customer_id=self._customer_id),
+            CAPTURE_SUBSCRIBE_TEMPLATE.format(customer_id=self._customer_id),
         ]
 
     async def async_start(self) -> None:
@@ -401,8 +404,9 @@ class KameraportiMqttClient:
     ) -> None:
         """Log, once per connection, the topics the broker refused (its ACL).
 
-        Diagnostics only: a refused 1.5.0 topic (roster / latest photos) on a
-        broker that does not allow it yet changes nothing else.
+        Diagnostics only: a refused 1.5.0 topic (roster / latest photos) or 1.6.0
+        topic (capture requests) on a broker that does not allow it yet changes
+        nothing else.
         """
         try:
             topic = self._suback_pending.pop(mid, None)

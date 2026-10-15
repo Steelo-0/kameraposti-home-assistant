@@ -96,11 +96,12 @@ async def test_start_connects_with_expected_transport_and_subscribes_on_success(
     await client.async_stop()
 
 
-async def test_connect_subscribes_detections_security_roster_and_latest_photos(
+async def test_connect_subscribes_detections_security_roster_latest_photos_and_captures(
     hass: HomeAssistant, mock_paho_client: MagicMock
 ) -> None:
     """1.5.0: the roster comes before the latest photos, so a fresh connection
-    knows the account's cameras before their retained photos arrive."""
+    knows the account's cameras before their retained photos arrive. 1.6.0: and
+    Kameraposti Turva's capture requests."""
     client = _make_client(hass, [])
     await client.async_start()
     await hass.async_block_till_done()
@@ -114,17 +115,26 @@ async def test_connect_subscribes_detections_security_roster_and_latest_photos(
         "customers/3/security/result",
         "customers/3/cameras",
         "customers/3/cameras/+/latest",
+        "customers/3/cameras/+/capture",
     ]
     assert all(c.kwargs == {"qos": 1} for c in mock_paho_client.subscribe.call_args_list)
     await client.async_stop()
 
 
-@pytest.mark.parametrize("refused", [[], ["customers/3/cameras", "customers/3/cameras/+/latest"]])
+@pytest.mark.parametrize(
+    "refused",
+    [
+        [],
+        ["customers/3/cameras", "customers/3/cameras/+/latest", "customers/3/cameras/+/capture"],
+        ["customers/3/cameras/+/capture"],
+    ],
+)
 async def test_refused_subscriptions_are_logged_once_without_changing_anything(
     hass: HomeAssistant, mock_paho_client: MagicMock, caplog: pytest.LogCaptureFixture, refused: list[str]
 ) -> None:
     """Fable L-4: a broker whose ACL does not (yet) allow the 1.5.0 topics refuses them
-    in its SUBACK; one debug line names them, the connection carries on as before."""
+    in its SUBACK; one debug line names them, the connection carries on as before.
+    1.6.0: the same for the capture requests on a server before Turva V57."""
     caplog.set_level(logging.DEBUG, logger="custom_components.kameraposti.mqtt_client")
     states: list[ConnectionState] = []
     client = _make_client(hass, states)
@@ -316,8 +326,8 @@ async def test_reconnect_attempt_reconnects_and_resubscribes_on_success(
     await hass.async_block_till_done()
 
     # Kaksi yhteyttä (alku + uudelleen), kumpikin tilaa havainnot + turvatilan + tuloksen
-    # + kameralistan + viimeisimmät kuvat.
-    assert mock_paho_client.subscribe.call_count == 10
+    # + kameralistan + viimeisimmät kuvat + kuvapyynnöt.
+    assert mock_paho_client.subscribe.call_count == 12
     assert states[-1] == ConnectionState.CONNECTED
 
     await client.async_stop()
