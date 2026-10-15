@@ -6,7 +6,8 @@ broker, turns them into Home Assistant sensors and an automation trigger
 event, and shows each camera's latest photo. It can also send your own Home
 Assistant sensors (leak, smoke, gas, door, window, motion, temperature,
 carbon dioxide) to Kameraposti, which then alarms through its own
-notifications.
+notifications, and send Kameraposti Turva a photo (and a short video) from a
+Home Assistant camera when an alarm goes off.
 
 It talks to Kameraposti's broker over its own dedicated MQTT connection —
 it does **not** use, share, or modify your existing Home Assistant MQTT
@@ -194,7 +195,8 @@ you remove it (Settings → Devices & services → Generic Camera).
 
 ## Sensors to Kameraposti
 
-**Settings → Devices & services → Kameraposti → Configure** lets you pick
+**Settings → Devices & services → Kameraposti → Configure → Sensors to
+Kameraposti** lets you pick
 Home Assistant entities to send to Kameraposti (at most 20 per account). Since 1.4.1 the list shows
 exactly the entities the integration can send:
 
@@ -260,6 +262,55 @@ disarm. Five wrong codes lock disarming for 15 minutes, ten in a day for 24
 hours, and Kameraposti notifies you and your followers (arming still works). Every change shows in Kameraposti's log as
 "Home Assistant". Mode changes made in the Kameraposti app or website show up
 in Home Assistant right away, so automations can react to them too.
+
+## Photos from Home Assistant cameras (since 1.6.0)
+
+Kameraposti Turva can ask Home Assistant for a photo when a sensor linked to
+one of its cameras alarms, or when you press **Ota kuva Home Assistantista**
+(take a photo from Home Assistant) on the camera's page. The photo arrives in
+Kameraposti as one of the camera's own photos: it is attached to the alarm
+(if the alarm has no photo yet), shows among the camera's photos and updates
+its Latest photo. This is for cameras that cannot send
+their photos to Kameraposti themselves (e.g. a Shelly camera, which sends
+only to Shelly's cloud) but are in Home Assistant.
+
+Link the cameras in **Settings → Devices & services → Kameraposti →
+Configure → Photos from Home Assistant cameras**: choose a Kameraposti
+camera, then its Home Assistant `camera` entity, and whether a video is sent
+as well (5–30 seconds, default 10). Leave the entity empty to unlink.
+Kameraposti cameras without a link are ignored.
+
+- **Photo**: a still from the camera (Home Assistant's own camera snapshot,
+  waiting at most 10 seconds), sent to Kameraposti right away. The photo is
+  always sent before the video.
+- **Video** (optional): recorded after the photo with Home Assistant's
+  `stream` integration, the same way as the `camera.record` action. The
+  camera must support streaming (the camera's page in Home Assistant shows
+  live video) and `stream` must be set up (it is with `default_config`). The
+  video starts a few seconds after the alarm, not before it. A video larger
+  than Kameraposti's limit (25 MB) is not sent; use a shorter video for a
+  high-resolution stream. If the camera cannot stream, or the recording
+  fails, the log gets one warning and only the photo is sent.
+- **Temporary file**: the recording goes to a hidden folder
+  `.kameraposti_capture` in Home Assistant's media folder (`/media` on Home
+  Assistant OS and in containers), or to `/config/.kameraposti_capture` if
+  you have added that folder to `allowlist_external_dirs`. Media files are
+  served only to logged-in users, and the folder is hidden from the media
+  browser. It is never written under `/config/www`, which is served to anyone
+  at `/local/`. The file is deleted as soon as the request is done,
+  whatever happened.
+- Kameraposti's answer: a refusal (e.g. an expired or already used link) is
+  final; a server error, timeout or lost connection is retried once while
+  the link is still valid (2 minutes for the photo, 5 for the video).
+- Each request is handled once. With several Home Assistants on the same
+  account, the first one to deliver wins and the others log that
+  Kameraposti already has the photo.
+- The links in Kameraposti's request are one-time permissions to upload: the
+  integration never writes them to the log. Log lines name the request
+  (`request_id`), the camera and the outcome.
+
+A Kameraposti service that does not offer this yet refuses the subscription,
+and everything else works as before.
 
 ## Known limitations
 
