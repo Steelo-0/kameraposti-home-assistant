@@ -55,8 +55,8 @@ Copy `custom_components/kameraposti` into your Home Assistant
 
 1. Go to **Settings → Devices & services → Add integration**, search for
    **Kameraposti**.
-2. Choose the service (`kameraposti.fi`, or `cam.steels.me` for the test
-   server), then enter your account number and MQTT password.
+2. Choose the service, then enter the MQTT login (e.g. `kp-2`) and password,
+   all three as shown in the Home Assistant section of the Sensors page.
 3. The integration tests the connection (WSS/TLS + authentication +
    subscribe) before saving — if anything fails, you'll see the reason
    before the entry is created.
