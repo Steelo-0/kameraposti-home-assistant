@@ -307,7 +307,21 @@ Kameraposti cameras without a link are ignored.
   Kameraposti already has the photo.
 - The links in Kameraposti's request are one-time permissions to upload: the
   integration never writes them to the log. Log lines name the request
-  (`request_id`), the camera and the outcome.
+  (`request_id`), the camera and the outcome. Do not raise the `httpx`
+  logger to `info` or `debug` in production (`logger:` in
+  `configuration.yaml`): the `httpx` library itself then logs every request
+  address, these links included.
+- The links must point at the Kameraposti service the integration is set up
+  with (`kameraposti.fi` or `cam.steels.me`, default port, no user name); a
+  request with any other address is ignored, so nobody who could publish a
+  request can make Home Assistant send camera images elsewhere.
+- A recording that does not finish in time (the video length + 30 seconds,
+  e.g. a camera that stops sending) is abandoned and its file deleted, but
+  the recorder may keep one file handle open until Home Assistant restarts.
+  Home Assistant's own `camera.record` action has the same limitation.
+- Works on Home Assistant 2024.12 and newer, like the rest of the
+  integration: where Home Assistant has no `camera.helper` module, the camera
+  is looked up the same way through the camera integration itself.
 
 A Kameraposti service that does not offer this yet refuses the subscription,
 and everything else works as before.
