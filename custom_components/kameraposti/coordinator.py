@@ -168,6 +168,7 @@ class KameraportiCoordinator:
         self._capture = KameraportiCaptureHandler(
             hass,
             entry,
+            host=host,
             customer_id=customer_id,
             cameras=capture_cameras_from_options(entry.options),
         )

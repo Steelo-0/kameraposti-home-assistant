@@ -478,6 +478,7 @@ def test_latest_photo_on_a_foreign_or_malformed_topic_is_rejected(topic: str) ->
 # -- capture requests (1.6.0) ---------------------------------------------------
 
 CAPTURE_TOPIC = "customers/3/cameras/5/capture"
+HOST = "cam.steels.me"
 PHOTO_URL = "https://cam.steels.me/turva/kamerakuva/17/photo?expires=1&h=cam.steels.me&signature=p17"
 VIDEO_URL = "https://cam.steels.me/turva/kamerakuva/17/video?expires=2&h=cam.steels.me&signature=v17"
 VALID_CAPTURE = {
@@ -497,7 +498,7 @@ def _capture(**overrides: object) -> bytes:
 
 
 def test_valid_capture_request_parses() -> None:
-    request = parse_capture_request(CAPTURE_TOPIC, _capture(), expected_customer_id=3)
+    request = parse_capture_request(CAPTURE_TOPIC, _capture(), expected_customer_id=3, expected_host=HOST)
 
     assert request.request_id == 17
     assert request.camera_id == 5
@@ -512,7 +513,7 @@ def test_valid_capture_request_parses() -> None:
 def test_capture_request_repr_never_shows_the_signed_urls() -> None:
     """The URLs are signed capabilities: a request that ends up in a log line by
     accident must not carry them along."""
-    request = parse_capture_request(CAPTURE_TOPIC, _capture(), expected_customer_id=3)
+    request = parse_capture_request(CAPTURE_TOPIC, _capture(), expected_customer_id=3, expected_host=HOST)
 
     assert "signature" not in repr(request)
     assert "kamerakuva" not in repr(request)
@@ -520,7 +521,10 @@ def test_capture_request_repr_never_shows_the_signed_urls() -> None:
 
 def test_capture_request_accepts_a_manual_request_and_ignores_unknown_fields() -> None:
     request = parse_capture_request(
-        CAPTURE_TOPIC, _capture(reason="manual", future_field={"x": 1}), expected_customer_id=3
+        CAPTURE_TOPIC,
+        _capture(reason="manual", future_field={"x": 1}),
+        expected_customer_id=3,
+        expected_host=HOST,
     )
     assert request.reason == "manual"
 
@@ -559,7 +563,7 @@ def test_capture_request_accepts_a_manual_request_and_ignores_unknown_fields() -
 )
 def test_junk_capture_request_is_rejected(payload: bytes, reason: str) -> None:
     with pytest.raises(CaptureRequestRejected, match=reason) as excinfo:
-        parse_capture_request(CAPTURE_TOPIC, payload, expected_customer_id=3)
+        parse_capture_request(CAPTURE_TOPIC, payload, expected_customer_id=3, expected_host=HOST)
     # The reason is logged: it never echoes a URL.
     assert "signature" not in str(excinfo.value)
     assert "kamerakuva" not in str(excinfo.value)
@@ -577,4 +581,48 @@ def test_junk_capture_request_is_rejected(payload: bytes, reason: str) -> None:
 )
 def test_capture_request_on_a_foreign_or_malformed_topic_is_rejected(topic: str) -> None:
     with pytest.raises(CaptureRequestRejected):
-        parse_capture_request(topic, _capture(), expected_customer_id=3)
+        parse_capture_request(topic, _capture(), expected_customer_id=3, expected_host=HOST)
+
+
+@pytest.mark.parametrize("field", ["photo_url", "video_url"])
+@pytest.mark.parametrize(
+    ("url", "reason"),
+    [
+        # Anyone able to publish on the topic must not make Home Assistant POST camera
+        # images elsewhere -- another host, the LAN, a userinfo trick or another port.
+        ("https://evil.example/turva/kamerakuva/17/x?signature=s", "host"),
+        ("https://kameraposti.fi/turva/kamerakuva/17/x?signature=s", "host"),
+        ("https://192.168.10.1/turva/kamerakuva/17/x?signature=s", "host"),
+        ("https://[fd00::1]/turva/kamerakuva/17/x?signature=s", "host"),
+        ("https://cam.steels.me.evil.example/turva/kamerakuva/17/x?signature=s", "host"),
+        ("https://cam.steels.me@evil.example/turva/kamerakuva/17/x?signature=s", "user"),
+        ("https://user@cam.steels.me/turva/kamerakuva/17/x?signature=s", "user"),
+        ("https://user:pw@cam.steels.me/turva/kamerakuva/17/x?signature=s", "user"),
+        ("https://cam.steels.me:8443/turva/kamerakuva/17/x?signature=s", "port"),
+        ("https://cam.steels.me:80/turva/kamerakuva/17/x?signature=s", "port"),
+        ("https://cam.steels.me:x/turva/kamerakuva/17/x?signature=s", "valid URL"),
+    ],
+)
+def test_capture_url_must_point_at_the_service_host(field: str, url: str, reason: str) -> None:
+    with pytest.raises(CaptureRequestRejected, match=reason) as excinfo:
+        parse_capture_request(
+            CAPTURE_TOPIC, _capture(**{field: url}), expected_customer_id=3, expected_host=HOST
+        )
+    assert field in str(excinfo.value)
+    assert "signature" not in str(excinfo.value)
+    assert "kamerakuva" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("url", "host"),
+    [
+        ("https://CAM.Steels.ME/turva/kamerakuva/17/photo?signature=s", "cam.steels.me"),
+        ("https://cam.steels.me:443/turva/kamerakuva/17/photo?signature=s", "cam.steels.me"),
+        ("https://cam.steels.me/turva/kamerakuva/17/photo?signature=s", "CAM.steels.me"),
+    ],
+)
+def test_capture_url_host_matches_case_insensitively_on_the_default_port(url: str, host: str) -> None:
+    request = parse_capture_request(
+        CAPTURE_TOPIC, _capture(photo_url=url), expected_customer_id=3, expected_host=host
+    )
+    assert request.photo_url == url

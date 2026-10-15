@@ -13,8 +13,10 @@ camera linked to a Home Assistant camera in the options, this module
    camera.record service: camera.async_create_stream() and
    stream.async_record() -- and POSTs the MP4 to video_url as video/mp4.
 
-The photo always goes first; the video never delays it. Each request_id is
-handled once. 202 (any 2xx) = delivered; 403/404/409/413/415/429 and any other
+Both URLs must point at the service the entry connects to (its host, default
+port, no userinfo), or the request is refused. The photo always goes first;
+the video never delays it, and a failed photo does not stop it. Each
+request_id is handled once. 202 (any 2xx) = delivered; 403/404/409/413/415/429 and any other
 4xx are final; a 5xx, a timeout or a connection error gets one retry, and only
 while the URL is still valid.
 
@@ -156,9 +158,26 @@ async def async_take_photo(hass: HomeAssistant, entity_id: str) -> bytes:
 async def async_camera_stream(hass: HomeAssistant, entity_id: str) -> Any | None:
     """The camera's stream, as the camera.record service gets it. None = no streaming."""
     _require_camera_integration(hass)
-    from homeassistant.components.camera.helper import get_camera_from_entity_id  # noqa: PLC0415
+    return await _camera_entity(hass, entity_id).async_create_stream()
 
-    return await get_camera_from_entity_id(hass, entity_id).async_create_stream()
+
+def _camera_entity(hass: HomeAssistant, entity_id: str) -> Any:
+    """The camera entity, as camera.helper.get_camera_from_entity_id finds it.
+
+    That helper is not in every Home Assistant hacs.json allows (2024.12): without it,
+    the same lookup in the camera component (hass.data["camera"], an EntityComponent).
+    """
+    try:
+        from homeassistant.components.camera.helper import get_camera_from_entity_id  # noqa: PLC0415
+    except ImportError:
+        component = hass.data.get("camera")
+        camera = component.get_entity(entity_id) if component is not None else None
+        if camera is None:
+            raise HomeAssistantError("Camera not found") from None
+        if not camera.is_on:
+            raise HomeAssistantError("Camera is off") from None
+        return camera
+    return get_camera_from_entity_id(hass, entity_id)
 
 
 # -- the recording's temporary file (executor only) ---------------------------------------
@@ -259,11 +278,14 @@ class KameraportiCaptureHandler:
         hass: HomeAssistant,
         entry: ConfigEntry,
         *,
+        host: str,
         customer_id: int,
         cameras: Mapping[int, CaptureCamera],
     ) -> None:
         self._hass = hass
         self._entry = entry
+        # The service the entry connects to: the only host the upload links may point at.
+        self._host = host
         self._customer_id = customer_id
         self._cameras = dict(cameras)
         self._dedup = EventDedupCache()
@@ -278,7 +300,9 @@ class KameraportiCaptureHandler:
         if self._stopping:
             return
         try:
-            request = parse_capture_request(topic, payload, expected_customer_id=self._customer_id)
+            request = parse_capture_request(
+                topic, payload, expected_customer_id=self._customer_id, expected_host=self._host
+            )
         except CaptureRequestRejected as err:
             _LOGGER.debug("Ignoring invalid Kameraposti capture request on %s: %s", topic, err)
             return
@@ -342,13 +366,12 @@ class KameraportiCaptureHandler:
         try:
             content = await async_take_photo(self._hass, camera.entity_id)
         except (HomeAssistantError, ImportError) as err:
-            _LOGGER.warning(
-                "Kameraposti capture request_id=%s camera_id=%s: no photo from %s: %s",
-                request.request_id,
-                request.camera_id,
-                camera.entity_id,
-                err,
-            )
+            self._warn_no_photo(request, camera, str(err))
+            return
+        except Exception as err:  # noqa: BLE001 - a camera's own snapshot code may raise anything
+            # Its type only: a camera's error can carry the camera's own address. The video
+            # still goes. CancelledError is no Exception and stops the capture.
+            self._warn_no_photo(request, camera, type(err).__name__)
             return
         outcome = await self._async_upload(
             request, "photo", request.photo_url, request.photo_expires_at, content, "image/jpeg"
@@ -359,23 +382,26 @@ class KameraportiCaptureHandler:
         if _expired(request.video_expires_at):
             self._log_outcome(request, camera, "video", "link expired")
             return
-        path = await self._hass.async_add_executor_job(
-            video_path, self._hass, request.request_id, request.camera_id
-        )
-        if path is None:
-            self._warn_no_video(
-                request,
-                camera,
-                "Home Assistant allows no private folder to record into "
-                f"(a media folder, or {self._hass.config.path(CAPTURE_DIR_NAME)} in allowlist_external_dirs)",
-            )
-            return
+        path: str | None = None
         try:
-            lock = self._record_locks.setdefault(camera.entity_id, asyncio.Lock())
-            async with lock:
-                recorded = await self._async_record(request, camera, path)
-            if not recorded:
-                return
+            async with self._record_locks.setdefault(camera.entity_id, asyncio.Lock()):
+                # Checked again: the camera's previous recording may have taken a while.
+                if _expired(request.video_expires_at):
+                    self._log_outcome(request, camera, "video", "link expired")
+                    return
+                path = await self._hass.async_add_executor_job(
+                    video_path, self._hass, request.request_id, request.camera_id
+                )
+                if path is None:
+                    self._warn_no_video(
+                        request,
+                        camera,
+                        "Home Assistant allows no private folder to record into (a media folder, or "
+                        f"{self._hass.config.path(CAPTURE_DIR_NAME)} in allowlist_external_dirs)",
+                    )
+                    return
+                if not await self._async_record(request, camera, path):
+                    return
             content = await self._hass.async_add_executor_job(_read_recording, path, VIDEO_MAX_BYTES)
             if content is None:
                 self._log_outcome(
@@ -387,7 +413,8 @@ class KameraportiCaptureHandler:
             )
             self._log_outcome(request, camera, "video", outcome)
         finally:
-            await self._hass.async_add_executor_job(_remove_recording, path)
+            if path is not None:
+                await self._hass.async_add_executor_job(_remove_recording, path)
 
     async def _async_record(self, request: CaptureRequest, camera: CaptureCamera, path: str) -> bool:
         """Record into path; False (after one warning) when there is no video."""
@@ -503,6 +530,15 @@ class KameraportiCaptureHandler:
                 camera.entity_id,
                 outcome,
             )
+
+    def _warn_no_photo(self, request: CaptureRequest, camera: CaptureCamera, why: str) -> None:
+        _LOGGER.warning(
+            "Kameraposti capture request_id=%s camera_id=%s: no photo from %s: %s",
+            request.request_id,
+            request.camera_id,
+            camera.entity_id,
+            why,
+        )
 
     def _warn_no_video(self, request: CaptureRequest, camera: CaptureCamera, why: str) -> None:
         _LOGGER.warning(

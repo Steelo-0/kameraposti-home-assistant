@@ -223,8 +223,19 @@ def _aware_datetime(value: object, field: str, rejected: type[Exception]) -> dat
     return parsed
 
 
-def _https_url(value: object, field: str, max_length: int, rejected: type[Exception]) -> str:
-    """A signed https URL. Never echoes the URL itself in a reason: it is a capability."""
+def _https_url(
+    value: object,
+    field: str,
+    max_length: int,
+    rejected: type[Exception],
+    *,
+    expected_host: str | None = None,
+) -> str:
+    """A signed https URL. Never echoes the URL itself in a reason: it is a capability.
+
+    expected_host: the URL must point at exactly this host (case-insensitively), on the
+    default port, without userinfo. The host is named in a reason; it is no secret.
+    """
     if not isinstance(value, str):
         raise rejected(f"{field} missing or not a string: {type(value).__name__}")
     if len(value) > max_length:
@@ -232,10 +243,18 @@ def _https_url(value: object, field: str, max_length: int, rejected: type[Except
     try:
         parts = urlsplit(value)
         hostname = parts.hostname
+        port = parts.port
     except ValueError as err:
         raise rejected(f"{field} is not a valid URL") from err
     if parts.scheme != "https" or not hostname:
         raise rejected(f"{field} is not an https URL (scheme {parts.scheme!r})")
+    if expected_host is not None:
+        if parts.username is not None or parts.password is not None:
+            raise rejected(f"{field} carries a user name or password")
+        if hostname != expected_host.lower():
+            raise rejected(f"{field} host {hostname!r} is not the service host {expected_host.lower()!r}")
+        if port not in (None, 443):
+            raise rejected(f"{field} port {port} is not the default https port")
     return value
 
 
@@ -418,11 +437,17 @@ class CaptureRequest:
     video_expires_at: datetime
 
 
-def parse_capture_request(topic: str, payload: bytes | str, *, expected_customer_id: int) -> CaptureRequest:
+def parse_capture_request(
+    topic: str, payload: bytes | str, *, expected_customer_id: int, expected_host: str
+) -> CaptureRequest:
     """Parse one capture request (customers/<id>/cameras/<camera>/capture, not retained).
 
-    Both upload URLs must be https. Expiry is checked by the caller (it depends
-    on the time of use, not just of arrival). Unknown fields are ignored.
+    Both upload URLs must be https URLs of the service the entry connects to
+    (expected_host, e.g. cam.steels.me -- Kameraposti's link host is its broker
+    host), on the default port and without userinfo: whoever could publish on the
+    topic must not make Home Assistant send camera images anywhere else. Expiry is
+    checked by the caller (it depends on the time of use, not just of arrival).
+    Unknown fields are ignored.
     """
     match = CAPTURE_TOPIC_PATTERN.fullmatch(topic)
     if match is None:
@@ -456,11 +481,23 @@ def parse_capture_request(topic: str, payload: bytes | str, *, expected_customer
         raise CaptureRequestRejected(f"reason missing or not a short lowercase word: {reason!r}")
 
     requested_at = _aware_datetime(data.get("requested_at"), "requested_at", CaptureRequestRejected)
-    photo_url = _https_url(data.get("photo_url"), "photo_url", CAPTURE_MAX_URL_LENGTH, CaptureRequestRejected)
+    photo_url = _https_url(
+        data.get("photo_url"),
+        "photo_url",
+        CAPTURE_MAX_URL_LENGTH,
+        CaptureRequestRejected,
+        expected_host=expected_host,
+    )
     photo_expires_at = _aware_datetime(
         data.get("photo_expires_at"), "photo_expires_at", CaptureRequestRejected
     )
-    video_url = _https_url(data.get("video_url"), "video_url", CAPTURE_MAX_URL_LENGTH, CaptureRequestRejected)
+    video_url = _https_url(
+        data.get("video_url"),
+        "video_url",
+        CAPTURE_MAX_URL_LENGTH,
+        CaptureRequestRejected,
+        expected_host=expected_host,
+    )
     video_expires_at = _aware_datetime(
         data.get("video_expires_at"), "video_expires_at", CaptureRequestRejected
     )

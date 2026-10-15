@@ -28,6 +28,7 @@ from types import MappingProxyType, ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import httpx
 import pytest
 import respx
@@ -47,6 +48,7 @@ from custom_components.kameraposti.const import (
     CONF_CAPTURE_VIDEO_SECONDS,
     CONF_CUSTOMER_ID,
     CONF_EXPORTED_ENTITIES,
+    CONF_HOST,
     DOMAIN,
 )
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
@@ -101,10 +103,14 @@ class FakeStream:
         self.records: list[tuple[str, int, int]] = []
         self.removed: list[str] = []
         self._outputs: dict[str, Any] = {}
-        # What the recording does: write MP4 (default), write nothing, hang, or raise.
+        # What the recording does: write MP4 (default), write nothing, hang, or raise;
+        # gate: wait for it before finishing.
         self.content: bytes | None = MP4
         self.hang = False
         self.error: BaseException | None = None
+        self.gate: asyncio.Event | None = None
+        # Stream.remove_provider stops the stream when its last output goes.
+        self.stops = 0
 
     def outputs(self) -> MappingProxyType[str, Any]:
         return MappingProxyType(self._outputs)
@@ -117,21 +123,27 @@ class FakeStream:
             raise HomeAssistantError(f"Stream already recording to {self._outputs['recorder'].video_path}!")
         self._outputs["recorder"] = SimpleNamespace(video_path=video_path)
         self.records.append((video_path, duration, lookback))
-        self.events.append("recording")
+        request_id = Path(video_path).name.split("-")[1]
+        self.events.append(f"recording {request_id}")
         # The recorder writes <path>.tmp and moves it into place when it is done.
         await self.hass.async_add_executor_job(Path(video_path + ".tmp").write_bytes, b"partial")
         if self.hang:
             await asyncio.Event().wait()
+        if self.gate is not None:
+            await self.gate.wait()
         if self.error is not None:
             raise self.error
         if self.content is not None:
             await self.hass.async_add_executor_job(Path(video_path).write_bytes, self.content)
         await self.hass.async_add_executor_job(os.remove, video_path + ".tmp")
         del self._outputs["recorder"]
+        self.events.append(f"recorded {request_id}")
 
     async def remove_provider(self, provider: Any) -> None:
         self.removed.append(provider.video_path)
         self._outputs = {name: output for name, output in self._outputs.items() if output is not provider}
+        if not self._outputs:
+            self.stops += 1
 
 
 @dataclass
@@ -193,7 +205,9 @@ def make_harness(
 ) -> AsyncGenerator[Callable[..., Any]]:
     patchers: list[Any] = []
 
-    async def _make(links: dict[str, Any] | None = None, *, streaming: bool = True) -> Harness:
+    async def _make(
+        links: dict[str, Any] | None = None, *, streaming: bool = True, host: str | None = "cam.steels.me"
+    ) -> Harness:
         events: list[str] = []
         stream = FakeStream(hass, events) if streaming else None
 
@@ -208,10 +222,15 @@ def make_harness(
             patcher.start()
             patchers.append(patcher)
 
+        data: dict[str, Any] = {CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"}
+        if host is not None:
+            data[CONF_HOST] = host
+        # Version 2: a version 1 entry is migrated to the default service on setup.
         entry = MockConfigEntry(
             domain=DOMAIN,
-            data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
+            data=data,
             options={CONF_CAPTURE_CAMERAS: {str(CAMERA_ID): _link()} if links is None else links},
+            version=2,
         )
         entry.add_to_hass(hass)
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -232,7 +251,7 @@ def _routes(request_id: int = 17, *, photo: Any = 202, video: Any = 202, events:
 
         def _respond(request: httpx.Request) -> httpx.Response:
             if events is not None:
-                events.append(f"{kind} posted")
+                events.append(f"{kind} posted {request_id}")
             current = outcomes.pop(0) if outcomes is not None else outcome
             if isinstance(current, BaseException):
                 raise current
@@ -266,6 +285,14 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
+async def _wait_for(condition: Callable[[], bool]) -> None:
+    for _ in range(300):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not reached")
+
+
 # -- the happy path ---------------------------------------------------------------
 
 
@@ -276,7 +303,13 @@ async def test_photo_then_video_are_posted_with_their_types(make_harness: Callab
 
     await h.send(_request())
 
-    assert h.events == [f"photo taken {ENTITY_ID}", "photo posted", "recording", "video posted"]
+    assert h.events == [
+        f"photo taken {ENTITY_ID}",
+        "photo posted 17",
+        "recording 17",
+        "recorded 17",
+        "video posted 17",
+    ]
     h.take_photo.assert_awaited_once_with(h.hass, ENTITY_ID)
     photo = photo_route.calls.last.request
     assert photo.headers["content-type"] == "image/jpeg"
@@ -343,15 +376,54 @@ async def test_two_requests_for_one_camera_record_one_after_the_other(
     """A stream records to one file at a time: the second recording waits for the first
     instead of failing with "already recording"; both photos go out at once."""
     h = await make_harness()
-    _routes(17)
-    _routes(18)
+    _routes(17, events=h.events)
+    _routes(18, events=h.events)
+    h.stream.gate = asyncio.Event()
 
     h.coordinator._handle_message(_topic(), _request(17))
     h.coordinator._handle_message(_topic(), _request(18))
+    # While the first request records, the second one's photo goes out -- and its
+    # recording waits.
+    await _wait_for(lambda: "recording 17" in h.events and "photo posted 18" in h.events)
+    assert "recording 18" not in h.events
+    h.stream.gate.set()
     await h.hass.async_block_till_done(wait_background_tasks=True)
 
+    events = h.events
+    assert events.index("photo posted 17") < events.index("recording 17")
+    assert events.index("photo posted 18") < events.index("recorded 17") < events.index("recording 18")
+    assert events.index("recording 18") < events.index("video posted 18")
     assert len(h.stream.records) == 2
     assert all(route.call_count == 1 for route in respx.routes)
+    assert h.capture_files() == []
+
+
+@respx.mock
+async def test_a_video_link_that_expires_while_waiting_for_the_camera_is_not_used(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The second request waits for the first one's recording; its video link is checked
+    again once the camera is free, and nothing is recorded with an expired link."""
+    h = await make_harness()
+    _routes(17, events=h.events)
+    photo_18, video_18 = _routes(18, events=h.events)
+    h.stream.gate = asyncio.Event()
+
+    h.coordinator._handle_message(_topic(), _request(17))
+    soon = (dt_util.utcnow() + timedelta(seconds=0.5)).isoformat()
+    h.coordinator._handle_message(_topic(), _request(18, video_expires_at=soon))
+    await _wait_for(lambda: "recording 17" in h.events and "photo posted 18" in h.events)
+    await asyncio.sleep(0.6)
+    h.stream.gate.set()
+    await h.hass.async_block_till_done(wait_background_tasks=True)
+
+    assert photo_18.call_count == 1
+    assert [Path(path).name.split("-")[1] for path, _, _ in h.stream.records] == ["17"]
+    assert not video_18.called
+    warnings = _warnings(caplog)
+    assert len(warnings) == 1
+    assert "request_id=18" in warnings[0]
+    assert "link expired" in warnings[0]
     assert h.capture_files() == []
 
 
@@ -368,6 +440,8 @@ async def test_two_requests_for_one_camera_record_one_after_the_other(
         _request(video_expires_at=None),
         _request(photo_url=photo_url(17).replace("https:", "http:")),
         _request(video_url=video_url(17).replace("https:", "http:")),
+        _request(photo_url=photo_url(17).replace("cam.steels.me/", "192.168.10.1/")),
+        _request(video_url=video_url(17).replace("cam.steels.me/", "cam.steels.me:8443/")),
         _request(camera_id=6),
         _request(request_id="17"),
     ],
@@ -435,6 +509,7 @@ async def test_an_expired_link_is_not_used(
         ([415], 1, False),
         ([429], 1, False),
         ([400], 1, False),
+        ([302], 1, False),
         ([500, 500], 2, False),
         ([502, 502], 2, False),
         ([503, 202], 2, True),
@@ -481,6 +556,22 @@ async def test_video_upload_follows_the_same_rules(make_harness: Callable[..., A
 
     assert video_route.call_count == 2
     assert h.capture_files() == []
+
+
+@respx.mock
+async def test_a_redirect_is_final_and_never_followed(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A signed upload URL never redirects: the file is never sent to another address."""
+    h = await make_harness({str(CAMERA_ID): _link(video=False)})
+    photo_route = respx.post(photo_url(17)).respond(307, headers={"Location": "https://evil.example/collect"})
+    elsewhere = respx.route(host="evil.example").respond(202)
+
+    await h.send(_request())
+
+    assert photo_route.call_count == 1
+    assert not elsewhere.called
+    assert any("HTTP 307" in warning for warning in _warnings(caplog))
 
 
 @respx.mock
@@ -554,6 +645,7 @@ async def test_a_recording_that_never_finishes_is_abandoned_and_deleted(
     [(path, _, _)] = h.stream.records
     assert h.stream.removed == [path]
     assert h.stream.outputs() == {}
+    assert h.stream.stops == 1
     assert h.capture_files() == []
     warnings = _warnings(caplog)
     assert len(warnings) == 1
@@ -576,6 +668,57 @@ async def test_camera_without_streaming_sends_the_photo_and_warns_once(
     assert ENTITY_ID in warnings[0]
     assert "streaming" in warnings[0]
     assert h.capture_files() == []
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "error",
+    [
+        HomeAssistantError("Camera is off"),
+        OSError("unreachable"),
+        aiohttp.ClientError("reset"),
+        TimeoutError(),
+    ],
+)
+async def test_a_failed_photo_still_lets_the_video_go(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture, error: Exception
+) -> None:
+    """Whatever the camera's own snapshot code raises, the video is still recorded and sent."""
+    h = await make_harness()
+    photo_route, video_route = _routes()
+    h.take_photo.side_effect = error
+
+    await h.send(_request())
+
+    assert not photo_route.called
+    assert video_route.call_count == 1
+    warnings = _warnings(caplog)
+    assert len(warnings) == 1
+    assert "no photo" in warnings[0]
+    assert "request_id=17" in warnings[0]
+    if not isinstance(error, HomeAssistantError):
+        assert type(error).__name__ in warnings[0]
+    assert h.capture_files() == []
+
+
+@respx.mock
+@pytest.mark.parametrize("host", ["kameraposti.fi", None])
+async def test_links_to_another_host_than_the_entrys_service_are_refused(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture, host: str | None
+) -> None:
+    """The links must point at the service the entry connects to (None = an entry from
+    before the service choice: kameraposti.fi)."""
+    caplog.set_level(logging.DEBUG)
+    h = await make_harness(host=host)
+    photo_route, video_route = _routes()
+
+    await h.send(_request())
+
+    h.take_photo.assert_not_awaited()
+    assert not photo_route.called
+    assert not video_route.called
+    assert any("is not the service host 'kameraposti.fi'" in r.getMessage() for r in caplog.records)
+    _assert_no_url_logged(caplog)
 
 
 @respx.mock
@@ -705,11 +848,7 @@ async def test_unload_cancels_a_capture_in_flight_and_deletes_its_file(
     h.stream.hang = True
 
     h.coordinator._handle_message(_topic(), _request())
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if h.stream.records:
-            break
-    assert h.stream.records, "the recording should have started"
+    await _wait_for(lambda: bool(h.stream.records))
     assert photo_route.call_count == 1
 
     assert await h.hass.config_entries.async_unload(h.entry.entry_id)
@@ -786,6 +925,31 @@ async def test_camera_adapters_use_home_assistants_camera_api(hass: HomeAssistan
     camera_module.async_get_image.assert_awaited_once_with(hass, ENTITY_ID, timeout=10)
     helper_module.get_camera_from_entity_id.assert_called_once_with(hass, ENTITY_ID)
     entity.async_create_stream.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize(
+    ("entity", "error"), [("on", None), ("off", "Camera is off"), (None, "Camera not found")]
+)
+async def test_camera_stream_without_the_camera_helper_module(
+    hass: HomeAssistant, entity: str | None, error: str | None
+) -> None:
+    """Home Assistant versions without camera.helper (hacs.json allows 2024.12): the camera
+    entity is looked up in the camera component directly, as the helper does."""
+    stream = object()
+    camera_entity = SimpleNamespace(is_on=entity == "on", async_create_stream=AsyncMock(return_value=stream))
+    hass.data["camera"] = SimpleNamespace(get_entity=lambda entity_id: camera_entity if entity else None)
+    hass.config.components.add("camera")
+    camera_module = ModuleType("homeassistant.components.camera")
+
+    with patch.dict(
+        sys.modules,
+        {"homeassistant.components.camera": camera_module, "homeassistant.components.camera.helper": None},
+    ):
+        if error is None:
+            assert await capture.async_camera_stream(hass, ENTITY_ID) is stream
+        else:
+            with pytest.raises(HomeAssistantError, match=error):
+                await capture.async_camera_stream(hass, ENTITY_ID)
 
 
 async def test_camera_adapters_need_the_camera_integration(hass: HomeAssistant) -> None:
