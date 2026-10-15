@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Valitse palvelu (testipalvelin cam.steels.me tai tuotanto kameraposti.fi) ja syötä MQTT-tunnus Kamerapostin Anturit-sivulta (Kamerat → Anturit → MQTT), esim. kp-2 tai lisätunnus kp-2-2, sekä sen salasana. Pelkkä tilin numero (2) tarkoittaa päätunnusta kp-2. Jokaisella tunnuksella on yksi yhteys kerrallaan: toinen Home Assistant tai silta tarvitsee oman lisätunnuksen.",
+        "description": "Valitse palvelu ja syötä MQTT-tunnus ja salasana. Anturit-sivun Home Assistant -kohta näyttää ne täsmälleen tässä muodossa (esim. palvelu cam.steels.me, tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
         "data": {
           "host": "Palvelu",
           "customer_id": "MQTT-tunnus tai tilin numero",
@@ -20,12 +20,13 @@
     },
     "error": {
       "cannot_connect": "Kameraposti-brokeriin ei saatu yhteyttä. Tarkista verkkoyhteys ja yritä uudelleen.",
-      "invalid_auth": "Kameraposti hylkäsi tunnukset. Tarkista tilin numero ja MQTT-salasana.",
+      "invalid_auth": "Kameraposti hylkäsi tunnukset. Tarkista MQTT-tunnus ja salasana.",
       "unknown": "Odottamaton virhe. Yritä uudelleen.",
-      "invalid_login": "Tuntematon tunnus. Kirjoita se kuten Anturit-sivulla, esim. kp-2 tai kp-2-2 (tai pelkkä tilin numero)."
+      "invalid_login": "Tuntematon tunnus. Kirjoita se kuten Anturit-sivulla, esim. kp-2 tai kp-2-2 (tai pelkkä tilin numero).",
+      "device_login": "Tämä on laitteen (esim. Shellyn) oma tunnus, eikä se käy Home Assistantille. Luo Home Assistantille oma tunnus Anturit-sivulla: Home Assistant → Lisää toinen Home Assistant."
     },
     "abort": {
-      "already_configured": "Tämä Kamerapostin MQTT-tunnus on jo määritetty. Toinen Home Assistant samalla tilillä tarvitsee oman lisätunnuksen (esim. kp-2-2) Kamerapostin Anturit-sivulta.",
+      "already_configured": "Tämä Kamerapostin MQTT-tunnus on jo käytössä. Toinen Home Assistant samalla tilillä tarvitsee oman tunnuksen: Anturit-sivu → Home Assistant → Lisää toinen Home Assistant.",
       "reauth_successful": "Uudelleentunnistautuminen onnistui."
     }
   },

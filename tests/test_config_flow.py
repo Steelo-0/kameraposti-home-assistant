@@ -212,6 +212,40 @@ async def test_an_unknown_login_format_shows_a_field_error(hass: HomeAssistant) 
 
 
 
+async def test_a_device_login_says_it_belongs_to_the_device(hass: HomeAssistant) -> None:
+    """steelo 2026-10-15: a Shelly's own login kp-<id>-d<n> was typed in and got "Unknown login".
+    It is the device's login (one connection, own topics only), so the error says so and points
+    to the Home Assistant login instead -- and nothing connects with it."""
+    for device in ("kp-2-d10", " KP-2-D10 ", "kp\u20112\u2011d10"):
+        result, mock_test = await _setup_with(hass, device)
+        assert result["type"] is FlowResultType.FORM, device
+        assert result["errors"] == {CONF_CUSTOMER_ID: "device_login"}, device
+        mock_test.assert_not_awaited()
+
+
+async def test_dashes_and_invisible_characters_from_a_copy_are_tolerated(hass: HomeAssistant) -> None:
+    """A phone keyboard or a copy from a web page can bring a non-ASCII dash or a zero-width
+    character; the login is still the same login."""
+    typed_logins = (("kp\u20113\u20112", "kp-3-2"), ("kp-3-2\u200b", "kp-3-2"), ("\ufeffkp\u20133", "kp-3"))
+    for typed, login in typed_logins:
+        result, mock_test = await _setup_with(hass, typed)
+        assert result["type"] is FlowResultType.CREATE_ENTRY, repr(typed)
+        assert result["data"][CONF_USERNAME] == login, repr(typed)
+        assert mock_test.await_args.kwargs["username"] == login
+        await hass.config_entries.async_remove(result["result"].entry_id)
+
+
+def test_every_setup_error_has_a_translation() -> None:
+    import json
+    from pathlib import Path
+
+    folder = Path(__file__).parent.parent / "custom_components" / "kameraposti" / "translations"
+    for language in ("en", "fi"):
+        errors = json.loads((folder / f"{language}.json").read_text(encoding="utf-8"))["config"]["error"]
+        expected = {"invalid_login", "device_login", "invalid_auth", "cannot_connect", "unknown"}
+        assert expected <= errors.keys(), language
+
+
 async def test_the_same_login_typed_differently_is_configured_only_once(hass: HomeAssistant) -> None:
     """1.5.1: the unique id was the raw field value, so "3", "kp-3" and " KP-3 " became three
     entries with one login -- which then kept disconnecting each other. The unique id is now the

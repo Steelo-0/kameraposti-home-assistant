@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to Kameraposti",
-        "description": "Choose the service (test server cam.steels.me or production kameraposti.fi) and enter the MQTT login from Kameraposti’s sensor page (Cameras → Sensors → MQTT), e.g. kp-2 or the extra login kp-2-2, and its password. Just the account number (2) means the main login kp-2. Each login has one connection at a time: another Home Assistant or a bridge needs its own extra login.",
+        "description": "Choose the service and enter the MQTT login and password. The Home Assistant section on the Sensors page shows them exactly in this form (e.g. service cam.steels.me, login kp-2, or kp-2-3 for another Home Assistant). Each Home Assistant needs its own login: the same login in two places disconnects both.",
         "data": {
           "host": "Service",
           "customer_id": "MQTT login or account number",
@@ -20,12 +20,13 @@
     },
     "error": {
       "cannot_connect": "Could not reach the Kameraposti broker. Check your network connection and try again.",
-      "invalid_auth": "Kameraposti rejected these credentials. Check the account number and the MQTT password.",
+      "invalid_auth": "Kameraposti rejected these credentials. Check the MQTT login and the password.",
       "unknown": "Unexpected error. Please try again.",
-      "invalid_login": "Unknown login. Type it as shown on the sensor page, e.g. kp-2 or kp-2-2 (or just the account number)."
+      "invalid_login": "Unknown login. Type it as shown on the sensor page, e.g. kp-2 or kp-2-2 (or just the account number).",
+      "device_login": "This is a device’s own login (e.g. a Shelly’s) and does not work for Home Assistant. Create a login for Home Assistant on the Sensors page: Home Assistant → Add another Home Assistant."
     },
     "abort": {
-      "already_configured": "This Kameraposti MQTT login is already configured. Another Home Assistant on the same account needs its own extra login (e.g. kp-2-2) from Kameraposti's Sensors page.",
+      "already_configured": "This Kameraposti MQTT login is already configured. Another Home Assistant on the same account needs its own login: Sensors page → Home Assistant → Add another Home Assistant.",
       "reauth_successful": "Re-authentication was successful."
     }
   },

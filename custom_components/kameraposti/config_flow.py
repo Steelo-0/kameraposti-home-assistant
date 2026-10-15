@@ -61,7 +61,7 @@ from .const import (
     MAX_EXPORTED_SENSORS,
     USERNAME_TEMPLATE,
 )
-from .login import entry_login, parse_login
+from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
 from .sensor_export import kameraposti_name, kind_for
 
@@ -174,10 +174,11 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
             parsed = parse_login(user_input[CONF_CUSTOMER_ID])
             if parsed is None:
+                device = is_device_login(user_input[CONF_CUSTOMER_ID])
                 return self.async_show_form(
                     step_id="user",
                     data_schema=STEP_USER_DATA_SCHEMA,
-                    errors={CONF_CUSTOMER_ID: "invalid_login"},
+                    errors={CONF_CUSTOMER_ID: "device_login" if device else "invalid_login"},
                 )
             customer_id, username = parsed
             is_extra_login = username != USERNAME_TEMPLATE.format(customer_id=customer_id)

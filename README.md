@@ -18,22 +18,19 @@ outbound-only, over WSS/TLS).
 ## Requirements
 
 - Home Assistant 2024.12.0 or newer
-- A Kameraposti account with sensors enabled, and:
-  - your **account number** (customer ID)
-  - the account's **MQTT password** from Kameraposti's sensor page
-    (Cameras → Sensors → MQTT)
-
-The MQTT login is `kp-<account number>`; you never type it. This
-integration does not use your regular Kameraposti login.
+- A Kameraposti account with sensors enabled, and the **service**, **MQTT
+  login** and **MQTT password** shown in the **Home Assistant** section of the
+  Sensors page (e.g. `cam.steels.me`, `kp-2`). The setup form asks for exactly
+  these three. This integration does not use your regular Kameraposti login.
 
 Each MQTT login has one connection at a time: the broker accepts a login only
-with the same client id, so a second connection with the same login (another
-Home Assistant, or a Zigbee2MQTT/Mosquitto bridge to Kameraposti) disconnects
-the first. For a second connection, create an **extra login**
-`kp-<account number>-<n>` on Kameraposti's sensor page (Cameras → Sensors →
-MQTT → Extra logins) and type that login, e.g. `kp-2-2`, in the
-**MQTT login or account number** field (since 1.3.1; just the account number
-means the main login). Bridges use their extra login directly.
+with the same client id, so a second connection with the same login
+disconnects the first. For another Home Assistant, choose **Add another Home
+Assistant** in the same section and use the login it shows, e.g. `kp-2-3`.
+Zigbee2MQTT/Mosquitto bridges get their own logins under the Sensors page's
+advanced settings. A device's own login (e.g. a Shelly's `kp-2-d10`) is not
+accepted: since 1.6.1 the setup form says so. Just the account number (`2`)
+still means the main login `kp-2`.
 
 Since 1.5.1 a connection that keeps being dropped right after connecting backs
 off up to 30 seconds between attempts (the delay starts again from 1 second

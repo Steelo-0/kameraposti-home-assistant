@@ -8,12 +8,33 @@ spellings ("3", "kp-3", " KP-3 "), and all of them are the same login.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.const import CONF_USERNAME
 
-from .const import CONF_CUSTOMER_ID, EXTRA_USERNAME_TEMPLATE, LOGIN_PATTERN, USERNAME_TEMPLATE
+from .const import (
+    CONF_CUSTOMER_ID,
+    DEVICE_LOGIN_PATTERN,
+    EXTRA_USERNAME_TEMPLATE,
+    LOGIN_PATTERN,
+    USERNAME_TEMPLATE,
+)
+
+# 1.6.1: a phone keyboard or a copy from a web page can bring a non-ASCII dash or a zero-width
+# character into the field; neither is ever part of a login.
+_DASHES = re.compile("[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]")
+_INVISIBLE = re.compile("[\u00ad\u200b-\u200d\u2060\ufeff]")
+
+
+def _normalized(value: object) -> str:
+    return _DASHES.sub("-", _INVISIBLE.sub("", str(value))).strip()
+
+
+def is_device_login(value: object) -> bool:
+    """True for a device's own login (kp-<id>-d<n>, e.g. a Shelly), which Home Assistant must not use."""
+    return DEVICE_LOGIN_PATTERN.match(_normalized(value)) is not None
 
 
 def parse_login(value: object) -> tuple[int, str] | None:
@@ -21,7 +42,7 @@ def parse_login(value: object) -> tuple[int, str] | None:
 
     "3", "kp-3", " KP-3 " -> (3, "kp-3"); "kp-3-2" -> (3, "kp-3-2").
     """
-    match = LOGIN_PATTERN.match(str(value).strip())
+    match = LOGIN_PATTERN.match(_normalized(value))
     if match is None:
         return None
     customer_id, login_number = int(match.group(1)), match.group(2)
