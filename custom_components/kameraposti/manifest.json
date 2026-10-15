@@ -1,6 +1,7 @@
 {
   "domain": "kameraposti",
   "name": "Kameraposti",
+  "after_dependencies": ["camera"],
   "codeowners": ["@steelo-0"],
   "config_flow": true,
   "documentation": "https://github.com/Steelo-0/kameraposti-home-assistant",

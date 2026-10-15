@@ -76,6 +76,14 @@ EVENT_DETECTION: Final = "kameraposti_detection"
 CONF_CUSTOMER_ID: Final = "customer_id"
 CONF_HOST: Final = "host"
 CONF_EXPORTED_ENTITIES: Final = "exported_entities"
+# 1.6.0: Kameraposti cameras linked to Home Assistant cameras for Turva's capture requests:
+# {"<camera_id>": {"entity_id": "camera.x", "video": bool, "video_seconds": int}}.
+CONF_CAPTURE_CAMERAS: Final = "capture_cameras"
+CONF_CAPTURE_VIDEO: Final = "video"
+CONF_CAPTURE_VIDEO_SECONDS: Final = "video_seconds"
+CAPTURE_VIDEO_SECONDS_DEFAULT: Final = 10
+CAPTURE_VIDEO_SECONDS_MIN: Final = 5
+CAPTURE_VIDEO_SECONDS_MAX: Final = 30
 
 # Sensor export (2026-10-05): chosen Home Assistant entities become sensors in
 # Kameraposti. The account login may publish only under its own

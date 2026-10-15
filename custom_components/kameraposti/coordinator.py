@@ -18,6 +18,10 @@ creates it as before (servers that publish no roster). Each camera's latest
 photo (customers/<id>/cameras/<camera>/latest) is kept here for the image
 platform.
 
+1.6.0: Kameraposti Turva's capture requests (customers/<id>/cameras/<camera>/capture)
+go to capture.py, which answers them with a photo (and a video) from the Home
+Assistant camera linked to the Kameraposti camera in the options.
+
 Not a homeassistant.helpers.update_coordinator.DataUpdateCoordinator --
 this integration is push-based (MQTT), not polling, so the usual
 poll-and-refresh coordinator pattern does not apply. Sensors instead
@@ -42,7 +46,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
+from .capture import KameraportiCaptureHandler, capture_cameras_from_options
 from .const import (
+    CAPTURE_TOPIC_PATTERN,
     CONF_EXPORTED_ENTITIES,
     DEFAULT_CAMERA_NAME_TEMPLATE,
     DOMAIN,
@@ -159,6 +165,12 @@ class KameraportiCoordinator:
             entity_ids=list(entry.options.get(CONF_EXPORTED_ENTITIES, [])),
             publish=self._client.publish,
         )
+        self._capture = KameraportiCaptureHandler(
+            hass,
+            entry,
+            customer_id=customer_id,
+            cameras=capture_cameras_from_options(entry.options),
+        )
 
     @property
     def signal_new_camera(self) -> str:
@@ -220,9 +232,13 @@ class KameraportiCoordinator:
         await self._client.async_start()
 
     async def async_stop(self) -> None:
-        """Disconnect the MQTT client and stop any pending reconnect. Idempotent."""
+        """Disconnect the MQTT client and stop any pending reconnect. Idempotent.
+
+        1.6.0: then cancels the capture requests in flight (no new one can arrive).
+        """
         self._exporter.async_stop()
         await self._client.async_stop()
+        await self._capture.async_stop()
 
     @callback
     def _handle_state_change(self, state: ConnectionState) -> None:
@@ -292,6 +308,10 @@ class KameraportiCoordinator:
             return
         if LATEST_PHOTO_TOPIC_PATTERN.match(topic):
             self._handle_latest_photo(topic, payload)
+            return
+        if CAPTURE_TOPIC_PATTERN.match(topic):
+            # Validated, deduped and answered in a task -- never waits here.
+            self._capture.async_handle_message(topic, payload)
             return
 
         try:
