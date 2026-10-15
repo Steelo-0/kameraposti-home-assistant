@@ -1,7 +1,7 @@
 """Payload parsing and validation for the Kameraposti MQTT contract.
 
-Detections (V1), and since 1.5.0 the account's camera roster and each
-camera's latest photo.
+Detections (V1), since 1.5.0 the account's camera roster and each
+camera's latest photo, and since 1.6.0 Kameraposti Turva's capture requests.
 
 Deliberately pure Python (no Home Assistant imports) -- this is the one
 module doing the actual contract enforcement (topic shape, payload shape,
@@ -10,7 +10,8 @@ testable in isolation, fast, and free of any MQTT-thread/event-loop
 concerns.
 
 Every rejection raises DetectionRejected (RosterRejected,
-LatestPhotoRejected for the 1.5.0 payloads) and NOTHING else -- callers
+LatestPhotoRejected for the 1.5.0 payloads, CaptureRequestRejected for
+1.6.0) and NOTHING else -- callers
 (coordinator.py) catch exactly this one exception type, log it at
 debug/warning, and continue. A malformed message is expected, routine
 input, not a bug: it must never crash the integration, force a
@@ -20,11 +21,14 @@ reconnect, or block the Home Assistant event loop (contract section 7).
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlsplit
 
 from .const import (
+    CAPTURE_MAX_URL_LENGTH,
+    CAPTURE_REASON_PATTERN,
+    CAPTURE_TOPIC_PATTERN,
     LATEST_PHOTO_MAX_URL_LENGTH,
     LATEST_PHOTO_SCHEMA_VERSION,
     LATEST_PHOTO_TOPIC_PATTERN,
@@ -219,6 +223,22 @@ def _aware_datetime(value: object, field: str, rejected: type[Exception]) -> dat
     return parsed
 
 
+def _https_url(value: object, field: str, max_length: int, rejected: type[Exception]) -> str:
+    """A signed https URL. Never echoes the URL itself in a reason: it is a capability."""
+    if not isinstance(value, str):
+        raise rejected(f"{field} missing or not a string: {type(value).__name__}")
+    if len(value) > max_length:
+        raise rejected(f"{field} is longer than {max_length} characters")
+    try:
+        parts = urlsplit(value)
+        hostname = parts.hostname
+    except ValueError as err:
+        raise rejected(f"{field} is not a valid URL") from err
+    if parts.scheme != "https" or not hostname:
+        raise rejected(f"{field} is not an https URL (scheme {parts.scheme!r})")
+    return value
+
+
 def _json_object(payload: bytes | str, rejected: type[Exception]) -> dict:
     try:
         data = json.loads(payload)
@@ -338,19 +358,7 @@ def parse_latest_photo(
     if not isinstance(is_video, bool):
         raise LatestPhotoRejected(f"is_video missing or not a boolean: {is_video!r}")
 
-    # Never echo the URL itself in a reason: it is a signed capability for the photo.
-    url = data.get("url")
-    if not isinstance(url, str):
-        raise LatestPhotoRejected(f"url missing or not a string: {type(url).__name__}")
-    if len(url) > LATEST_PHOTO_MAX_URL_LENGTH:
-        raise LatestPhotoRejected(f"url is longer than {LATEST_PHOTO_MAX_URL_LENGTH} characters")
-    try:
-        parts = urlsplit(url)
-        hostname = parts.hostname
-    except ValueError as err:
-        raise LatestPhotoRejected("url is not a valid URL") from err
-    if parts.scheme != "https" or not hostname:
-        raise LatestPhotoRejected(f"url is not an https URL (scheme {parts.scheme!r})")
+    url = _https_url(data.get("url"), "url", LATEST_PHOTO_MAX_URL_LENGTH, LatestPhotoRejected)
 
     label: str | None = None
     confidence: float | None = None
@@ -381,4 +389,89 @@ def parse_latest_photo(
         expires_at=expires_at,
         label=label,
         confidence=confidence,
+    )
+
+
+# -- capture requests (1.6.0) -------------------------------------------------
+
+
+class CaptureRequestRejected(Exception):
+    """A capture request failed validation. Ignore it (no photo, no video)."""
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureRequest:
+    """Kameraposti Turva asks for a photo (and a video) of one camera.
+
+    photo_url and video_url are signed, expiring, single-use capabilities to
+    upload the files: they are never logged, and left out of repr() so that a
+    request logged by accident does not carry them along.
+    """
+
+    request_id: int
+    camera_id: int
+    reason: str
+    requested_at: datetime
+    photo_url: str = field(repr=False)
+    photo_expires_at: datetime
+    video_url: str = field(repr=False)
+    video_expires_at: datetime
+
+
+def parse_capture_request(topic: str, payload: bytes | str, *, expected_customer_id: int) -> CaptureRequest:
+    """Parse one capture request (customers/<id>/cameras/<camera>/capture, not retained).
+
+    Both upload URLs must be https. Expiry is checked by the caller (it depends
+    on the time of use, not just of arrival). Unknown fields are ignored.
+    """
+    match = CAPTURE_TOPIC_PATTERN.fullmatch(topic)
+    if match is None:
+        raise CaptureRequestRejected(
+            f"topic does not match customers/{{customer_id}}/cameras/{{camera_id}}/capture: {topic!r}"
+        )
+    topic_customer_id = int(match.group("customer_id"))
+    topic_camera_id = int(match.group("camera_id"))
+    if topic_customer_id != expected_customer_id:
+        raise CaptureRequestRejected(
+            f"topic customer_id {topic_customer_id} does not match configured "
+            f"customer_id {expected_customer_id} -- cross-tenant topic, ignoring"
+        )
+
+    data = _json_object(payload, CaptureRequestRejected)
+
+    request_id = data.get("request_id")
+    if not _is_int(request_id) or request_id < 1:
+        raise CaptureRequestRejected(f"request_id missing or not a positive integer: {request_id!r}")
+
+    camera_id = data.get("camera_id")
+    if not _is_int(camera_id):
+        raise CaptureRequestRejected(f"camera_id missing or not an integer: {camera_id!r}")
+    if camera_id != topic_camera_id:
+        raise CaptureRequestRejected(
+            f"payload camera_id {camera_id} does not match topic camera_id {topic_camera_id}"
+        )
+
+    reason = data.get("reason")
+    if not isinstance(reason, str) or CAPTURE_REASON_PATTERN.fullmatch(reason) is None:
+        raise CaptureRequestRejected(f"reason missing or not a short lowercase word: {reason!r}")
+
+    requested_at = _aware_datetime(data.get("requested_at"), "requested_at", CaptureRequestRejected)
+    photo_url = _https_url(data.get("photo_url"), "photo_url", CAPTURE_MAX_URL_LENGTH, CaptureRequestRejected)
+    photo_expires_at = _aware_datetime(
+        data.get("photo_expires_at"), "photo_expires_at", CaptureRequestRejected
+    )
+    video_url = _https_url(data.get("video_url"), "video_url", CAPTURE_MAX_URL_LENGTH, CaptureRequestRejected)
+    video_expires_at = _aware_datetime(
+        data.get("video_expires_at"), "video_expires_at", CaptureRequestRejected
+    )
+
+    return CaptureRequest(
+        request_id=request_id,
+        camera_id=topic_camera_id,
+        reason=reason,
+        requested_at=requested_at,
+        photo_url=photo_url,
+        photo_expires_at=photo_expires_at,
+        video_url=video_url,
+        video_expires_at=video_expires_at,
     )

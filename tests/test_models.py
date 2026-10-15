@@ -11,9 +11,11 @@ import json
 import pytest
 
 from custom_components.kameraposti.models import (
+    CaptureRequestRejected,
     DetectionRejected,
     LatestPhotoRejected,
     RosterRejected,
+    parse_capture_request,
     parse_detection,
     parse_latest_photo,
     parse_roster,
@@ -471,3 +473,108 @@ def test_junk_latest_photo_is_rejected(payload: bytes, reason: str) -> None:
 def test_latest_photo_on_a_foreign_or_malformed_topic_is_rejected(topic: str) -> None:
     with pytest.raises(LatestPhotoRejected):
         parse_latest_photo(topic, _latest(), expected_customer_id=3)
+
+
+# -- capture requests (1.6.0) ---------------------------------------------------
+
+CAPTURE_TOPIC = "customers/3/cameras/5/capture"
+PHOTO_URL = "https://cam.steels.me/turva/kamerakuva/17/photo?expires=1&h=cam.steels.me&signature=p17"
+VIDEO_URL = "https://cam.steels.me/turva/kamerakuva/17/video?expires=2&h=cam.steels.me&signature=v17"
+VALID_CAPTURE = {
+    "request_id": 17,
+    "camera_id": 5,
+    "reason": "alarm",
+    "requested_at": "2026-10-15T13:00:00Z",
+    "photo_url": PHOTO_URL,
+    "photo_expires_at": "2026-10-15T13:02:00Z",
+    "video_url": VIDEO_URL,
+    "video_expires_at": "2026-10-15T13:05:00Z",
+}
+
+
+def _capture(**overrides: object) -> bytes:
+    return json.dumps({**VALID_CAPTURE, **overrides}).encode()
+
+
+def test_valid_capture_request_parses() -> None:
+    request = parse_capture_request(CAPTURE_TOPIC, _capture(), expected_customer_id=3)
+
+    assert request.request_id == 17
+    assert request.camera_id == 5
+    assert request.reason == "alarm"
+    assert request.requested_at.isoformat() == "2026-10-15T13:00:00+00:00"
+    assert request.photo_url == PHOTO_URL
+    assert request.photo_expires_at.isoformat() == "2026-10-15T13:02:00+00:00"
+    assert request.video_url == VIDEO_URL
+    assert request.video_expires_at.isoformat() == "2026-10-15T13:05:00+00:00"
+
+
+def test_capture_request_repr_never_shows_the_signed_urls() -> None:
+    """The URLs are signed capabilities: a request that ends up in a log line by
+    accident must not carry them along."""
+    request = parse_capture_request(CAPTURE_TOPIC, _capture(), expected_customer_id=3)
+
+    assert "signature" not in repr(request)
+    assert "kamerakuva" not in repr(request)
+
+
+def test_capture_request_accepts_a_manual_request_and_ignores_unknown_fields() -> None:
+    request = parse_capture_request(
+        CAPTURE_TOPIC, _capture(reason="manual", future_field={"x": 1}), expected_customer_id=3
+    )
+    assert request.reason == "manual"
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        (b"", "JSON"),
+        (b"{not json", "JSON"),
+        (b"[1, 2]", "object"),
+        (_capture(request_id=None), "request_id"),
+        (_capture(request_id="17"), "request_id"),
+        (_capture(request_id=True), "request_id"),
+        (_capture(request_id=0), "request_id"),
+        (_capture(camera_id=None), "camera_id"),
+        (_capture(camera_id=6), "camera_id"),
+        (_capture(reason=None), "reason"),
+        (_capture(reason=""), "reason"),
+        (_capture(reason="alarm\nfake log line"), "reason"),
+        (_capture(reason="x" * 33), "reason"),
+        (_capture(requested_at=None), "requested_at"),
+        (_capture(requested_at="2026-10-15T13:00:00"), "requested_at"),
+        (_capture(photo_url=None), "photo_url"),
+        (_capture(photo_url=PHOTO_URL.replace("https:", "http:")), "photo_url"),
+        (_capture(photo_url="javascript:alert(1)"), "photo_url"),
+        (_capture(photo_url="https:///turva/kamerakuva/17/photo"), "photo_url"),
+        (_capture(photo_url="https://[cam.steels.me/turva/kamerakuva/17/photo"), "photo_url"),
+        (_capture(photo_url="https://cam.steels.me/" + "a" * 2048), "photo_url"),
+        (_capture(photo_expires_at=None), "photo_expires_at"),
+        (_capture(photo_expires_at="soon"), "photo_expires_at"),
+        (_capture(video_url=None), "video_url"),
+        (_capture(video_url=VIDEO_URL.replace("https:", "ftp:")), "video_url"),
+        (_capture(video_expires_at=None), "video_expires_at"),
+        (_capture(video_expires_at="2026-10-15T13:05:00"), "video_expires_at"),
+    ],
+)
+def test_junk_capture_request_is_rejected(payload: bytes, reason: str) -> None:
+    with pytest.raises(CaptureRequestRejected, match=reason) as excinfo:
+        parse_capture_request(CAPTURE_TOPIC, payload, expected_customer_id=3)
+    # The reason is logged: it never echoes a URL.
+    assert "signature" not in str(excinfo.value)
+    assert "kamerakuva" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "customers/4/cameras/5/capture",  # another account
+        "customers/3/cameras/abc/capture",
+        "customers/3/cameras/5/capture/x",
+        "customers/3/cameras/5/latest",
+        "customers/3/cameras/+/capture",
+    ],
+)
+def test_capture_request_on_a_foreign_or_malformed_topic_is_rejected(topic: str) -> None:
+    with pytest.raises(CaptureRequestRejected):
+        parse_capture_request(topic, _capture(), expected_customer_id=3)

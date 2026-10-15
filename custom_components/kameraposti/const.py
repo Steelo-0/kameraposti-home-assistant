@@ -59,6 +59,18 @@ ROSTER_STORE_KEY_TEMPLATE: Final = DOMAIN + ".roster.{entry_id}"
 ROSTER_STORE_VERSION: Final = 1
 LATEST_PHOTO_SCHEMA_VERSION: Final = 1
 
+# 1.6.0: Kameraposti Turva asks for a photo (and optionally a video) from the Home
+# Assistant camera linked to one of its cameras: QoS 1, not retained (an old request
+# is useless). The payload carries signed, expiring upload URLs that are never logged.
+CAPTURE_SUBSCRIBE_TEMPLATE: Final = "customers/{customer_id}/cameras/+/capture"
+CAPTURE_TOPIC_PATTERN: Final = re.compile(
+    r"^customers/(?P<customer_id>\d+)/cameras/(?P<camera_id>\d+)/capture$"
+)
+CAPTURE_MAX_URL_LENGTH: Final = 2048
+# reason is "alarm" or "manual" today; any short lowercase word is accepted (it is only
+# logged), so a new reason on the server never costs a photo.
+CAPTURE_REASON_PATTERN: Final = re.compile(r"^[a-z_]{1,32}$")
+
 EVENT_DETECTION: Final = "kameraposti_detection"
 
 CONF_CUSTOMER_ID: Final = "customer_id"
