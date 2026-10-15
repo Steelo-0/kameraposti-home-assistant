@@ -484,6 +484,15 @@ async def test_an_alarm_from_a_break_goes_out_at_once_on_a_rate_limited_reconnec
     await coordinator.async_stop()
 
 
+async def _open_sensor_options(hass: HomeAssistant, entry: MockConfigEntry) -> dict:
+    """1.6.0: the options open on a menu (sensors / cameras); pick the sensors."""
+    menu = await hass.config_entries.options.async_init(entry.entry_id)
+    assert menu["type"] is FlowResultType.MENU
+    result = await hass.config_entries.options.async_configure(menu["flow_id"], {"next_step_id": "sensors"})
+    assert result["step_id"] == "sensors"
+    return result
+
+
 async def test_options_flow_selects_the_entities_to_export(hass: HomeAssistant) -> None:
     _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
     entry = MockConfigEntry(
@@ -496,7 +505,7 @@ async def test_options_flow_selects_the_entities_to_export(hass: HomeAssistant) 
     with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
         mock_cls.return_value.async_start = AsyncMock()
         mock_cls.return_value.async_stop = AsyncMock()
-        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await _open_sensor_options(hass, entry)
         assert result["type"] is FlowResultType.FORM
         result2 = await hass.config_entries.options.async_configure(
             result["flow_id"], {CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"]}
@@ -517,7 +526,7 @@ async def test_options_flow_refuses_more_sensors_than_kameraposti_allows(hass: H
     for i in range(21):
         _set(hass, f"binary_sensor.vuoto_{i}", "off", "moisture", f"Vuoto {i}")
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_sensor_options(hass, entry)
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_EXPORTED_ENTITIES: [f"binary_sensor.vuoto_{i}" for i in range(21)]}
     )
@@ -587,7 +596,7 @@ async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssis
     with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
         mock_cls.return_value.async_start = AsyncMock()
         mock_cls.return_value.async_stop = AsyncMock()
-        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await _open_sensor_options(hass, entry)
         refused = await hass.config_entries.options.async_configure(
             result["flow_id"],
             {
@@ -763,7 +772,7 @@ async def test_options_flow_accepts_the_new_kinds(
     with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
         mock_cls.return_value.async_start = AsyncMock()
         mock_cls.return_value.async_stop = AsyncMock()
-        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await _open_sensor_options(hass, entry)
         saved = await hass.config_entries.options.async_configure(
             result["flow_id"], {CONF_EXPORTED_ENTITIES: [entity_id]}
         )

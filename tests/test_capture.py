@@ -34,6 +34,7 @@ import respx
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.const import CONF_ENTITY_ID, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -45,6 +46,7 @@ from custom_components.kameraposti.const import (
     CONF_CAPTURE_VIDEO,
     CONF_CAPTURE_VIDEO_SECONDS,
     CONF_CUSTOMER_ID,
+    CONF_EXPORTED_ENTITIES,
     DOMAIN,
 )
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
@@ -783,3 +785,163 @@ async def test_camera_adapters_use_home_assistants_camera_api(hass: HomeAssistan
     camera_module.async_get_image.assert_awaited_once_with(hass, ENTITY_ID, timeout=10)
     helper_module.get_camera_from_entity_id.assert_called_once_with(hass, ENTITY_ID)
     entity.async_create_stream.assert_awaited_once_with()
+
+
+# -- the options flow ------------------------------------------------------------------
+
+
+def _roster(*cameras: tuple[int, str]) -> bytes:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "generated_at": "2026-10-15T12:00:00Z",
+            "cameras": [{"camera_id": camera_id, "name": name} for camera_id, name in cameras],
+        }
+    ).encode()
+
+
+async def _open_camera_options(hass: HomeAssistant, entry: MockConfigEntry) -> dict:
+    menu = await hass.config_entries.options.async_init(entry.entry_id)
+    assert menu["type"] is FlowResultType.MENU
+    assert set(menu["menu_options"]) == {"sensors", "cameras"}
+    return await hass.config_entries.options.async_configure(menu["flow_id"], {"next_step_id": "cameras"})
+
+
+async def test_options_flow_links_a_kameraposti_camera_to_a_home_assistant_camera(
+    hass: HomeAssistant, mock_mqtt_client: None
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
+        options={CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"]},
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.data[DOMAIN][entry.entry_id]._handle_message(
+        f"customers/{CUSTOMER_ID}/cameras", _roster((CAMERA_ID, "Piha"), (6, "Talli"))
+    )
+    await hass.async_block_till_done()
+
+    choose = await _open_camera_options(hass, entry)
+    assert choose["type"] is FlowResultType.FORM
+    assert choose["step_id"] == "cameras"
+    [field_] = choose["data_schema"].schema
+    offered = {
+        option["value"]: option["label"] for option in choose["data_schema"].schema[field_].config["options"]
+    }
+    assert offered == {"5": "Piha", "6": "Talli"}
+
+    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
+    assert form["type"] is FlowResultType.FORM
+    assert form["step_id"] == "camera"
+    assert form["description_placeholders"] == {"camera": "Piha"}
+    saved = await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_ENTITY_ID: ENTITY_ID, CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: 15}
+    )
+    await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {
+        CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"],
+        CONF_CAPTURE_CAMERAS: {
+            "5": {CONF_ENTITY_ID: ENTITY_ID, CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: 15}
+        },
+    }
+    # Saving reloads the entry, and the new coordinator answers for the linked camera.
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator._capture._cameras == {5: CaptureCamera(ENTITY_ID, video=True, video_seconds=15)}
+
+    # The list shows the link (once the reloaded entry has the retained roster again);
+    # the form opens with it.
+    coordinator._handle_message(
+        f"customers/{CUSTOMER_ID}/cameras", _roster((CAMERA_ID, "Piha"), (6, "Talli"))
+    )
+    await hass.async_block_till_done()
+    choose = await _open_camera_options(hass, entry)
+    [field_] = choose["data_schema"].schema
+    labels = [option["label"] for option in choose["data_schema"].schema[field_].config["options"]]
+    assert labels == [f"Piha → {ENTITY_ID} · video 15 s", "Talli"]
+    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
+    defaults = {str(key): key.description for key in form["data_schema"].schema}
+    assert defaults[CONF_ENTITY_ID] == {"suggested_value": ENTITY_ID}
+    assert {
+        key.schema: key.default() for key in form["data_schema"].schema if key.schema != CONF_ENTITY_ID
+    } == {
+        CONF_CAPTURE_VIDEO: True,
+        CONF_CAPTURE_VIDEO_SECONDS: 15,
+    }
+
+
+async def test_options_flow_unlinks_a_camera_and_keeps_the_others(
+    hass: HomeAssistant, mock_mqtt_client: None
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
+        options={CONF_CAPTURE_CAMERAS: {"5": _link(), "6": _link("camera.talli", video=False)}},
+    )
+    entry.add_to_hass(hass)
+    # Not set up: the cameras linked earlier are still listed (no roster to show).
+    choose = await _open_camera_options(hass, entry)
+    [field_] = choose["data_schema"].schema
+    offered = [option["value"] for option in choose["data_schema"].schema[field_].config["options"]]
+    assert offered == ["5", "6"]
+
+    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
+    saved = await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: 10}
+    )
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_CAPTURE_CAMERAS] == {"6": _link("camera.talli", video=False)}
+
+
+async def test_options_flow_refuses_a_video_length_out_of_range(
+    hass: HomeAssistant, mock_mqtt_client: None
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
+        options={CONF_CAPTURE_CAMERAS: {"5": _link()}},
+    )
+    entry.add_to_hass(hass)
+    choose = await _open_camera_options(hass, entry)
+    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
+
+    for seconds in (4, 31):
+        with pytest.raises(Exception):  # noqa: B017 - the selector's own vol.Invalid / InvalidData
+            await hass.config_entries.options.async_configure(
+                form["flow_id"],
+                {CONF_ENTITY_ID: ENTITY_ID, CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: seconds},
+            )
+    assert entry.options[CONF_CAPTURE_CAMERAS] == {"5": _link()}
+
+
+async def test_options_flow_without_cameras_says_so(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
+    )
+    entry.add_to_hass(hass)
+
+    result = await _open_camera_options(hass, entry)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_cameras"
+
+
+async def test_saving_the_sensors_keeps_the_camera_links(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
+        options={CONF_CAPTURE_CAMERAS: {"5": _link()}},
+    )
+    entry.add_to_hass(hass)
+    menu = await hass.config_entries.options.async_init(entry.entry_id)
+    form = await hass.config_entries.options.async_configure(menu["flow_id"], {"next_step_id": "sensors"})
+
+    saved = await hass.config_entries.options.async_configure(form["flow_id"], {CONF_EXPORTED_ENTITIES: []})
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {CONF_EXPORTED_ENTITIES: [], CONF_CAPTURE_CAMERAS: {"5": _link()}}

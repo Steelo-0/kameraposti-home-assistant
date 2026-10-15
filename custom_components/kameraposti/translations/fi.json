@@ -55,16 +55,42 @@
   "options": {
     "step": {
       "init": {
+        "title": "Kameraposti",
+        "menu_options": {
+          "sensors": "Anturit Kamerapostiin",
+          "cameras": "Kuvat Home Assistantin kameroista"
+        }
+      },
+      "sensors": {
         "title": "Anturit Kamerapostiin",
         "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm); enintään {max}. Kameraposti luo anturit automaattisesti. Jos poistat anturin vain Kamerapostista, se palaa seuraavassa yhteydessä; poista se myös tästä listasta. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem).",
         "data": {
           "exported_entities": "Vietävät anturit"
+        }
+      },
+      "cameras": {
+        "title": "Kuvat Home Assistantin kameroista",
+        "description": "Kun Kamerapostin kameraan liitetty anturi hälyttää tai painat kameran sivulla \"Ota kuva Home Assistantista\", Kameraposti pyytää Home Assistantilta kuvan (ja halutessasi lyhyen videon) tähän liitetystä Home Assistantin kamerasta. Valitse Kamerapostin kamera, jonka asetuksia muutat.",
+        "data": {
+          "camera": "Kamerapostin kamera"
+        }
+      },
+      "camera": {
+        "title": "{camera}",
+        "description": "Home Assistantin kamera, joka ottaa kuvat kameralle {camera}. Jätä tyhjäksi, jos haluat poistaa liitoksen. Kuva lähetetään ensin. Video vaatii kameran, joka tukee suoratoistoa, ja se nauhoitetaan kuvan jälkeen.",
+        "data": {
+          "entity_id": "Home Assistantin kamera",
+          "video": "Lähetä myös video",
+          "video_seconds": "Videon pituus"
         }
       }
     },
     "error": {
       "too_many": "Kameraposti ottaa enintään 20 anturia tiliä kohden.",
       "unknown_kind": "Näistä antureista ei tunnistettu, ovatko ne vuoto-, savu-, kaasu-, ovi-, ikkuna-, liike-, lämpö- vai CO₂-antureita: {entities}. Poista ne listasta."
+    },
+    "abort": {
+      "no_cameras": "Kameraposti ei ole vielä lähettänyt kameralistaa. Odota, että integraatio on yhdistänyt, ja yritä uudelleen."
     }
   },
   "exceptions": {
