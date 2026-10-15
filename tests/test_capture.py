@@ -772,6 +772,7 @@ async def test_camera_adapters_use_home_assistants_camera_api(hass: HomeAssistan
     helper_module.get_camera_from_entity_id = MagicMock(return_value=entity)
     camera_module.helper = helper_module
 
+    hass.config.components.add("camera")
     with patch.dict(
         sys.modules,
         {
@@ -785,6 +786,17 @@ async def test_camera_adapters_use_home_assistants_camera_api(hass: HomeAssistan
     camera_module.async_get_image.assert_awaited_once_with(hass, ENTITY_ID, timeout=10)
     helper_module.get_camera_from_entity_id.assert_called_once_with(hass, ENTITY_ID)
     entity.async_create_stream.assert_awaited_once_with()
+
+
+async def test_camera_adapters_need_the_camera_integration(hass: HomeAssistant) -> None:
+    """Without Home Assistant's camera integration there is no camera to ask (and nothing is
+    imported on the event loop): the capture gets one clear error instead."""
+    assert "camera" not in hass.config.components
+    with patch.dict(sys.modules, {"homeassistant.components.camera": None}):
+        with pytest.raises(HomeAssistantError, match="camera integration"):
+            await capture.async_take_photo(hass, ENTITY_ID)
+        with pytest.raises(HomeAssistantError, match="camera integration"):
+            await capture.async_camera_stream(hass, ENTITY_ID)
 
 
 # -- the options flow ------------------------------------------------------------------

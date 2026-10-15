@@ -137,8 +137,16 @@ def recording_timeout(seconds: int) -> float:
 # its requirements are installed and it is set up first when it is in use.
 
 
+def _require_camera_integration(hass: HomeAssistant) -> None:
+    # Checked before the import: without it the camera package would be loaded on the
+    # event loop, only to find no camera.
+    if "camera" not in hass.config.components:
+        raise HomeAssistantError("Home Assistant's camera integration is not set up")
+
+
 async def async_take_photo(hass: HomeAssistant, entity_id: str) -> bytes:
     """A still from the camera (camera.async_get_image). Raises HomeAssistantError."""
+    _require_camera_integration(hass)
     from homeassistant.components.camera import async_get_image  # noqa: PLC0415
 
     image = await async_get_image(hass, entity_id, timeout=PHOTO_TIMEOUT_SECONDS)
@@ -147,6 +155,7 @@ async def async_take_photo(hass: HomeAssistant, entity_id: str) -> bytes:
 
 async def async_camera_stream(hass: HomeAssistant, entity_id: str) -> Any | None:
     """The camera's stream, as the camera.record service gets it. None = no streaming."""
+    _require_camera_integration(hass)
     from homeassistant.components.camera.helper import get_camera_from_entity_id  # noqa: PLC0415
 
     return await get_camera_from_entity_id(hass, entity_id).async_create_stream()
