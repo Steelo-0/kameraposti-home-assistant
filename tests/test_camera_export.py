@@ -9,8 +9,10 @@ linked cameras count as ticked until the list is saved, and their Kameraposti ca
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.const import CONF_ENTITY_ID
 from homeassistant.core import HomeAssistant
@@ -181,6 +183,17 @@ async def test_no_mac_when_the_device_has_none(hass: HomeAssistant) -> None:
     assert camera_mac(hass, SHELLY) is None
 
 
+async def test_the_mac_connection_wins_over_the_name(hass: HomeAssistant) -> None:
+    """Audit L-7: a device named by its user still gives its MAC from the registry connection."""
+    _shelly_device(hass, name="Kuistin kamera", mac=True)
+    assert camera_mac(hass, SHELLY) == "6ca61366d281"
+
+
+def test_at_most_20_ticked_cameras_are_read() -> None:
+    settings = camera_settings_from_options({CONF_EXPORTED_CAMERAS: [f"camera.c{i}" for i in range(25)]})
+    assert settings.exported == tuple(f"camera.c{i}" for i in range(20))
+
+
 # -- the exporter ---------------------------------------------------------------------------
 
 
@@ -291,6 +304,57 @@ async def test_a_reconnect_storm_sends_at_most_once_a_minute_and_15_minute_resen
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert len(published) == 3
+
+
+async def test_a_failed_publish_stops_the_round_and_the_next_connection_resends(hass: HomeAssistant) -> None:
+    hass.states.async_set("camera.eka", "idle", {})
+    hass.states.async_set("camera.toka", "idle", {})
+    sent: list[str] = []
+    accept = [True, False]
+
+    def publish(topic: str, payload: str, retain: bool) -> bool:
+        ok = accept.pop(0) if accept else True
+        if ok:
+            sent.append(json.loads(payload)["entity_id"])
+        return ok
+
+    exporter = KameraportiCameraExporter(
+        hass,
+        customer_id=CUSTOMER_ID,
+        settings=_settings(exported=("camera.eka", "camera.toka"), removed=("camera.vanha",)),
+        publish=publish,
+    )
+    exporter.async_on_connected()
+    # The removal went, the first description failed: nothing after it was tried.
+    assert sent == ["camera.vanha"]
+    exporter.async_on_connected()
+    assert sent == ["camera.vanha", "camera.vanha", "camera.eka", "camera.toka"]
+
+
+async def test_a_ticked_camera_that_no_longer_exists_is_named_once(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Audit L-5: renamed or removed in Home Assistant -- not described, and the log says where to fix it."""
+    published, publish = _recorder()
+    exporter = KameraportiCameraExporter(
+        hass, customer_id=CUSTOMER_ID, settings=_settings(exported=("camera.vanha",)), publish=publish
+    )
+    exporter.async_start()
+    with caplog.at_level(logging.WARNING):
+        # Right after start the camera may just not be loaded yet: no warning.
+        exporter.async_on_connected()
+        for _ in range(2):
+            freezer.tick(15 * 60 + 1)
+            async_fire_time_changed(hass)
+            await hass.async_block_till_done()
+    exporter.async_stop()
+
+    assert published == []
+    warnings = [r.getMessage() for r in caplog.records if r.name.startswith("custom_components.kameraposti")]
+    assert warnings == [
+        "Kameraposti: camera.vanha is ticked under Configure -> Cameras to Kameraposti but no longer exists "
+        "in Home Assistant; tick the camera's current entity there"
+    ]
 
 
 async def test_nothing_to_send_without_cameras(hass: HomeAssistant) -> None:

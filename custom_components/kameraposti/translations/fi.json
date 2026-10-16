@@ -71,7 +71,7 @@
       },
       "cameras": {
         "title": "Kamerat Kamerapostiin",
-        "description": "Ruksi Home Assistantin kamerat, joiden kuvat haluat Kamerapostiin (enintään {max}). Kameraposti tekee kustakin kameran automaattisesti, ja Kamerapostiin lisätty Shelly Camera näyttää myös sen kuvat. Kun kameraan liitetty anturi hälyttää tai painat Kamerapostissa \"Ota kuva Home Assistantista\", Home Assistant lähettää kuvan (ja halutessasi lyhyen videon) ruksitusta kamerasta. Kameraposti voi pyytää kuvia vain täällä ruksituista kameroista. Shelly Camera on yleensä \"… Stream 0\".",
+        "description": "Ruksi Home Assistantin kamerat, joiden kuvat haluat Kamerapostiin (enintään {max}). Kameraposti tekee kustakin kameran automaattisesti, ja Kamerapostiin lisätty Shelly Camera näyttää myös sen kuvat. Kun kameraan liitetty anturi hälyttää tai painat Kamerapostissa \"Ota kuva Home Assistantista\", Home Assistant lähettää kuvan (ja halutessasi lyhyen videon) ruksitusta kamerasta. Kameraposti voi pyytää kuvia vain täällä ruksituista kameroista. Ruksi Shellystä vain yksi kamera (yleensä Stream 0).",
         "data": {
           "exported_cameras": "Kamerat",
           "camera_video": "Lähetä myös video",

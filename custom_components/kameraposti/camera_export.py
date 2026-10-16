@@ -187,6 +187,7 @@ class KameraportiCameraExporter:
         self._sent_at: datetime | None = None
         self._pending: CALLBACK_TYPE | None = None
         self._unsub_resync: Callable[[], None] | None = None
+        self._warned_missing: set[str] = set()
 
     def async_start(self) -> None:
         if self._unsub_resync is None and (self._settings.exported or self._settings.removed):
@@ -226,10 +227,12 @@ class KameraportiCameraExporter:
 
     @callback
     def _handle_resync(self, _now: datetime) -> None:
-        self.publish_all()
+        # Audit L-5: a ticked camera missing 15 minutes after start is gone (removed or renamed in Home
+        # Assistant), not just not loaded yet -- say so once.
+        self.publish_all(warn_missing=True)
 
     @callback
-    def publish_all(self) -> None:
+    def publish_all(self, *, warn_missing: bool = False) -> None:
         """Removals first, then the ticked cameras. Stops at the first message that cannot be sent."""
         sent = False
         for entity_id in self._settings.removed:
@@ -243,6 +246,13 @@ class KameraportiCameraExporter:
                 er.async_get(self._hass).async_get(entity_id) is None
                 and self._hass.states.get(entity_id) is None
             ):
+                if warn_missing and entity_id not in self._warned_missing:
+                    self._warned_missing.add(entity_id)
+                    _LOGGER.warning(
+                        "Kameraposti: %s is ticked under Configure -> Cameras to Kameraposti but no longer "
+                        "exists in Home Assistant; tick the camera's current entity there",
+                        entity_id,
+                    )
                 continue
             payload: dict[str, Any] = {
                 "kind": "camera",

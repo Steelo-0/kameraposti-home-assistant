@@ -71,7 +71,7 @@
       },
       "cameras": {
         "title": "Cameras to Kameraposti",
-        "description": "Tick the Home Assistant cameras whose photos you want in Kameraposti (at most {max}). Kameraposti makes a camera of each one automatically, and a Shelly Camera added in Kameraposti shows its photos too. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video) from the ticked camera. Kameraposti can ask for photos only from the cameras ticked here. A Shelly Camera is usually \"… Stream 0\".",
+        "description": "Tick the Home Assistant cameras whose photos you want in Kameraposti (at most {max}). Kameraposti makes a camera of each one automatically, and a Shelly Camera added in Kameraposti shows its photos too. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video) from the ticked camera. Kameraposti can ask for photos only from the cameras ticked here. Tick only one camera of a Shelly (usually Stream 0).",
         "data": {
           "exported_cameras": "Cameras",
           "camera_video": "Also send a video",
