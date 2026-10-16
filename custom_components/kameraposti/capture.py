@@ -4,10 +4,11 @@ Kameraposti Turva asks for a photo when a sensor linked to one of its cameras
 alarms, or when the user presses "Ota kuva Home Assistantista" on the camera's
 page: it publishes a capture request (customers/<id>/cameras/<camera>/capture,
 QoS 1, not retained) with two signed, expiring upload URLs. 1.7.0: the request
-names the Home Assistant camera (entity_id), which must be one the user ticked
-under "Cameras to Kameraposti" (camera_export.py); a request from an older server
-names none, and the 1.6.0 option linking its Kameraposti camera decides (its Home
-Assistant camera must be ticked too). For that camera this module
+names the Home Assistant camera (entity_id), which must be one the integration
+reports to Kameraposti (camera_export.py; 1.8.0: every camera not excluded under
+"Cameras to Kameraposti", worked out when the request arrives); a request from an
+older server names none, and the 1.6.0 option linking its Kameraposti camera
+decides (its Home Assistant camera must be reported too). For that camera this module
 
 1. takes a still with camera.async_get_image (10 s) and POSTs it to photo_url
    as image/jpeg;
@@ -48,7 +49,7 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -284,7 +285,7 @@ class KameraportiCaptureHandler:
         host: str,
         customer_id: int,
         cameras: Mapping[int, CaptureCamera],
-        exported: Collection[str],
+        exported: Callable[[], Collection[str]],
         video: bool,
         video_seconds: int,
     ) -> None:
@@ -295,8 +296,10 @@ class KameraportiCaptureHandler:
         self._customer_id = customer_id
         # 1.6.0 links {camera_id: camera}: only for requests that name no entity_id.
         self._cameras = dict(cameras)
-        # 1.7.0: the ticked cameras -- the only ones a photo is ever taken from -- and their video.
-        self._exported = frozenset(exported)
+        # The reported cameras -- the only ones a photo is ever taken from -- and their video. 1.8.0
+        # (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): asked for at each request, so a
+        # camera added to Home Assistant since setup works without a reload.
+        self._exported = exported
         self._video = video
         self._video_seconds = video_seconds
         self._dedup = EventDedupCache()
@@ -318,16 +321,17 @@ class KameraportiCaptureHandler:
             _LOGGER.debug("Ignoring invalid Kameraposti capture request on %s: %s", topic, err)
             return
         entity_id = self._entity_for(request)
-        if entity_id is None or entity_id not in self._exported:
+        if entity_id is None or entity_id not in self._exported():
             # 1.7.0: a warning, not debug -- 16.10 a request ignored at debug level left the user
             # guessing why no photo came.
             _LOGGER.warning(
                 "Kameraposti capture request_id=%s camera_id=%s: %s, no photo",
                 request.request_id,
                 request.camera_id,
-                f"{entity_id} is not ticked under Configure -> Cameras to Kameraposti"
+                f"{entity_id} is excluded under Configure -> Cameras to Kameraposti "
+                "(or does not exist in Home Assistant)"
                 if entity_id is not None
-                else "no Home Assistant camera for it (tick one under Configure -> Cameras to Kameraposti)",
+                else "no Home Assistant camera chosen for it in Kameraposti",
             )
             return
         camera = CaptureCamera(entity_id=entity_id, video=self._video, video_seconds=self._video_seconds)

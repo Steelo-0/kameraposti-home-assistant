@@ -1,21 +1,37 @@
-"""Home Assistant cameras to Kameraposti (1.7.0, steelo 2026-10-16 "idioottivarma").
+"""Home Assistant cameras to Kameraposti (1.7.0; 1.8.0 steelo 2026-10-16 "maalaisjärjellä, pari klikkausta").
 
-The user ticks cameras under "Cameras to Kameraposti" in the options. For each one this module
-publishes, over the integration's own connection, a description under the sensor prefix:
+1.8.0: Home Assistant only reports its cameras; everything is chosen in Kameraposti (Turva) -- which
+reported camera becomes a Kameraposti camera, which one a camera's page uses, the Shelly by its MAC.
+1.7.0 had the user tick cameras in the options, and settings in three places became a jungle.
+The reported cameras (the "exported set") are worked out whenever they are needed -- at every
+publish and every capture request -- so a camera added to Home Assistant later is reported at the
+next resend:
+
+a. ``excluded_cameras`` saved (the 1.8.0 options): every camera in Home Assistant except those.
+b. else ``exported_cameras`` saved (the 1.7.0 ticks): exactly those, so a user who chose only some
+   cameras keeps that until the 1.8.0 options are saved.
+c. else the cameras linked by 1.6.0 options.
+d. else (cameras never configured): every camera, as in a.
+
+At most MAX_EXPORTED_CAMERAS: the first after sorting by entity_id, or of the saved list. For each
+one this module publishes, over the integration's own connection, a description under the sensor
+prefix:
 
 * ``kameraposti/<id>/anturit/<name>/config`` --
-  {"kind": "camera", "entity_id", "name", "mac", "camera_id"?}; Kameraposti creates a camera for
-  it (or links the camera a 1.6.0 option already linked to it: ``camera_id``) and links a Shelly
-  Camera device whose own id ends in the same MAC.
-* the same topic with {"kind": "camera", "entity_id", "removed": true} for a camera unticked since.
+  {"kind": "camera", "entity_id", "name", "mac", "camera_id"?}; Kameraposti lists it among the Home
+  Assistant cameras the user can add or pick (``camera_id``: the camera a 1.6.0 option already
+  linked to it) and attaches a Shelly Camera device whose own id ends in the same MAC. The protocol
+  is the same as in 1.7.0; only what Kameraposti does with a description changed (Turva V62).
+* the same topic with {"kind": "camera", "entity_id", "removed": true} for a camera that stopped
+  being reported when the options were saved (and is not reported again since).
 
 ``<name>`` is the sensor exporter's topic name for the entity_id; Kameraposti keys the camera by
 the entity_id in the payload. Descriptions and removals go out on every (re)connect, at most once
 a minute (a reconnect storm must not use the account's message budget), and every 15 minutes:
 Kameraposti's listener reconnects hourly, and a message published in that gap would be lost.
 
-Before the user saves the new list, a 1.6.0 entry's linked cameras are the ticked ones (and their
-Kameraposti camera ids are sent along), so an upgrade keeps working without touching the options.
+A camera a 1.6.0 option linked to a Kameraposti camera carries that camera's id along, whichever
+way it is reported, so an upgrade keeps using the same Kameraposti camera.
 """
 
 from __future__ import annotations
@@ -23,7 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -42,6 +58,7 @@ from .const import (
     CAPTURE_VIDEO_SECONDS_MIN,
     CONF_CAMERA_VIDEO,
     CONF_CAMERA_VIDEO_SECONDS,
+    CONF_EXCLUDED_CAMERAS,
     CONF_EXPORTED_CAMERAS,
     CONF_REMOVED_CAMERAS,
     MAX_EXPORTED_CAMERAS,
@@ -64,9 +81,12 @@ PublishFn = Callable[[str, str, bool], bool]
 
 @dataclass(frozen=True, slots=True)
 class CameraSettings:
-    """The ticked cameras and their video setting, from the entry options."""
+    """Which cameras are reported and their video setting, from the entry options."""
 
-    exported: tuple[str, ...]
+    # A list saved by 1.7.0 ticks or 1.6.0 links (cases b, c); None = every camera but `excluded`.
+    allowlist: tuple[str, ...] | None
+    excluded: tuple[str, ...]
+    # Described as removed while they are not reported (the saved list; filtered at publish time).
     removed: tuple[str, ...]
     # entity_id -> the Kameraposti camera a 1.6.0 option linked it to.
     hints: Mapping[str, int]
@@ -74,7 +94,7 @@ class CameraSettings:
     video_seconds: int
 
 
-def _entity_ids(raw: Any, limit: int) -> list[str]:
+def _entity_ids(raw: Any, limit: int | None) -> list[str]:
     if not isinstance(raw, list | tuple):
         return []
     valid = [item for item in raw if isinstance(item, str) and CAMERA_ENTITY_PATTERN.fullmatch(item)]
@@ -88,16 +108,20 @@ def _seconds(raw: Any) -> int:
 
 
 def camera_settings_from_options(options: Mapping[str, Any]) -> CameraSettings:
-    """The ticked cameras; before the list is saved, the cameras 1.6.0 options linked."""
+    """The reporting rule (a-d in the module docstring), the removals and the video setting."""
     legacy = capture_cameras_from_options(options)
     hints: dict[str, int] = {}
     for camera_id in sorted(legacy):
         hints.setdefault(legacy[camera_id].entity_id, camera_id)
 
-    if CONF_EXPORTED_CAMERAS in options:
-        exported = _entity_ids(options.get(CONF_EXPORTED_CAMERAS), MAX_EXPORTED_CAMERAS)
-    else:
-        exported = _entity_ids(list(hints), MAX_EXPORTED_CAMERAS)
+    # Privacy first: a list the user saved in 1.7.0 (or linked in 1.6.0) keeps limiting what is
+    # reported until the 1.8.0 options are saved; only an entry that never chose cameras reports all.
+    allowlist: list[str] | None = None
+    if CONF_EXCLUDED_CAMERAS not in options:
+        if CONF_EXPORTED_CAMERAS in options:
+            allowlist = _entity_ids(options.get(CONF_EXPORTED_CAMERAS), MAX_EXPORTED_CAMERAS)
+        elif hints:
+            allowlist = _entity_ids(list(hints), MAX_EXPORTED_CAMERAS)
     if CONF_CAMERA_VIDEO in options:
         video = options.get(CONF_CAMERA_VIDEO) is True
         video_seconds = _seconds(options.get(CONF_CAMERA_VIDEO_SECONDS))
@@ -107,23 +131,55 @@ def camera_settings_from_options(options: Mapping[str, Any]) -> CameraSettings:
             (link.video_seconds for link in legacy.values() if link.video),
             default=CAPTURE_VIDEO_SECONDS_DEFAULT,
         )
-    removed = _entity_ids(options.get(CONF_REMOVED_CAMERAS), MAX_REMOVED_CAMERAS)
     return CameraSettings(
-        exported=tuple(exported),
-        removed=tuple(entity_id for entity_id in removed if entity_id not in exported),
-        hints={entity_id: camera_id for entity_id, camera_id in hints.items() if entity_id in exported},
+        allowlist=tuple(allowlist) if allowlist is not None else None,
+        excluded=tuple(_entity_ids(options.get(CONF_EXCLUDED_CAMERAS), None)),
+        removed=tuple(_entity_ids(options.get(CONF_REMOVED_CAMERAS), MAX_REMOVED_CAMERAS)),
+        hints=hints,
         video=video,
         video_seconds=video_seconds,
     )
 
 
-def removed_after_save(previous: CameraSettings, selected: list[str]) -> list[str]:
-    """The removal list after saving ``selected``: newly unticked ones last, re-ticked ones out."""
-    removed = [entity_id for entity_id in previous.removed if entity_id not in selected]
-    for entity_id in previous.exported:
-        if entity_id not in selected and entity_id not in removed:
-            removed.append(entity_id)
-    return removed[-MAX_REMOVED_CAMERAS:]
+@callback
+def home_assistant_cameras(hass: HomeAssistant) -> list[str]:
+    """Every camera in Home Assistant, sorted by entity_id.
+
+    The entity registry's cameras that are not disabled -- also one whose integration has not loaded
+    yet at start -- and any camera state without a registry entry (a camera set up in YAML without a
+    unique_id). Only ids Kameraposti accepts.
+    """
+    registry = er.async_get(hass)
+    found = {
+        entry.entity_id
+        for entry in registry.entities.values()
+        if entry.domain == "camera" and not entry.disabled
+    }
+    found.update(
+        entity_id
+        for entity_id in hass.states.async_entity_ids("camera")
+        if registry.async_get(entity_id) is None
+    )
+    return sorted(entity_id for entity_id in found if CAMERA_ENTITY_PATTERN.fullmatch(entity_id))
+
+
+@callback
+def exported_cameras(hass: HomeAssistant, settings: CameraSettings) -> tuple[str, ...]:
+    """The cameras reported to Kameraposti right now -- the only ones it can ask for photos."""
+    if settings.allowlist is not None:
+        return settings.allowlist
+    excluded = set(settings.excluded)
+    cameras = [entity_id for entity_id in home_assistant_cameras(hass) if entity_id not in excluded]
+    return tuple(cameras[:MAX_EXPORTED_CAMERAS])
+
+
+def removed_after_save(removed: Sequence[str], before: Sequence[str], after: Collection[str]) -> list[str]:
+    """The removal list after a save: cameras no longer reported go last, reported-again ones out."""
+    result = [entity_id for entity_id in removed if entity_id not in after]
+    for entity_id in before:
+        if entity_id not in after and entity_id not in result:
+            result.append(entity_id)
+    return result[-MAX_REMOVED_CAMERAS:]
 
 
 def _clean(name: str) -> str:
@@ -175,7 +231,7 @@ def camera_mac(hass: HomeAssistant, entity_id: str) -> str | None:
 
 
 class KameraportiCameraExporter:
-    """Describes the ticked cameras (and the unticked ones as removed) to Kameraposti."""
+    """Describes the reported cameras (and those no longer reported as removed) to Kameraposti."""
 
     def __init__(
         self, hass: HomeAssistant, *, customer_id: int, settings: CameraSettings, publish: PublishFn
@@ -190,7 +246,8 @@ class KameraportiCameraExporter:
         self._warned_missing: set[str] = set()
 
     def async_start(self) -> None:
-        if self._unsub_resync is None and (self._settings.exported or self._settings.removed):
+        # 1.8.0: always -- a camera added to Home Assistant later is reported at the next resend.
+        if self._unsub_resync is None:
             self._unsub_resync = async_track_time_interval(
                 self._hass, self._handle_resync, RESYNC_INTERVAL, cancel_on_shutdown=True
             )
@@ -207,8 +264,6 @@ class KameraportiCameraExporter:
     @callback
     def async_on_connected(self) -> None:
         """(Re)connected: describe everything, at most once per SNAPSHOT_MIN_INTERVAL_SECONDS."""
-        if not (self._settings.exported or self._settings.removed):
-            return
         sent_at = self._sent_at
         elapsed = (dt_util.utcnow() - sent_at).total_seconds() if sent_at is not None else None
         if elapsed is None or elapsed >= SNAPSHOT_MIN_INTERVAL_SECONDS:
@@ -227,21 +282,28 @@ class KameraportiCameraExporter:
 
     @callback
     def _handle_resync(self, _now: datetime) -> None:
-        # Audit L-5: a ticked camera missing 15 minutes after start is gone (removed or renamed in Home
-        # Assistant), not just not loaded yet -- say so once.
+        # Audit L-5: a camera on a saved list missing 15 minutes after start is gone (removed or renamed
+        # in Home Assistant), not just not loaded yet -- say so once.
         self.publish_all(warn_missing=True)
 
     @callback
     def publish_all(self, *, warn_missing: bool = False) -> None:
-        """Removals first, then the ticked cameras. Stops at the first message that cannot be sent."""
+        """Removals first, then the reported cameras. Stops at the first message that cannot be sent.
+
+        The reported cameras are worked out now, not at setup: a camera added to Home Assistant since
+        is described, and a removed one that is reported again is not also described as removed.
+        """
+        exported = exported_cameras(self._hass, self._settings)
         sent = False
         for entity_id in self._settings.removed:
+            if entity_id in exported:
+                continue
             if not self._send(entity_id, {"kind": "camera", "entity_id": entity_id, "removed": True}):
                 return
             sent = True
-        for entity_id in self._settings.exported:
-            # A camera that no longer exists in Home Assistant is not described (Kameraposti would
-            # make a camera that can never take a photo).
+        for entity_id in exported:
+            # A camera on a saved list that no longer exists in Home Assistant is not described
+            # (Kameraposti would offer a camera that can never take a photo).
             if (
                 er.async_get(self._hass).async_get(entity_id) is None
                 and self._hass.states.get(entity_id) is None
@@ -249,8 +311,9 @@ class KameraportiCameraExporter:
                 if warn_missing and entity_id not in self._warned_missing:
                     self._warned_missing.add(entity_id)
                     _LOGGER.warning(
-                        "Kameraposti: %s is ticked under Configure -> Cameras to Kameraposti but no longer "
-                        "exists in Home Assistant; tick the camera's current entity there",
+                        "Kameraposti: %s is on the camera list saved by an earlier version but no longer "
+                        "exists in Home Assistant; save Configure -> Cameras to Kameraposti to report "
+                        "your current cameras",
                         entity_id,
                     )
                 continue

@@ -15,12 +15,15 @@ sensors (sensor_export.py). 1.6.0: a menu -- the sensors, or the cameras.
 1.7.0: the cameras are one list of Home Assistant cameras ticked for Kameraposti
 (camera_export.py) and one video setting; Kameraposti makes a camera of each and
 nothing is linked by hand (1.6.0 linked one Kameraposti camera at a time).
+1.8.0: nothing to tick -- every camera is reported and chosen in Kameraposti; the
+cameras step only hides cameras from it (and keeps the one video setting).
 Saving reloads the entry.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
 import voluptuous as vol
@@ -43,7 +46,12 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .camera_export import camera_settings_from_options, removed_after_save
+from .camera_export import (
+    camera_settings_from_options,
+    exported_cameras,
+    home_assistant_cameras,
+    removed_after_save,
+)
 from .const import (
     BROKER_HOSTS,
     CAMERA_ENTITY_PATTERN,
@@ -53,6 +61,7 @@ from .const import (
     CONF_CAMERA_VIDEO,
     CONF_CAMERA_VIDEO_SECONDS,
     CONF_CUSTOMER_ID,
+    CONF_EXCLUDED_CAMERAS,
     CONF_EXPORTED_CAMERAS,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
@@ -253,42 +262,55 @@ class KameraportiOptionsFlow(OptionsFlow):
         return self.async_show_menu(step_id="init", menu_options=["sensors", "cameras"])
 
     async def async_step_cameras(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """1.7.0 (steelo 2026-10-16 "idioottivarma"): tick the Home Assistant cameras for Kameraposti.
+        """1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): the cameras Kameraposti must
+        not use, and the video setting.
 
-        Kameraposti makes a camera of each and asks only these for photos; nothing is linked by hand.
+        Every other camera is reported and chosen in Kameraposti (1.7.0's ticking left settings in three
+        places). An entry still on a 1.7.0 tick list or 1.6.0 links opens with every camera outside that
+        list hidden, so saving without changes keeps what Kameraposti gets; the save replaces the list
+        with the hidden cameras. A camera the save stops reporting is described to Kameraposti as
+        removed.
         """
         errors: dict[str, str] = {}
         previous = camera_settings_from_options(self.config_entry.options)
-        current = list(previous.exported)
+        if previous.allowlist is None:
+            excluded = list(previous.excluded)
+        else:
+            excluded = [
+                entity_id
+                for entity_id in home_assistant_cameras(self.hass)
+                if entity_id not in previous.allowlist
+            ]
         video = previous.video
         seconds = previous.video_seconds
 
         if user_input is not None:
-            selected = list(dict.fromkeys(user_input.get(CONF_EXPORTED_CAMERAS, [])))
+            selected = list(dict.fromkeys(user_input.get(CONF_EXCLUDED_CAMERAS, [])))
             video = bool(user_input.get(CONF_CAMERA_VIDEO, False))
             seconds = int(user_input.get(CONF_CAMERA_VIDEO_SECONDS, CAPTURE_VIDEO_SECONDS_DEFAULT))
-            if len(selected) > MAX_EXPORTED_CAMERAS:
-                errors[CONF_EXPORTED_CAMERAS] = "too_many_cameras"
-                current = selected
-            elif any(CAMERA_ENTITY_PATTERN.fullmatch(entity_id) is None for entity_id in selected):
-                errors[CONF_EXPORTED_CAMERAS] = "invalid_camera"
-                current = selected
+            if any(CAMERA_ENTITY_PATTERN.fullmatch(entity_id) is None for entity_id in selected):
+                errors[CONF_EXCLUDED_CAMERAS] = "invalid_camera"
+                excluded = selected
             else:
-                return self.async_create_entry(
-                    data={
-                        **self.config_entry.options,
-                        CONF_EXPORTED_CAMERAS: selected,
-                        CONF_REMOVED_CAMERAS: removed_after_save(previous, selected),
-                        CONF_CAMERA_VIDEO: video,
-                        CONF_CAMERA_VIDEO_SECONDS: seconds,
-                    }
-                )
+                saved = replace(previous, allowlist=None, excluded=tuple(selected))
+                before = exported_cameras(self.hass, previous)
+                after = exported_cameras(self.hass, saved)
+                options = {
+                    **self.config_entry.options,
+                    CONF_EXCLUDED_CAMERAS: selected,
+                    CONF_REMOVED_CAMERAS: removed_after_save(previous.removed, before, after),
+                    CONF_CAMERA_VIDEO: video,
+                    CONF_CAMERA_VIDEO_SECONDS: seconds,
+                }
+                # The 1.7.0 tick list would keep limiting what is reported; the hidden list replaces it.
+                options.pop(CONF_EXPORTED_CAMERAS, None)
+                return self.async_create_entry(data=options)
 
         return self.async_show_form(
             step_id="cameras",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(CONF_EXPORTED_CAMERAS, default=current): EntitySelector(
+                    vol.Optional(CONF_EXCLUDED_CAMERAS, default=excluded): EntitySelector(
                         EntitySelectorConfig(domain="camera", multiple=True)
                     ),
                     vol.Required(CONF_CAMERA_VIDEO, default=video): BooleanSelector(),

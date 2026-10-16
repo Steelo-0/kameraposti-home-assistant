@@ -94,14 +94,22 @@ CAPTURE_VIDEO_SECONDS_MAX: Final = 30
 # (kameraposti/<id>/anturit/<name>/config, kind "camera"); Kameraposti creates or links a camera
 # for it, and its capture requests name the entity_id. Kameraposti can ask for photos only from
 # these cameras. docs/kameraposti-turva-ha-kamerat-spec-2026-10-16.md in the steel-cloud repo.
+# 1.8.0: read only until the 1.8.0 options are saved -- such a list keeps limiting what is reported.
 CONF_EXPORTED_CAMERAS: Final = "exported_cameras"
-# Cameras unticked since: described as removed on every connection, the newest MAX_REMOVED_CAMERAS.
+# 1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): every Home Assistant camera is
+# reported and chosen in Kameraposti; this option only hides cameras. Its presence means the 1.8.0
+# options were saved (an empty list = hide nothing).
+CONF_EXCLUDED_CAMERAS: Final = "excluded_cameras"
+# Cameras that stopped being reported on a save: described as removed on every connection, the
+# newest MAX_REMOVED_CAMERAS.
 CONF_REMOVED_CAMERAS: Final = "removed_cameras"
-# One video setting for all ticked cameras (1.6.0 had one per linked camera).
+# One video setting for all cameras (1.6.0 had one per linked camera).
 CONF_CAMERA_VIDEO: Final = "camera_video"
 CONF_CAMERA_VIDEO_SECONDS: Final = "camera_video_seconds"
-MAX_EXPORTED_CAMERAS: Final = 20
-MAX_REMOVED_CAMERAS: Final = 20
+# 1.8.0: at most this many cameras are reported (the first after sorting, or of a saved list); as
+# many can be described as removed, so every camera that can be reported can also be withdrawn.
+MAX_EXPORTED_CAMERAS: Final = 50
+MAX_REMOVED_CAMERAS: Final = 50
 # Kameraposti accepts camera.<object id> of lowercase letters, digits and underscores, 1-200.
 CAMERA_ENTITY_PATTERN: Final = re.compile(r"^camera\.[a-z0-9_]{1,200}$")
 

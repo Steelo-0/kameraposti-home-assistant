@@ -71,9 +71,9 @@
       },
       "cameras": {
         "title": "Cameras to Kameraposti",
-        "description": "Tick the Home Assistant cameras whose photos you want in Kameraposti (at most {max}). Kameraposti makes a camera of each one automatically, and a Shelly Camera added in Kameraposti shows its photos too. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video) from the ticked camera. Kameraposti can ask for photos only from the cameras ticked here. Tick only one camera of a Shelly (usually Stream 0).",
+        "description": "Kameraposti gets every Home Assistant camera by default (at most {max}), and you choose in Kameraposti which ones become cameras: add one from Kameraposti's list of Home Assistant cameras, or pick one on a camera's page. A Shelly Camera added in Kameraposti finds its camera by itself. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video). This list only hides cameras: choose the cameras Kameraposti must not use. Kameraposti is not told about them and cannot ask them for photos.",
         "data": {
-          "exported_cameras": "Cameras",
+          "excluded_cameras": "Cameras Kameraposti must not use",
           "camera_video": "Also send a video",
           "camera_video_seconds": "Video length"
         }
@@ -82,7 +82,6 @@
     "error": {
       "too_many": "Your Kameraposti plan takes at most {max} sensors.",
       "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list.",
-      "too_many_cameras": "Kameraposti accepts at most 20 cameras from Home Assistant.",
       "invalid_camera": "Choose cameras only (camera.…)."
     }
   },

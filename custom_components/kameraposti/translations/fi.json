@@ -71,9 +71,9 @@
       },
       "cameras": {
         "title": "Kamerat Kamerapostiin",
-        "description": "Ruksi Home Assistantin kamerat, joiden kuvat haluat Kamerapostiin (enintään {max}). Kameraposti tekee kustakin kameran automaattisesti, ja Kamerapostiin lisätty Shelly Camera näyttää myös sen kuvat. Kun kameraan liitetty anturi hälyttää tai painat Kamerapostissa \"Ota kuva Home Assistantista\", Home Assistant lähettää kuvan (ja halutessasi lyhyen videon) ruksitusta kamerasta. Kameraposti voi pyytää kuvia vain täällä ruksituista kameroista. Ruksi Shellystä vain yksi kamera (yleensä Stream 0).",
+        "description": "Kameraposti saa oletuksena kaikki Home Assistantin kamerat (enintään {max}), ja valitset Kamerapostissa, mistä tulee kamera: lisää kamera Kamerapostin Home Assistant -kameroiden listalta tai valitse se kameran sivulla. Kamerapostiin lisätty Shelly Camera löytää kameransa itse. Kun kameraan liitetty anturi hälyttää tai painat Kamerapostissa \"Ota kuva Home Assistantista\", Home Assistant lähettää kuvan (ja halutessasi lyhyen videon). Tämä lista vain piilottaa kameroita: valitse kamerat, joita Kameraposti ei saa käyttää. Niistä ei kerrota Kamerapostille, eikä se voi pyytää niistä kuvia.",
         "data": {
-          "exported_cameras": "Kamerat",
+          "excluded_cameras": "Kamerat, joita Kameraposti ei saa käyttää",
           "camera_video": "Lähetä myös video",
           "camera_video_seconds": "Videon pituus"
         }
@@ -82,7 +82,6 @@
     "error": {
       "too_many": "Kamerapostin pakettisi ottaa enintään {max} anturia.",
       "unknown_kind": "Näistä antureista ei tunnistettu, ovatko ne vuoto-, savu-, kaasu-, ovi-, ikkuna-, liike-, lämpö- vai CO₂-antureita: {entities}. Poista ne listasta.",
-      "too_many_cameras": "Kameraposti ottaa Home Assistantista enintään 20 kameraa.",
       "invalid_camera": "Valitse vain kameroita (camera.…)."
     }
   },
