@@ -725,6 +725,26 @@ async def test_a_higher_limit_sends_the_left_out_sensors_at_once_without_a_resta
     exporter.async_stop()
 
 
+async def test_nothing_is_logged_while_every_chosen_sensor_is_sent(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The roster arrives on every start and reconnect, and a plan change that leaves nothing out is
+    no news: no line in the log."""
+    entity_ids = _doors(hass, 25)
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=entity_ids, publish=publish, limit=30
+    )
+    exporter.async_start()
+    with caplog.at_level(logging.INFO):
+        exporter.async_set_limit(30)
+        exporter.async_set_limit(40)
+        exporter.async_set_limit(25)
+    assert _kameraposti_logs(caplog, logging.INFO) == []
+    assert _kameraposti_logs(caplog, logging.WARNING) == []
+    exporter.async_stop()
+
+
 async def test_a_lower_limit_stops_sending_the_extra_sensors_without_removal_messages(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
