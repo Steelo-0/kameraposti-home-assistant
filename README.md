@@ -275,7 +275,7 @@ hours, and Kameraposti notifies you and your followers (arming still works). Eve
 "Home Assistant". Mode changes made in the Kameraposti app or website show up
 in Home Assistant right away, so automations can react to them too.
 
-## Cameras to Kameraposti (since 1.8.0; photos since 1.6.0)
+## Cameras to Kameraposti (since 1.8.1; photos since 1.6.0)
 
 Kameraposti Turva can ask Home Assistant for a photo when a sensor linked to
 one of its cameras alarms, or when you press **Ota kuva Home Assistantista**
@@ -286,34 +286,27 @@ its Latest photo. This is for cameras that cannot send
 their photos to Kameraposti themselves (e.g. a Shelly camera, which sends
 only to Shelly's cloud) but are in Home Assistant.
 
-There is nothing to tick in Home Assistant. It tells Kameraposti which cameras
-it has (every camera entity that is not disabled, at most 50), and you choose in Kameraposti which
-of them become cameras: add one from Kameraposti's list of Home Assistant
-cameras, or pick one on a camera's page. A Shelly Camera added on Kameraposti's
-Anturit page finds its Home Assistant camera by itself (Kameraposti matches the
-Shelly's own id to the camera device's MAC address). A camera you delete in
-Kameraposti lets go of its Home Assistant camera, so you can add it again. A
-camera you add to Home Assistant later shows up in Kameraposti within 15
-minutes.
+There is nothing to set in Home Assistant. It tells Kameraposti which cameras
+it has (every camera entity that is not disabled, at most 50), and you choose
+in Kameraposti which of them become cameras: add one from Kameraposti's list of
+Home Assistant cameras, or pick one on a camera's page. A Shelly Camera added on
+Kameraposti's Anturit page finds its Home Assistant camera by itself
+(Kameraposti matches the Shelly's own id to the camera device's MAC address). A
+camera you delete in Kameraposti lets go of its Home Assistant camera, so you
+can add it again. A camera you add to Home Assistant later shows up in
+Kameraposti within 15 minutes.
 
-**Settings → Devices & services → Kameraposti → Configure → Cameras to
-Kameraposti** only hides cameras: choose the cameras Kameraposti must not use
-(none by default). Kameraposti is not told about them, and a request for a
-photo from one of them is refused with a warning in the log. A camera you hide
-later is withdrawn from Kameraposti. The same form chooses whether a video is
-sent as well (5–30 seconds, default 10).
+**Settings → Devices & services → Kameraposti → Configure → Hide cameras from
+Kameraposti** is only for cameras Kameraposti must not see (none by default).
+Kameraposti is not told about them, and a request for a photo from one of them
+is refused with a warning in the log. A camera you hide later is withdrawn from
+Kameraposti. The same form chooses whether a video is sent as well (5–30
+seconds, default 10).
 
-Upgrading:
-
-- **From 1.7** with cameras ticked: the ticked cameras stay the only ones
-  Kameraposti gets until you save **Cameras to Kameraposti** again. The form
-  opens with every other camera hidden, so saving it as it is keeps them
-  hidden; a camera added to Home Assistant after that is reported.
-- **From 1.6**: the same with the cameras linked under the old **Photos from
-  Home Assistant cameras**, and Kameraposti keeps using the cameras they were
-  linked to.
-- If you never chose cameras, every camera is reported right after the
-  upgrade; hide any that Kameraposti should not see.
+Upgrading to 1.8.1: every camera is reported, whatever was ticked (1.7),
+linked (1.6) or listed as not to be used (1.8.0) before; those lists no longer
+do anything, and the hide list starts empty. Kameraposti keeps using the
+cameras a 1.6 link pointed at.
 
 How the photo and the video are taken:
 

@@ -59,7 +59,7 @@
         "title": "Kameraposti",
         "menu_options": {
           "sensors": "Sensors to Kameraposti",
-          "cameras": "Cameras to Kameraposti"
+          "cameras": "Hide cameras from Kameraposti"
         }
       },
       "sensors": {
@@ -70,10 +70,10 @@
         }
       },
       "cameras": {
-        "title": "Cameras to Kameraposti",
-        "description": "Kameraposti gets every Home Assistant camera by default (at most {max}), and you choose in Kameraposti which ones become cameras: add one from Kameraposti's list of Home Assistant cameras, or pick one on a camera's page. A Shelly Camera added in Kameraposti finds its camera by itself. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video). This list only hides cameras: choose the cameras Kameraposti must not use. Kameraposti is not told about them and cannot ask them for photos.",
+        "title": "Hide cameras from Kameraposti",
+        "description": "Kameraposti sees every Home Assistant camera (at most {max}), and you choose in Kameraposti which ones become cameras: add one from Kameraposti's list of Home Assistant cameras, or pick one on a camera's page. A Shelly Camera added in Kameraposti finds its camera by itself. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video). Hide here only cameras Kameraposti must not see: it is not told about them and cannot ask them for photos.",
         "data": {
-          "excluded_cameras": "Cameras Kameraposti must not use",
+          "hidden_cameras": "Cameras Kameraposti does not see",
           "camera_video": "Also send a video",
           "camera_video_seconds": "Video length"
         }

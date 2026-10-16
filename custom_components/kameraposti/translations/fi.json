@@ -59,7 +59,7 @@
         "title": "Kameraposti",
         "menu_options": {
           "sensors": "Anturit Kamerapostiin",
-          "cameras": "Kamerat Kamerapostiin"
+          "cameras": "Piilota kameroita Kamerapostilta"
         }
       },
       "sensors": {
@@ -70,10 +70,10 @@
         }
       },
       "cameras": {
-        "title": "Kamerat Kamerapostiin",
-        "description": "Kameraposti saa oletuksena kaikki Home Assistantin kamerat (enintään {max}), ja valitset Kamerapostissa, mistä tulee kamera: lisää kamera Kamerapostin Home Assistant -kameroiden listalta tai valitse se kameran sivulla. Kamerapostiin lisätty Shelly Camera löytää kameransa itse. Kun kameraan liitetty anturi hälyttää tai painat Kamerapostissa \"Ota kuva Home Assistantista\", Home Assistant lähettää kuvan (ja halutessasi lyhyen videon). Tämä lista vain piilottaa kameroita: valitse kamerat, joita Kameraposti ei saa käyttää. Niistä ei kerrota Kamerapostille, eikä se voi pyytää niistä kuvia.",
+        "title": "Piilota kameroita Kamerapostilta",
+        "description": "Kameraposti näkee kaikki Home Assistantin kamerat (enintään {max}), ja valitset Kamerapostissa, mistä tulee kamera: lisää kamera Kamerapostin Home Assistant -kameroiden listalta tai valitse se kameran sivulla. Kamerapostiin lisätty Shelly Camera löytää kameransa itse. Kun kameraan liitetty anturi hälyttää tai painat Kamerapostissa \"Ota kuva Home Assistantista\", Home Assistant lähettää kuvan (ja halutessasi lyhyen videon). Piilota tässä vain kamerat, joita Kameraposti ei saa nähdä: niistä ei kerrota Kamerapostille, eikä se voi pyytää niistä kuvia.",
         "data": {
-          "excluded_cameras": "Kamerat, joita Kameraposti ei saa käyttää",
+          "hidden_cameras": "Kamerat, joita Kameraposti ei näe",
           "camera_video": "Lähetä myös video",
           "camera_video_seconds": "Videon pituus"
         }

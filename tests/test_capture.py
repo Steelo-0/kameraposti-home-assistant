@@ -41,7 +41,6 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.kameraposti import capture
-from custom_components.kameraposti.camera_export import camera_settings_from_options, exported_cameras
 from custom_components.kameraposti.capture import CaptureCamera, capture_cameras_from_options
 from custom_components.kameraposti.const import (
     CONF_CAMERA_VIDEO,
@@ -53,6 +52,7 @@ from custom_components.kameraposti.const import (
     CONF_EXCLUDED_CAMERAS,
     CONF_EXPORTED_CAMERAS,
     CONF_EXPORTED_ENTITIES,
+    CONF_HIDDEN_CAMERAS,
     CONF_HOST,
     CONF_REMOVED_CAMERAS,
     DOMAIN,
@@ -247,6 +247,8 @@ def make_harness(
             version=2,
         )
         entry.add_to_hass(hass)
+        # 1.8.1: only a camera that exists in Home Assistant is reported (and can be asked for photos).
+        hass.states.async_set(ENTITY_ID, "idle")
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         coordinator = hass.data[DOMAIN][entry.entry_id]
@@ -360,18 +362,21 @@ async def test_unlinked_camera_is_ignored(
 
 
 @respx.mock
-async def test_a_request_naming_a_camera_on_a_1_7_list_takes_the_photo_from_it(
+async def test_a_request_naming_any_camera_takes_the_photo_from_it(
     make_harness: Callable[..., Any],
 ) -> None:
-    """1.7.0: Kameraposti names the Home Assistant camera; no link by camera id is needed."""
+    """1.7.0: Kameraposti names the Home Assistant camera; no link by camera id is needed. 1.8.1: the
+    camera need not be on any list -- not even when an older 1.7.0 list or 1.8.0 exclusion says so."""
     h = await make_harness(
         {},
         options={
-            CONF_EXPORTED_CAMERAS: ["camera.talli"],
+            CONF_EXPORTED_CAMERAS: [ENTITY_ID],
+            CONF_EXCLUDED_CAMERAS: ["camera.talli"],
             CONF_CAMERA_VIDEO: False,
             CONF_CAMERA_VIDEO_SECONDS: 10,
         },
     )
+    h.hass.states.async_set("camera.talli", "idle")
     photo_route, video_route = _routes(request_id=19)
 
     await h.send(_request(request_id=19, camera_id=8, entity_id="camera.talli"), topic=_topic(8))
@@ -382,43 +387,16 @@ async def test_a_request_naming_a_camera_on_a_1_7_list_takes_the_photo_from_it(
 
 
 @respx.mock
-async def test_a_camera_off_a_1_7_list_is_never_used_and_says_so(
+async def test_only_a_hidden_or_missing_camera_is_refused_and_says_so(
     make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """16.10 a request ignored at debug level left steelo guessing; Kameraposti can never pick a
-    camera that is not reported, and an old server's link counts only while its camera is reported."""
-    h = await make_harness(options={CONF_EXPORTED_CAMERAS: ["camera.talli"]})
-    # In Home Assistant, but a 1.7.0 list leaves it out until the 1.8.0 options are saved.
-    h.hass.states.async_set("camera.olohuone", "idle")
-    _routes(request_id=20)
-    _routes(request_id=21)
-
-    with caplog.at_level(logging.WARNING):
-        await h.send(_request(request_id=20, entity_id="camera.olohuone"))
-        # No entity_id (server before V60): camera 5 is linked to camera.piha, which is not reported.
-        await h.send(_request(request_id=21))
-
-    h.take_photo.assert_not_awaited()
-    assert _warnings(caplog) == [
-        "Kameraposti capture request_id=20 camera_id=5: camera.olohuone is excluded under "
-        "Configure -> Cameras to Kameraposti (or does not exist in Home Assistant), no photo",
-        "Kameraposti capture request_id=21 camera_id=5: camera.piha is excluded under "
-        "Configure -> Cameras to Kameraposti (or does not exist in Home Assistant), no photo",
-    ]
-    _assert_no_url_logged(caplog)
-
-
-@respx.mock
-async def test_any_camera_not_excluded_is_honoured_and_an_excluded_one_refused(
-    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture
-) -> None:
-    """1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): nothing is ticked -- a camera the
-    user never touched in the options works, also one added to Home Assistant after setup; a hidden
-    one, or one that does not exist, never does."""
-    h = await make_harness({}, options={CONF_EXCLUDED_CAMERAS: ["camera.olohuone"], CONF_CAMERA_VIDEO: False})
+    """16.10 a request ignored at debug level left steelo guessing. A camera the user never touched in
+    the options works, also one added to Home Assistant after setup; a hidden one, or one that does
+    not exist, never does -- nor an old server's link to a hidden camera."""
+    h = await make_harness(options={CONF_HIDDEN_CAMERAS: ["camera.olohuone", ENTITY_ID]})
     h.hass.states.async_set("camera.olohuone", "idle")
     h.hass.states.async_set("camera.talli", "idle")
-    for request_id in (30, 31, 32, 33):
+    for request_id in (30, 31, 32, 33, 34):
         _routes(request_id=request_id)
 
     with caplog.at_level(logging.WARNING):
@@ -427,24 +405,29 @@ async def test_any_camera_not_excluded_is_honoured_and_an_excluded_one_refused(
         await h.send(_request(request_id=31, entity_id="camera.uusi"))
         await h.send(_request(request_id=32, entity_id="camera.olohuone"))
         await h.send(_request(request_id=33, entity_id="camera.ei_ole"))
+        # No entity_id (server before V60): camera 5 is linked to camera.piha, which is hidden.
+        await h.send(_request(request_id=34))
 
     assert [c.args[1] for c in h.take_photo.await_args_list] == ["camera.talli", "camera.uusi"]
     assert _warnings(caplog) == [
-        "Kameraposti capture request_id=32 camera_id=5: camera.olohuone is excluded under "
-        "Configure -> Cameras to Kameraposti (or does not exist in Home Assistant), no photo",
-        "Kameraposti capture request_id=33 camera_id=5: camera.ei_ole is excluded under "
-        "Configure -> Cameras to Kameraposti (or does not exist in Home Assistant), no photo",
+        "Kameraposti capture request_id=32 camera_id=5: camera.olohuone is hidden under "
+        "Configure -> Hide cameras from Kameraposti (or does not exist in Home Assistant), no photo",
+        "Kameraposti capture request_id=33 camera_id=5: camera.ei_ole is hidden under "
+        "Configure -> Hide cameras from Kameraposti (or does not exist in Home Assistant), no photo",
+        "Kameraposti capture request_id=34 camera_id=5: camera.piha is hidden under "
+        "Configure -> Hide cameras from Kameraposti (or does not exist in Home Assistant), no photo",
     ]
+    _assert_no_url_logged(caplog)
 
 
 @respx.mock
 async def test_a_fresh_entry_takes_photos_from_every_camera(make_harness: Callable[..., Any]) -> None:
-    """Case d: cameras never configured -- every camera in Home Assistant is reported."""
+    """Cameras never configured -- every camera in Home Assistant is reported."""
     h = await make_harness({})
     h.hass.states.async_set("camera.talli", "idle")
-    photo_route, _ = _routes(request_id=34)
+    photo_route, _ = _routes(request_id=35)
 
-    await h.send(_request(request_id=34, entity_id="camera.talli"))
+    await h.send(_request(request_id=35, entity_id="camera.talli"))
 
     h.take_photo.assert_awaited_once_with(h.hass, "camera.talli")
     assert photo_route.called
@@ -1153,7 +1136,7 @@ def _cameras_in_home_assistant(hass: HomeAssistant, *object_ids: str) -> None:
 async def test_options_flow_hides_cameras_with_one_video_setting(
     hass: HomeAssistant, mock_mqtt_client: None
 ) -> None:
-    """1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): every camera is reported and
+    """1.8.1 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): every camera is reported and
     chosen in Kameraposti; the form only hides cameras. A hidden camera is described as removed."""
     _cameras_in_home_assistant(hass, "piha", "talli")
     entry = _entry_with(hass, {CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"]})
@@ -1167,7 +1150,7 @@ async def test_options_flow_hides_cameras_with_one_video_setting(
     assert form["step_id"] == "cameras"
     assert form["description_placeholders"] == {"max": "50"}
     assert _defaults(form) == {
-        CONF_EXCLUDED_CAMERAS: [],
+        CONF_HIDDEN_CAMERAS: [],
         CONF_CAMERA_VIDEO: False,
         CONF_CAMERA_VIDEO_SECONDS: 10,
     }
@@ -1175,7 +1158,7 @@ async def test_options_flow_hides_cameras_with_one_video_setting(
     saved = await hass.config_entries.options.async_configure(
         form["flow_id"],
         {
-            CONF_EXCLUDED_CAMERAS: ["camera.talli"],
+            CONF_HIDDEN_CAMERAS: ["camera.talli"],
             CONF_CAMERA_VIDEO: True,
             CONF_CAMERA_VIDEO_SECONDS: 15,
         },
@@ -1185,7 +1168,7 @@ async def test_options_flow_hides_cameras_with_one_video_setting(
     assert saved["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options == {
         CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"],
-        CONF_EXCLUDED_CAMERAS: ["camera.talli"],
+        CONF_HIDDEN_CAMERAS: ["camera.talli"],
         CONF_REMOVED_CAMERAS: ["camera.talli"],
         CONF_CAMERA_VIDEO: True,
         CONF_CAMERA_VIDEO_SECONDS: 15,
@@ -1197,83 +1180,74 @@ async def test_options_flow_hides_cameras_with_one_video_setting(
 
     form = await _open_camera_options(hass, entry)
     assert _defaults(form) == {
-        CONF_EXCLUDED_CAMERAS: ["camera.talli"],
+        CONF_HIDDEN_CAMERAS: ["camera.talli"],
         CONF_CAMERA_VIDEO: True,
         CONF_CAMERA_VIDEO_SECONDS: 15,
     }
     # Shown again: no longer on the removal list.
-    await hass.config_entries.options.async_configure(form["flow_id"], {CONF_EXCLUDED_CAMERAS: []})
+    await hass.config_entries.options.async_configure(form["flow_id"], {CONF_HIDDEN_CAMERAS: []})
     await hass.async_block_till_done()
-    assert entry.options[CONF_EXCLUDED_CAMERAS] == []
+    assert entry.options[CONF_HIDDEN_CAMERAS] == []
     assert entry.options[CONF_REMOVED_CAMERAS] == []
 
 
-async def test_upgrade_from_1_6_links_opens_with_every_other_camera_hidden(
-    hass: HomeAssistant, mock_mqtt_client: None
+@pytest.mark.parametrize(
+    "old",
+    [
+        # 1.8.0 with a camera on its "must not use" list (as steelo's Shelly 16.10).
+        {CONF_EXCLUDED_CAMERAS: ["camera.olohuone"], CONF_CAMERA_VIDEO: True, CONF_CAMERA_VIDEO_SECONDS: 12},
+        # 1.7.0 ticks.
+        {CONF_EXPORTED_CAMERAS: [ENTITY_ID], CONF_CAMERA_VIDEO: True, CONF_CAMERA_VIDEO_SECONDS: 12},
+        # 1.6.0 links.
+        {CONF_CAPTURE_CAMERAS: {"5": _link(), "6": _link("camera.talli", video=False)}},
+    ],
+)
+async def test_upgrade_reports_every_camera_and_the_form_opens_empty(
+    hass: HomeAssistant, mock_mqtt_client: None, old: dict[str, Any]
 ) -> None:
-    """Case c: saving the form unchanged keeps what Kameraposti gets; the links stay for the ids."""
+    """1.8.1: nothing an earlier version saved hides a camera, and the hide list is never pre-filled
+    from it. Saving drops the old keys; the 1.6.0 links stay for their camera_id hints."""
     _cameras_in_home_assistant(hass, "piha", "talli", "olohuone")
-    links = {"5": _link(), "6": _link("camera.talli", video=False)}
-    entry = _entry_with(hass, {CONF_CAPTURE_CAMERAS: links})
+    entry = _entry_with(hass, old)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    every = ("camera.olohuone", ENTITY_ID, "camera.talli")
+    assert tuple(hass.data[DOMAIN][entry.entry_id]._capture._exported()) == every
 
     form = await _open_camera_options(hass, entry)
     assert _defaults(form) == {
-        CONF_EXCLUDED_CAMERAS: ["camera.olohuone"],
+        CONF_HIDDEN_CAMERAS: [],
         CONF_CAMERA_VIDEO: True,
         CONF_CAMERA_VIDEO_SECONDS: 12,
     }
     await hass.config_entries.options.async_configure(
-        form["flow_id"], {CONF_EXCLUDED_CAMERAS: ["camera.olohuone"], CONF_CAMERA_VIDEO: True}
+        form["flow_id"], {CONF_HIDDEN_CAMERAS: [], CONF_CAMERA_VIDEO: True}
     )
-    # The 1.6.0 links stay (an older server's requests and the Kameraposti camera ids use them).
-    assert entry.options[CONF_CAPTURE_CAMERAS] == links
-    assert entry.options[CONF_EXCLUDED_CAMERAS] == ["camera.olohuone"]
+    await hass.async_block_till_done()
+
+    assert CONF_EXCLUDED_CAMERAS not in entry.options
+    assert CONF_EXPORTED_CAMERAS not in entry.options
+    assert entry.options[CONF_HIDDEN_CAMERAS] == []
     assert entry.options[CONF_REMOVED_CAMERAS] == []
-    settings = camera_settings_from_options(entry.options)
-    assert exported_cameras(hass, settings) == (ENTITY_ID, "camera.talli")
-    assert settings.hints == {ENTITY_ID: 5, "camera.talli": 6}
-
-    form = await _open_camera_options(hass, entry)
-    await hass.config_entries.options.async_configure(
-        form["flow_id"], {CONF_EXCLUDED_CAMERAS: ["camera.olohuone", ENTITY_ID], CONF_CAMERA_VIDEO: False}
-    )
-    assert entry.options[CONF_REMOVED_CAMERAS] == [ENTITY_ID]
+    assert entry.options.get(CONF_CAPTURE_CAMERAS) == old.get(CONF_CAPTURE_CAMERAS)
+    assert tuple(hass.data[DOMAIN][entry.entry_id]._capture._exported()) == every
 
 
-async def test_upgrade_from_a_1_7_list_keeps_it_until_saved_and_then_reports_new_cameras(
+async def test_an_old_removal_of_a_camera_that_is_reported_is_never_sent(
     hass: HomeAssistant, mock_mqtt_client: None
 ) -> None:
-    """Case b: privacy -- a 1.7.0 user who ticked only some cameras keeps exactly those, also for
-    photos, until the 1.8.0 options are saved; the save replaces the tick list with the hidden list."""
-    _cameras_in_home_assistant(hass, "piha", "talli")
-    entry = _entry_with(
-        hass,
-        {
-            CONF_EXPORTED_CAMERAS: ["camera.talli"],
-            CONF_REMOVED_CAMERAS: ["camera.vanha"],
-            CONF_CAMERA_VIDEO: False,
-            CONF_CAMERA_VIDEO_SECONDS: 10,
-        },
-    )
+    """A 1.7.0/1.8.0 removal for a camera that 1.8.1 reports would contradict its description."""
+    _cameras_in_home_assistant(hass, "piha")
+    entry = _entry_with(hass, {CONF_EXPORTED_CAMERAS: [], CONF_REMOVED_CAMERAS: [ENTITY_ID]})
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert tuple(hass.data[DOMAIN][entry.entry_id]._capture._exported()) == ("camera.talli",)
-
-    form = await _open_camera_options(hass, entry)
-    assert _defaults(form)[CONF_EXCLUDED_CAMERAS] == [ENTITY_ID]
-    await hass.config_entries.options.async_configure(
-        form["flow_id"], {CONF_EXCLUDED_CAMERAS: [ENTITY_ID], CONF_CAMERA_VIDEO: False}
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    sent: list[dict[str, Any]] = []
+    coordinator._camera_exporter._publish = lambda topic, payload, retain: (
+        sent.append(json.loads(payload)) or True
     )
-    await hass.async_block_till_done()
-
-    assert CONF_EXPORTED_CAMERAS not in entry.options
-    assert entry.options[CONF_EXCLUDED_CAMERAS] == [ENTITY_ID]
-    # camera.piha was never reported, so it needs no removal; the 1.7.0 removal stays.
-    assert entry.options[CONF_REMOVED_CAMERAS] == ["camera.vanha"]
-    handler = hass.data[DOMAIN][entry.entry_id]._capture
-    assert tuple(handler._exported()) == ("camera.talli",)
-    _cameras_in_home_assistant(hass, "uusi")
-    assert tuple(handler._exported()) == ("camera.talli", "camera.uusi")
+    coordinator._camera_exporter.publish_all()
+    assert sent == [{"kind": "camera", "entity_id": ENTITY_ID, "name": "piha", "mac": None}]
 
 
 async def test_options_flow_refuses_a_video_length_out_of_range_and_a_non_camera(
@@ -1287,7 +1261,7 @@ async def test_options_flow_refuses_a_video_length_out_of_range_and_a_non_camera
             await hass.config_entries.options.async_configure(
                 form["flow_id"],
                 {
-                    CONF_EXCLUDED_CAMERAS: [],
+                    CONF_HIDDEN_CAMERAS: [],
                     CONF_CAMERA_VIDEO: True,
                     CONF_CAMERA_VIDEO_SECONDS: seconds,
                 },
@@ -1295,19 +1269,19 @@ async def test_options_flow_refuses_a_video_length_out_of_range_and_a_non_camera
     # Kameraposti accepts object ids of at most 200 characters (Home Assistant allows longer).
     result = await hass.config_entries.options.async_configure(
         form["flow_id"],
-        {CONF_EXCLUDED_CAMERAS: ["camera." + "a" * 201], CONF_CAMERA_VIDEO: False},
+        {CONF_HIDDEN_CAMERAS: ["camera." + "a" * 201], CONF_CAMERA_VIDEO: False},
     )
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {CONF_EXCLUDED_CAMERAS: "invalid_camera"}
+    assert result["errors"] == {CONF_HIDDEN_CAMERAS: "invalid_camera"}
     assert entry.options == {CONF_CAPTURE_CAMERAS: {"5": _link()}}
 
     # Hiding more cameras than can be reported is fine: there is no limit on hiding.
     many = [f"camera.c{i}" for i in range(60)]
     saved = await hass.config_entries.options.async_configure(
-        form["flow_id"], {CONF_EXCLUDED_CAMERAS: many, CONF_CAMERA_VIDEO: False}
+        form["flow_id"], {CONF_HIDDEN_CAMERAS: many, CONF_CAMERA_VIDEO: False}
     )
     assert saved["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_EXCLUDED_CAMERAS] == many
+    assert entry.options[CONF_HIDDEN_CAMERAS] == many
 
 
 async def test_saving_the_sensors_keeps_the_camera_links(hass: HomeAssistant) -> None:

@@ -24,7 +24,7 @@ Assistant camera linked to the Kameraposti camera in the options.
 1.7.0: camera_export.py describes the cameras ticked under "Cameras to Kameraposti"
 on every connection; Kameraposti makes a camera of each, and its capture requests
 name the Home Assistant camera.
-1.8.0: every Home Assistant camera not excluded in the options is reported (worked
+1.8.0: every Home Assistant camera not hidden in the options is reported (worked
 out at every resend and capture request), and Kameraposti is where they are
 chosen. The roster also tells the account's sensor limit (sensor_limit), kept
 here in memory per entry; the sensor exporter sends only that many of the chosen
@@ -180,7 +180,7 @@ class KameraportiCoordinator:
             limit=effective_sensor_limit(None),
         )
         # 1.7.0: the Home Assistant cameras described to Kameraposti and used for its photos (1.8.0:
-        # every camera not excluded, worked out each time they are needed).
+        # every camera not hidden, worked out each time they are needed).
         camera_settings = camera_settings_from_options(entry.options)
         self._camera_exporter = KameraportiCameraExporter(
             hass, customer_id=customer_id, settings=camera_settings, publish=self._client.publish

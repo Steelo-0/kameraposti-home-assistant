@@ -5,8 +5,8 @@ alarms, or when the user presses "Ota kuva Home Assistantista" on the camera's
 page: it publishes a capture request (customers/<id>/cameras/<camera>/capture,
 QoS 1, not retained) with two signed, expiring upload URLs. 1.7.0: the request
 names the Home Assistant camera (entity_id), which must be one the integration
-reports to Kameraposti (camera_export.py; 1.8.0: every camera not excluded under
-"Cameras to Kameraposti", worked out when the request arrives); a request from an
+reports to Kameraposti (camera_export.py; 1.8.1: every camera not hidden under
+"Hide cameras from Kameraposti", worked out when the request arrives); a request from an
 older server names none, and the 1.6.0 option linking its Kameraposti camera
 decides (its Home Assistant camera must be reported too). For that camera this module
 
@@ -328,7 +328,7 @@ class KameraportiCaptureHandler:
                 "Kameraposti capture request_id=%s camera_id=%s: %s, no photo",
                 request.request_id,
                 request.camera_id,
-                f"{entity_id} is excluded under Configure -> Cameras to Kameraposti "
+                f"{entity_id} is hidden under Configure -> Hide cameras from Kameraposti "
                 "(or does not exist in Home Assistant)"
                 if entity_id is not None
                 else "no Home Assistant camera chosen for it in Kameraposti",

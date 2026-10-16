@@ -1,18 +1,17 @@
-"""Home Assistant cameras to Kameraposti (1.7.0; 1.8.0 steelo 2026-10-16 "maalaisjärjellä, pari klikkausta").
+"""Home Assistant cameras to Kameraposti (1.7.0; 1.8.1 steelo 2026-10-16 "maalaisjärjellä, pari klikkausta").
 
 The integration describes each reported camera to kameraposti/<id>/anturit/<name>/config with kind
 "camera" (Kameraposti lists it for the user to add or pick, and attaches a Shelly Camera whose own id
-ends in the same MAC), and the cameras a save stopped reporting as removed. 1.8.0: nothing is ticked --
-every camera in Home Assistant is reported unless hidden in the options (a); a 1.7.0 tick list (b) or
-1.6.0 links (c) keep limiting it until the 1.8.0 options are saved; an entry that never chose cameras
-reports them all (d). The set is worked out at every publish, so a camera added later is reported at
-the next resend. A camera a 1.6.0 option linked carries its Kameraposti camera id along.
+ends in the same MAC), and the cameras hidden on a save as removed. 1.8.1: every camera in Home
+Assistant is reported unless it is under hidden_cameras; nothing an earlier version saved (1.8.0
+excluded_cameras, 1.7.0 exported_cameras, 1.6.0 links) limits it. The set is worked out at every
+publish, so a camera added later is reported at the next resend. A camera a 1.6.0 option linked
+carries its Kameraposti camera id along.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -42,6 +41,7 @@ from custom_components.kameraposti.const import (
     CONF_CUSTOMER_ID,
     CONF_EXCLUDED_CAMERAS,
     CONF_EXPORTED_CAMERAS,
+    CONF_HIDDEN_CAMERAS,
     CONF_HOST,
     CONF_REMOVED_CAMERAS,
     DOMAIN,
@@ -71,10 +71,9 @@ def _recorder(ok: bool = True) -> tuple[list[tuple[str, dict, bool]], object]:
 
 
 def _settings(**overrides: object) -> CameraSettings:
-    """A saved list (allowlist) by default; allowlist=None = every camera but `excluded`."""
+    """Every camera in Home Assistant reported by default."""
     values: dict[str, object] = {
-        "allowlist": (SHELLY,),
-        "excluded": (),
+        "hidden": (),
         "removed": (),
         "hints": {},
         "video": False,
@@ -129,8 +128,9 @@ async def _resync(hass: HomeAssistant, freezer: FrozenDateTimeFactory) -> None:
 # -- settings from the options ----------------------------------------------------------
 
 
-def test_a_1_6_entry_reports_only_its_linked_cameras() -> None:
-    """Case c: the 1.6.0 links stay the list until the 1.8.0 options are saved."""
+def test_older_options_hide_nothing_and_1_6_links_keep_their_hints() -> None:
+    """1.8.1: a 1.6.0 link, a 1.7.0 tick list and 1.8.0's "must not use" list hide nothing (16.10 the
+    1.8.0 list hid the Shelly steelo had ticked); the links still give camera_id hints."""
     settings = camera_settings_from_options(
         {
             CONF_CAPTURE_CAMERAS: {
@@ -138,62 +138,36 @@ def test_a_1_6_entry_reports_only_its_linked_cameras() -> None:
                 "5": _link(SHELLY),
                 "7": _link(SHELLY, video=True, seconds=20),
                 "x": _link("camera.roska"),
-            }
+            },
+            CONF_EXPORTED_CAMERAS: ["camera.talli"],
+            CONF_EXCLUDED_CAMERAS: [SHELLY],
         }
     )
-
-    assert settings.allowlist == (SHELLY, "camera.talli")
+    assert settings.hidden == ()
     # The lowest Kameraposti camera id linked to each Home Assistant camera.
     assert settings.hints == {SHELLY: 5, "camera.talli": 6}
     assert settings.video is True
     assert settings.video_seconds == 20
-    assert settings.removed == ()
+    assert camera_settings_from_options({}) == CameraSettings(
+        hidden=(), removed=(), hints={}, video=False, video_seconds=10
+    )
 
 
-def test_a_1_7_saved_list_keeps_limiting_and_junk_is_skipped() -> None:
-    """Case b: privacy -- a 1.7.0 user who chose only some cameras keeps exactly those."""
+def test_hidden_cameras_are_read_and_only_their_removals_kept() -> None:
     settings = camera_settings_from_options(
         {
-            CONF_CAPTURE_CAMERAS: {"5": _link(SHELLY, video=True), "6": _link("camera.talli")},
-            CONF_EXPORTED_CAMERAS: ["camera.talli", "sensor.ovi", "camera.Iso", 7, "camera.talli"],
-            CONF_REMOVED_CAMERAS: [SHELLY, "camera.talli", "camera.vanha"],
+            CONF_HIDDEN_CAMERAS: ["camera.olohuone", "sensor.ovi", "camera.Iso", 7, "camera.olohuone"],
+            # Saved by 1.7.0/1.8.0: a removal for a camera that is not hidden now would contradict its
+            # description, so only the hidden one's stays.
+            CONF_REMOVED_CAMERAS: [SHELLY, "camera.olohuone"],
             CONF_CAMERA_VIDEO: False,
             CONF_CAMERA_VIDEO_SECONDS: 99,
         }
     )
-
-    assert settings.allowlist == ("camera.talli",)
-    assert settings.excluded == ()
-    # Every 1.6.0 link is a hint; the removal list is filtered against the reported set when sent.
-    assert settings.hints == {SHELLY: 5, "camera.talli": 6}
-    assert settings.removed == (SHELLY, "camera.talli", "camera.vanha")
+    assert settings.hidden == ("camera.olohuone",)
+    assert settings.removed == ("camera.olohuone",)
     assert settings.video is False
     assert settings.video_seconds == 30
-    # An empty 1.7.0 list reports nothing (the user unticked everything).
-    assert camera_settings_from_options({CONF_EXPORTED_CAMERAS: []}).allowlist == ()
-
-
-def test_the_1_8_options_report_every_camera_but_the_hidden_ones() -> None:
-    """Case a: the hidden list decides, whatever a 1.7.0 list or 1.6.0 links say; hints stay."""
-    settings = camera_settings_from_options(
-        {
-            CONF_EXCLUDED_CAMERAS: ["camera.olohuone", "sensor.ovi", "camera.olohuone"],
-            CONF_EXPORTED_CAMERAS: ["camera.talli"],
-            CONF_CAPTURE_CAMERAS: {"5": _link(SHELLY)},
-        }
-    )
-    assert settings.allowlist is None
-    assert settings.excluded == ("camera.olohuone",)
-    assert settings.hints == {SHELLY: 5}
-    assert camera_settings_from_options({CONF_EXCLUDED_CAMERAS: []}).allowlist is None
-
-
-def test_an_entry_that_never_chose_cameras_reports_every_camera() -> None:
-    """Case d: a fresh install (or a 1.7.0 entry whose camera options were never saved)."""
-    settings = camera_settings_from_options({})
-    assert settings.allowlist is None
-    assert settings.excluded == ()
-    assert settings.hints == {}
 
 
 def test_cameras_no_longer_reported_go_to_the_removal_list_and_reported_again_ones_leave_it() -> None:
@@ -247,10 +221,8 @@ async def test_the_mac_connection_wins_over_the_name(hass: HomeAssistant) -> Non
     assert camera_mac(hass, SHELLY) == "6ca61366d281"
 
 
-def test_at_most_50_cameras_of_a_saved_list_are_read() -> None:
+def test_at_most_50_cameras_are_reported_constant() -> None:
     assert MAX_EXPORTED_CAMERAS == 50
-    settings = camera_settings_from_options({CONF_EXPORTED_CAMERAS: [f"camera.c{i}" for i in range(55)]})
-    assert settings.allowlist == tuple(f"camera.c{i}" for i in range(50))
 
 
 # -- which cameras are reported -----------------------------------------------------------
@@ -268,25 +240,29 @@ async def test_every_camera_in_home_assistant_is_found(hass: HomeAssistant) -> N
     assert home_assistant_cameras(hass) == [yaml_camera, loaded, not_loaded_yet]
 
 
-async def test_exported_set_in_each_mode(hass: HomeAssistant) -> None:
-    for object_id in ("piha", "talli", "olohuone"):
+async def test_every_camera_is_reported_after_an_upgrade_and_only_hidden_ones_are_not(
+    hass: HomeAssistant,
+) -> None:
+    _shelly_device(hass)
+    for object_id in ("talli", "olohuone"):
         _camera(hass, object_id)
+    every = ("camera.olohuone", SHELLY, "camera.talli")
 
-    # a: every camera but the hidden ones, sorted.
-    hidden = camera_settings_from_options({CONF_EXCLUDED_CAMERAS: ["camera.olohuone"]})
-    assert exported_cameras(hass, hidden) == ("camera.piha", "camera.talli")
-    # b: the saved list as it is (a camera missing from Home Assistant is skipped when publishing).
-    saved = camera_settings_from_options({CONF_EXPORTED_CAMERAS: ["camera.talli", "camera.poissa"]})
-    assert exported_cameras(hass, saved) == ("camera.talli", "camera.poissa")
-    # c: the 1.6.0 links.
-    linked = camera_settings_from_options({CONF_CAPTURE_CAMERAS: {"5": _link("camera.piha")}})
-    assert exported_cameras(hass, linked) == ("camera.piha",)
-    # d: every camera.
-    assert exported_cameras(hass, camera_settings_from_options({})) == (
-        "camera.olohuone",
-        "camera.piha",
-        "camera.talli",
-    )
+    # 1.8.0 options with the Shelly on its "must not use" list (steelo 16.10): the Shelly is reported.
+    from_1_8_0 = camera_settings_from_options({CONF_EXCLUDED_CAMERAS: [SHELLY], CONF_CAMERA_VIDEO: False})
+    assert exported_cameras(hass, from_1_8_0) == every
+    # 1.7.0 ticks: no longer an allowlist.
+    from_1_7 = camera_settings_from_options({CONF_EXPORTED_CAMERAS: ["camera.talli"]})
+    assert exported_cameras(hass, from_1_7) == every
+    # 1.6.0 links: every camera, the hint kept.
+    from_1_6 = camera_settings_from_options({CONF_CAPTURE_CAMERAS: {"5": _link("camera.talli")}})
+    assert exported_cameras(hass, from_1_6) == every
+    assert from_1_6.hints == {"camera.talli": 5}
+    # Fresh install.
+    assert exported_cameras(hass, camera_settings_from_options({})) == every
+    # 1.8.1: only the hidden list hides.
+    hidden = camera_settings_from_options({CONF_HIDDEN_CAMERAS: ["camera.olohuone"]})
+    assert exported_cameras(hass, hidden) == (SHELLY, "camera.talli")
 
 
 async def test_at_most_50_cameras_are_reported(hass: HomeAssistant) -> None:
@@ -295,25 +271,22 @@ async def test_at_most_50_cameras_are_reported(hass: HomeAssistant) -> None:
     assert exported_cameras(hass, camera_settings_from_options({})) == tuple(
         f"camera.c{i:02d}" for i in range(50)
     )
-    hidden = camera_settings_from_options({CONF_EXCLUDED_CAMERAS: ["camera.c00"]})
+    hidden = camera_settings_from_options({CONF_HIDDEN_CAMERAS: ["camera.c00"]})
     assert exported_cameras(hass, hidden) == tuple(f"camera.c{i:02d}" for i in range(1, 51))
 
 
 # -- the exporter ---------------------------------------------------------------------------
 
 
-async def test_reported_cameras_are_described_and_withdrawn_ones_removed(hass: HomeAssistant) -> None:
+async def test_reported_cameras_are_described_and_hidden_ones_removed(hass: HomeAssistant) -> None:
     _shelly_device(hass)
     hass.states.async_set("camera.talli", "idle", {"friendly_name": "Talli"})
+    hass.states.async_set("camera.vanha", "idle", {"friendly_name": "Vanha"})
     published, publish = _recorder()
     exporter = KameraportiCameraExporter(
         hass,
         customer_id=CUSTOMER_ID,
-        settings=_settings(
-            allowlist=(SHELLY, "camera.talli", "camera.poistettu_hasta"),
-            removed=("camera.vanha",),
-            hints={SHELLY: 5},
-        ),
+        settings=_settings(hidden=("camera.vanha",), removed=("camera.vanha",), hints={SHELLY: 5}),
         publish=publish,
     )
 
@@ -348,9 +321,7 @@ async def test_a_long_entity_id_keeps_its_full_id_in_the_payload(hass: HomeAssis
     long_id = "camera." + "a" * 80
     hass.states.async_set(long_id, "idle", {})
     published, publish = _recorder()
-    exporter = KameraportiCameraExporter(
-        hass, customer_id=CUSTOMER_ID, settings=_settings(allowlist=(long_id,)), publish=publish
-    )
+    exporter = KameraportiCameraExporter(hass, customer_id=CUSTOMER_ID, settings=_settings(), publish=publish)
 
     exporter.publish_all()
 
@@ -426,7 +397,7 @@ async def test_a_failed_publish_stops_the_round_and_the_next_connection_resends(
     exporter = KameraportiCameraExporter(
         hass,
         customer_id=CUSTOMER_ID,
-        settings=_settings(allowlist=("camera.eka", "camera.toka"), removed=("camera.vanha",)),
+        settings=_settings(hidden=("camera.vanha",), removed=("camera.vanha",)),
         publish=publish,
     )
     exporter.async_on_connected()
@@ -436,35 +407,9 @@ async def test_a_failed_publish_stops_the_round_and_the_next_connection_resends(
     assert sent == ["camera.vanha", "camera.vanha", "camera.eka", "camera.toka"]
 
 
-async def test_a_saved_camera_that_no_longer_exists_is_named_once(
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Audit L-5: renamed or removed in Home Assistant -- not described, and the log says where to fix it."""
-    published, publish = _recorder()
-    exporter = KameraportiCameraExporter(
-        hass, customer_id=CUSTOMER_ID, settings=_settings(allowlist=("camera.vanha",)), publish=publish
-    )
-    exporter.async_start()
-    with caplog.at_level(logging.WARNING):
-        # Right after start the camera may just not be loaded yet: no warning.
-        exporter.async_on_connected()
-        for _ in range(2):
-            freezer.tick(15 * 60 + 1)
-            async_fire_time_changed(hass)
-            await hass.async_block_till_done()
-    exporter.async_stop()
-
-    assert published == []
-    warnings = [r.getMessage() for r in caplog.records if r.name.startswith("custom_components.kameraposti")]
-    assert warnings == [
-        "Kameraposti: camera.vanha is on the camera list saved by an earlier version but no longer exists "
-        "in Home Assistant; save Configure -> Cameras to Kameraposti to report your current cameras"
-    ]
-
-
 async def test_nothing_to_send_without_cameras(hass: HomeAssistant) -> None:
     published, publish = _recorder()
-    for settings in (_settings(allowlist=()), _settings(allowlist=None)):
+    for settings in (_settings(), _settings(hidden=(SHELLY,))):
         exporter = KameraportiCameraExporter(
             hass, customer_id=CUSTOMER_ID, settings=settings, publish=publish
         )
@@ -478,7 +423,9 @@ async def test_nothing_to_send_without_cameras(hass: HomeAssistant) -> None:
     ("options", "reported"),
     [
         ({}, ["camera.olohuone", "camera.piha"]),
-        ({CONF_EXCLUDED_CAMERAS: ["camera.olohuone"]}, ["camera.piha"]),
+        ({CONF_HIDDEN_CAMERAS: ["camera.olohuone"]}, ["camera.piha"]),
+        # 1.8.0's list hides nothing since 1.8.1.
+        ({CONF_EXCLUDED_CAMERAS: ["camera.olohuone"]}, ["camera.olohuone", "camera.piha"]),
     ],
 )
 async def test_a_camera_added_to_home_assistant_later_is_reported_at_the_resync(
@@ -487,7 +434,7 @@ async def test_a_camera_added_to_home_assistant_later_is_reported_at_the_resync(
     options: dict[str, object],
     reported: list[str],
 ) -> None:
-    """Cases d and a: the set is worked out at every publish, not once at setup."""
+    """The set is worked out at every publish, not once at setup."""
     _camera(hass, "piha")
     _camera(hass, "olohuone")
     published, publish = _recorder()
@@ -505,10 +452,10 @@ async def test_a_camera_added_to_home_assistant_later_is_reported_at_the_resync(
     exporter.async_stop()
 
 
-async def test_a_camera_added_later_is_not_reported_while_a_1_7_list_is_saved(
+async def test_a_1_7_tick_list_limits_nothing_also_for_a_camera_added_later(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
-    """Case b: privacy -- the 1.7.0 list keeps deciding until the 1.8.0 options are saved."""
+    """1.8.1: the 1.7.0 list is no allowlist any more -- every camera is reported."""
     _camera(hass, "talli")
     _camera(hass, "piha")
     published, publish = _recorder()
@@ -522,7 +469,13 @@ async def test_a_camera_added_later_is_not_reported_while_a_1_7_list_is_saved(
     exporter.async_on_connected()
     _camera(hass, "uusi")
     await _resync(hass, freezer)
-    assert [payload["entity_id"] for _, payload, _ in published] == ["camera.talli", "camera.talli"]
+    assert [payload["entity_id"] for _, payload, _ in published] == [
+        "camera.piha",
+        "camera.talli",
+        "camera.piha",
+        "camera.talli",
+        "camera.uusi",
+    ]
     exporter.async_stop()
 
 
@@ -534,7 +487,7 @@ async def test_a_removed_camera_that_is_reported_again_is_not_also_described_as_
     exporter = KameraportiCameraExporter(
         hass,
         customer_id=CUSTOMER_ID,
-        settings=_settings(allowlist=None, removed=("camera.piha", "camera.olohuone")),
+        settings=_settings(removed=("camera.piha", "camera.olohuone")),
         publish=publish,
     )
     exporter.publish_all()
@@ -545,13 +498,11 @@ async def test_a_removed_camera_that_is_reported_again_is_not_also_described_as_
 
 
 async def test_a_1_6_link_sends_its_camera_id_when_every_camera_is_reported(hass: HomeAssistant) -> None:
-    """The hint goes along whichever way the camera is reported (here case a)."""
+    """Upgrade from 1.6.0: every camera is reported, the linked one with its camera_id."""
     _shelly_device(hass)
     _camera(hass, "piha")
     published, publish = _recorder()
-    settings = camera_settings_from_options(
-        {CONF_EXCLUDED_CAMERAS: [], CONF_CAPTURE_CAMERAS: {"5": _link(SHELLY)}}
-    )
+    settings = camera_settings_from_options({CONF_CAPTURE_CAMERAS: {"5": _link(SHELLY)}})
     exporter = KameraportiCameraExporter(hass, customer_id=CUSTOMER_ID, settings=settings, publish=publish)
     exporter.publish_all()
     assert {payload["entity_id"]: payload.get("camera_id") for _, payload, _ in published} == {
