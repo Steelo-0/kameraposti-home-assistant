@@ -316,6 +316,29 @@ def test_junk_roster_is_rejected_as_a_whole(payload: bytes, reason: str) -> None
         parse_roster(ROSTER_TOPIC, payload, expected_customer_id=3)
 
 
+@pytest.mark.parametrize("sensor_limit", [1, 30, 200, 1000])
+def test_roster_carries_the_accounts_sensor_limit(sensor_limit: int) -> None:
+    """1.8.0: Turva V62 tells the plan's sensor limit on the roster (schema_version stays 1)."""
+    roster = parse_roster(ROSTER_TOPIC, _roster(sensor_limit=sensor_limit), expected_customer_id=3)
+    assert roster is not None
+    assert roster.sensor_limit == sensor_limit
+
+
+@pytest.mark.parametrize("sensor_limit", [0, -5, 1001, 30.0, "30", True, None, [30], {"max": 30}])
+def test_an_invalid_sensor_limit_is_ignored_without_rejecting_the_roster(sensor_limit: object) -> None:
+    """The roster decides which cameras exist: a bad limit must never cost the camera list."""
+    roster = parse_roster(ROSTER_TOPIC, _roster(sensor_limit=sensor_limit), expected_customer_id=3)
+    assert roster is not None
+    assert roster.sensor_limit is None
+    assert [c.camera_id for c in roster.cameras] == [12, 35]
+
+
+def test_a_roster_without_a_sensor_limit_has_none() -> None:
+    roster = parse_roster(ROSTER_TOPIC, _roster(), expected_customer_id=3)
+    assert roster is not None
+    assert roster.sensor_limit is None
+
+
 @pytest.mark.parametrize("topic", ["customers/4/cameras", "customers/3/cameras/12", "customers/x/cameras"])
 def test_roster_on_a_foreign_or_malformed_topic_is_rejected(topic: str) -> None:
     with pytest.raises(RosterRejected):

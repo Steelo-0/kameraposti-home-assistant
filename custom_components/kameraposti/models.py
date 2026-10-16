@@ -35,6 +35,7 @@ from .const import (
     LATEST_PHOTO_TOPIC_PATTERN,
     ROSTER_MAX_CAMERAS,
     ROSTER_MAX_NAME_LENGTH,
+    ROSTER_MAX_SENSOR_LIMIT,
     ROSTER_SCHEMA_VERSION,
     ROSTER_TOPIC_PATTERN,
     SCHEMA_VERSION_SUPPORTED,
@@ -187,6 +188,8 @@ class CameraRoster:
 
     generated_at: datetime
     cameras: tuple[RosterCamera, ...]
+    # 1.8.0: how many sensors the account's plan takes (None = not told: the default applies).
+    sensor_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,7 +285,9 @@ def parse_roster(topic: str, payload: bytes | str, *, expected_customer_id: int)
     which is not the same as a roster with no cameras. Any invalid camera
     rejects the WHOLE roster -- the roster decides which cameras are removed,
     so a partially read list must never be acted on. Unknown fields are
-    ignored (forward compatibility, as in detections).
+    ignored (forward compatibility, as in detections). 1.8.0: an optional
+    sensor_limit (1..ROSTER_MAX_SENSOR_LIMIT) is read; any other value is
+    ignored, never a reason to reject the roster.
     """
     match = ROSTER_TOPIC_PATTERN.match(topic)
     if match is None:
@@ -327,7 +332,10 @@ def parse_roster(topic: str, payload: bytes | str, *, expected_customer_id: int)
             raise RosterRejected(f"cameras[{index}].name is longer than {ROSTER_MAX_NAME_LENGTH} characters")
         cameras.append(RosterCamera(camera_id=camera_id, name=name.strip() or None))
 
-    return CameraRoster(generated_at=generated_at, cameras=tuple(cameras))
+    sensor_limit = data.get("sensor_limit")
+    if not _is_int(sensor_limit) or not 1 <= sensor_limit <= ROSTER_MAX_SENSOR_LIMIT:
+        sensor_limit = None
+    return CameraRoster(generated_at=generated_at, cameras=tuple(cameras), sensor_limit=sensor_limit)
 
 
 def parse_latest_photo(

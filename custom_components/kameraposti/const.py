@@ -51,6 +51,10 @@ ROSTER_SCHEMA_VERSION: Final = 1
 # Sanity caps: a broken server must not grow device names or memory without bound.
 ROSTER_MAX_CAMERAS: Final = 1000
 ROSTER_MAX_NAME_LENGTH: Final = 255
+# 1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): Turva V62 adds the account's sensor
+# limit to the roster ("sensor_limit", optional). A value outside 1..ROSTER_MAX_SENSOR_LIMIT is
+# ignored like a missing one -- it never rejects the roster, which decides which cameras exist.
+ROSTER_MAX_SENSOR_LIMIT: Final = 1000
 LATEST_PHOTO_MAX_URL_LENGTH: Final = 2048
 # The newest applied roster's generated_at, stored per config entry: the roster
 # is retained, so the same (or an older) one arrives again on every reconnect and
