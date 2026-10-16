@@ -24,7 +24,6 @@ Saving reloads the entry.
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
 from typing import Any
 
 import voluptuous as vol
@@ -32,12 +31,6 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
-    BooleanSelector,
-    EntitySelector,
-    EntitySelectorConfig,
-    NumberSelector,
-    NumberSelectorConfig,
-    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -47,25 +40,13 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .camera_export import camera_settings_from_options, exported_cameras, removed_after_save
 from .const import (
     BROKER_HOSTS,
-    CAMERA_ENTITY_PATTERN,
-    CAPTURE_VIDEO_SECONDS_DEFAULT,
-    CAPTURE_VIDEO_SECONDS_MAX,
-    CAPTURE_VIDEO_SECONDS_MIN,
-    CONF_CAMERA_VIDEO,
-    CONF_CAMERA_VIDEO_SECONDS,
     CONF_CUSTOMER_ID,
-    CONF_EXCLUDED_CAMERAS,
-    CONF_EXPORTED_CAMERAS,
     CONF_EXPORTED_ENTITIES,
-    CONF_HIDDEN_CAMERAS,
     CONF_HOST,
-    CONF_REMOVED_CAMERAS,
     DEFAULT_HOST,
     DOMAIN,
-    MAX_EXPORTED_CAMERAS,
     USERNAME_TEMPLATE,
 )
 from .login import entry_login, is_device_login, parse_login
@@ -252,72 +233,16 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class KameraportiOptionsFlow(OptionsFlow):
-    """The entities exported to Kameraposti as sensors, and the Home Assistant cameras (1.7.0)."""
+    """The entities exported to Kameraposti as sensors.
+
+    1.10.0 (steelo 2026-10-16 "tee sitä nyt jo yksinkertaisempi"): the only setting. The cameras are
+    chosen in Kameraposti and the video comes with every alarm, so there is no camera step to get wrong
+    (1.8.x's "cameras Kameraposti does not see" list hid a Shelly when its video was switched on).
+    """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """1.6.0: a menu -- the exported sensors, or the cameras."""
-        return self.async_show_menu(step_id="init", menu_options=["sensors", "cameras"])
-
-    async def async_step_cameras(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """1.8.1 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): the cameras Kameraposti does not
-        see, and the video setting.
-
-        Every other camera is reported and chosen in Kameraposti. The list opens with the cameras hidden
-        here -- never pre-filled from older options: 1.8.0 filled its list with every camera outside the
-        1.7.0 ticks, and a user used to ticking ticked his Shelly there and hid it. A camera hidden on a
-        save is described to Kameraposti as removed; the older keys are dropped.
-        """
-        errors: dict[str, str] = {}
-        previous = camera_settings_from_options(self.config_entry.options)
-        hidden = list(previous.hidden)
-        video = previous.video
-        seconds = previous.video_seconds
-
-        if user_input is not None:
-            selected = list(dict.fromkeys(user_input.get(CONF_HIDDEN_CAMERAS, [])))
-            video = bool(user_input.get(CONF_CAMERA_VIDEO, False))
-            seconds = int(user_input.get(CONF_CAMERA_VIDEO_SECONDS, CAPTURE_VIDEO_SECONDS_DEFAULT))
-            if any(CAMERA_ENTITY_PATTERN.fullmatch(entity_id) is None for entity_id in selected):
-                errors[CONF_HIDDEN_CAMERAS] = "invalid_camera"
-                hidden = selected
-            else:
-                saved = replace(previous, hidden=tuple(selected))
-                before = exported_cameras(self.hass, previous)
-                after = exported_cameras(self.hass, saved)
-                options = {
-                    **self.config_entry.options,
-                    CONF_HIDDEN_CAMERAS: selected,
-                    CONF_REMOVED_CAMERAS: removed_after_save(previous.removed, before, after),
-                    CONF_CAMERA_VIDEO: video,
-                    CONF_CAMERA_VIDEO_SECONDS: seconds,
-                }
-                # Ignored since 1.8.1; dropped so they cannot mislead anyone reading the options.
-                options.pop(CONF_EXCLUDED_CAMERAS, None)
-                options.pop(CONF_EXPORTED_CAMERAS, None)
-                return self.async_create_entry(data=options)
-
-        return self.async_show_form(
-            step_id="cameras",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(CONF_HIDDEN_CAMERAS, default=hidden): EntitySelector(
-                        EntitySelectorConfig(domain="camera", multiple=True)
-                    ),
-                    vol.Required(CONF_CAMERA_VIDEO, default=video): BooleanSelector(),
-                    vol.Required(CONF_CAMERA_VIDEO_SECONDS, default=seconds): NumberSelector(
-                        NumberSelectorConfig(
-                            min=CAPTURE_VIDEO_SECONDS_MIN,
-                            max=CAPTURE_VIDEO_SECONDS_MAX,
-                            step=1,
-                            unit_of_measurement="s",
-                            mode=NumberSelectorMode.BOX,
-                        )
-                    ),
-                }
-            ),
-            errors=errors,
-            description_placeholders={"max": str(MAX_EXPORTED_CAMERAS)},
-        )
+        """Straight to the sensors (1.6.0-1.9.x: a menu of sensors and cameras)."""
+        return await self.async_step_sensors(user_input)
 
     async def async_step_sensors(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Choose the entities exported to Kameraposti as sensors."""

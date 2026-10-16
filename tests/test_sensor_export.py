@@ -494,10 +494,9 @@ async def test_an_alarm_from_a_break_goes_out_at_once_on_a_rate_limited_reconnec
 
 
 async def _open_sensor_options(hass: HomeAssistant, entry: MockConfigEntry) -> dict:
-    """1.6.0: the options open on a menu (sensors / cameras); pick the sensors."""
-    menu = await hass.config_entries.options.async_init(entry.entry_id)
-    assert menu["type"] is FlowResultType.MENU
-    result = await hass.config_entries.options.async_configure(menu["flow_id"], {"next_step_id": "sensors"})
+    """1.10.0: the options open straight on the sensors (1.6.0-1.9.x: a menu of sensors / cameras)."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "sensors"
     return result
 

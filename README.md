@@ -296,17 +296,13 @@ camera you delete in Kameraposti lets go of its Home Assistant camera, so you
 can add it again. A camera you add to Home Assistant later shows up in
 Kameraposti within 15 minutes.
 
-**Settings → Devices & services → Kameraposti → Configure → Hide cameras from
-Kameraposti** is only for cameras Kameraposti must not see (none by default).
-Kameraposti is not told about them, and a request for a photo from one of them
-is refused with a warning in the log. A camera you hide later is withdrawn from
-Kameraposti. The same form chooses whether a video is sent as well (5–30
-seconds, default 10).
-
-Upgrading to 1.8.1: every camera is reported, whatever was ticked (1.7),
-linked (1.6) or listed as not to be used (1.8.0) before; those lists no longer
-do anything, and the hide list starts empty. Kameraposti keeps using the
-cameras a 1.6 link pointed at.
+There are no camera settings in Home Assistant (since 1.10.0): an alarm and
+**Ota kuva Home Assistantista** bring a photo and a 10-second video, a motion
+only a photo -- Kameraposti decides. Upgrading to 1.10.0: every camera is
+reported, also one hidden under 1.8.1's "Hide cameras from Kameraposti" (that
+form, with its video switch, is gone; 16.10 a Shelly was hidden there by
+mistake when its video was switched on). Kameraposti keeps using the cameras a
+1.6 link pointed at.
 
 How the photo and the video are taken:
 
@@ -328,12 +324,15 @@ How the photo and the video are taken:
   (e.g. a Shelly camera) -- on motion at most one a minute per camera, however
   many motion sensors are linked to it.
 - A motion never records a video; alarms and **Ota kuva Home Assistantista**
-  do, when video is on.
-- **Video** (optional): recorded after the photo with Home Assistant's
+  do.
+- **Video**: 10 seconds, recorded after the photo with Home Assistant's
   `stream` integration, the same way as the `camera.record` action. The
   camera must support streaming (the camera's page in Home Assistant shows
   live video) and `stream` must be set up (it is with `default_config`). The
-  video starts a few seconds after the alarm, not before it. A video larger
+  video starts a few seconds after the alarm -- unless the camera's stream is
+  already running: switch on **Preload stream** in the camera entity's
+  settings in Home Assistant, and the video starts 5 seconds before the alarm
+  (useful when the camera's own motion detection is late). A video larger
   than Kameraposti's limit (25 MB) is not sent; use a shorter video for a
   high-resolution stream. If the camera cannot stream, or the recording
   fails, the log gets one warning and only the photo is sent.

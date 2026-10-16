@@ -55,34 +55,17 @@
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Kameraposti",
-        "menu_options": {
-          "sensors": "Sensors to Kameraposti",
-          "cameras": "Hide cameras from Kameraposti"
-        }
-      },
       "sensors": {
         "title": "Sensors to Kameraposti",
-        "description": "Choose the Home Assistant sensors that appear in Kameraposti and alarm through Kameraposti notifications: leak, smoke, gas (also carbon monoxide detectors and CO meters: alarm from 50 ppm, clear below 35 ppm), door, window, motion, temperature and CO₂ (carbon dioxide, ppm). Your Kameraposti plan takes at most {max}. Kameraposti creates them automatically. A sensor removed only in Kameraposti comes back on the next connection; remove it from this list too. A Z-Wave leak sensor is usually \"…_water_leak\" and a gas sensor has gas or carbon_monoxide in its name (shown as OK / Problem).",
+        "description": "Choose the Home Assistant sensors that appear in Kameraposti and alarm through Kameraposti notifications: leak, smoke, gas (also carbon monoxide detectors and CO meters: alarm from 50 ppm, clear below 35 ppm), door, window, motion, temperature and CO₂ (carbon dioxide, ppm). Your Kameraposti plan takes at most {max}. Kameraposti creates them automatically. A sensor removed in Kameraposti does not come back (Restore on its Sensors page brings it back). Cameras are chosen in Kameraposti: Home Assistant tells it all its cameras, and an alarm brings a photo and a short video. A Z-Wave leak sensor is usually \"…_water_leak\" and a gas sensor has gas or carbon_monoxide in its name (shown as OK / Problem).",
         "data": {
           "exported_entities": "Exported sensors"
-        }
-      },
-      "cameras": {
-        "title": "Hide cameras from Kameraposti",
-        "description": "Kameraposti sees every Home Assistant camera (at most {max}), and you choose in Kameraposti which ones become cameras: add one from Kameraposti's list of Home Assistant cameras, or pick one on a camera's page. A Shelly Camera added in Kameraposti finds its camera by itself. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video). Hide here only cameras Kameraposti must not see: it is not told about them and cannot ask them for photos.",
-        "data": {
-          "hidden_cameras": "Cameras Kameraposti does not see",
-          "camera_video": "Also send a video",
-          "camera_video_seconds": "Video length"
         }
       }
     },
     "error": {
       "too_many": "Your Kameraposti plan takes at most {max} sensors.",
-      "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list.",
-      "invalid_camera": "Choose cameras only (camera.…)."
+      "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list."
     }
   },
   "exceptions": {

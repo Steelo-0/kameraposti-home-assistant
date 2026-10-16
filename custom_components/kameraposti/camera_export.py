@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -53,14 +53,7 @@ from .capture import capture_cameras_from_options
 from .const import (
     CAMERA_ENTITY_PATTERN,
     CAPTURE_VIDEO_SECONDS_DEFAULT,
-    CAPTURE_VIDEO_SECONDS_MAX,
-    CAPTURE_VIDEO_SECONDS_MIN,
-    CONF_CAMERA_VIDEO,
-    CONF_CAMERA_VIDEO_SECONDS,
-    CONF_HIDDEN_CAMERAS,
-    CONF_REMOVED_CAMERAS,
     MAX_EXPORTED_CAMERAS,
-    MAX_REMOVED_CAMERAS,
     SENSOR_TOPIC_TEMPLATE,
     SNAPSHOT_MIN_INTERVAL_SECONDS,
 )
@@ -90,50 +83,26 @@ class CameraSettings:
     video_seconds: int
 
 
-def _entity_ids(raw: Any, limit: int | None) -> list[str]:
-    if not isinstance(raw, list | tuple):
-        return []
-    valid = [item for item in raw if isinstance(item, str) and CAMERA_ENTITY_PATTERN.fullmatch(item)]
-    return list(dict.fromkeys(valid))[:limit]
-
-
-def _seconds(raw: Any) -> int:
-    if isinstance(raw, bool) or not isinstance(raw, int | float):
-        return CAPTURE_VIDEO_SECONDS_DEFAULT
-    return min(max(int(raw), CAPTURE_VIDEO_SECONDS_MIN), CAPTURE_VIDEO_SECONDS_MAX)
-
-
 def camera_settings_from_options(options: Mapping[str, Any]) -> CameraSettings:
-    """The hidden cameras, the removals, the 1.6.0 hints and the video setting.
+    """The 1.6.0 hints; every camera reported, none removed, video on every alarm.
 
-    1.8.1: only ``hidden_cameras`` hides a camera; the 1.6.0 links give camera_id hints, nothing more.
+    1.10.0 (steelo 2026-10-16 "tee sitä nyt jo yksinkertaisempi"): the camera settings are gone. Every
+    camera is reported (chosen or left out in Kameraposti), so a camera ticked in the old "hidden" list
+    comes back; Kameraposti decides when a video is wanted (its alarm and button requests carry a video
+    link, a motion request an expired one), and it is CAPTURE_VIDEO_SECONDS_DEFAULT long. The old
+    options are ignored.
     """
     legacy = capture_cameras_from_options(options)
     hints: dict[str, int] = {}
     for camera_id in sorted(legacy):
         hints.setdefault(legacy[camera_id].entity_id, camera_id)
 
-    hidden = tuple(_entity_ids(options.get(CONF_HIDDEN_CAMERAS), None))
-    if CONF_CAMERA_VIDEO in options:
-        video = options.get(CONF_CAMERA_VIDEO) is True
-        video_seconds = _seconds(options.get(CONF_CAMERA_VIDEO_SECONDS))
-    else:
-        video = any(link.video for link in legacy.values())
-        video_seconds = max(
-            (link.video_seconds for link in legacy.values() if link.video),
-            default=CAPTURE_VIDEO_SECONDS_DEFAULT,
-        )
     return CameraSettings(
-        hidden=hidden,
-        # A removal saved by 1.7.0/1.8.0 for a camera that is not hidden now is dropped: it is reported.
-        removed=tuple(
-            entity_id
-            for entity_id in _entity_ids(options.get(CONF_REMOVED_CAMERAS), MAX_REMOVED_CAMERAS)
-            if entity_id in hidden
-        ),
+        hidden=(),
+        removed=(),
         hints=hints,
-        video=video,
-        video_seconds=video_seconds,
+        video=True,
+        video_seconds=CAPTURE_VIDEO_SECONDS_DEFAULT,
     )
 
 
@@ -165,15 +134,6 @@ def exported_cameras(hass: HomeAssistant, settings: CameraSettings) -> tuple[str
     hidden = set(settings.hidden)
     cameras = [entity_id for entity_id in home_assistant_cameras(hass) if entity_id not in hidden]
     return tuple(cameras[:MAX_EXPORTED_CAMERAS])
-
-
-def removed_after_save(removed: Sequence[str], before: Sequence[str], after: Collection[str]) -> list[str]:
-    """The removal list after a save: cameras no longer reported go last, reported-again ones out."""
-    result = [entity_id for entity_id in removed if entity_id not in after]
-    for entity_id in before:
-        if entity_id not in after and entity_id not in result:
-            result.append(entity_id)
-    return result[-MAX_REMOVED_CAMERAS:]
 
 
 def _clean(name: str) -> str:

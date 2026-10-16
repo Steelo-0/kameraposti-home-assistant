@@ -30,7 +30,6 @@ from custom_components.kameraposti.camera_export import (
     camera_settings_from_options,
     exported_cameras,
     home_assistant_cameras,
-    removed_after_save,
 )
 from custom_components.kameraposti.const import (
     CONF_CAMERA_VIDEO,
@@ -128,59 +127,32 @@ async def _resync(hass: HomeAssistant, freezer: FrozenDateTimeFactory) -> None:
 # -- settings from the options ----------------------------------------------------------
 
 
-def test_older_options_hide_nothing_and_1_6_links_keep_their_hints() -> None:
-    """1.8.1: a 1.6.0 link, a 1.7.0 tick list and 1.8.0's "must not use" list hide nothing (16.10 the
-    1.8.0 list hid the Shelly steelo had ticked); the links still give camera_id hints."""
+def test_no_camera_setting_is_read_any_more_and_1_6_links_keep_their_hints() -> None:
+    """1.10.0 (steelo 16.10 "tee sitä nyt jo yksinkertaisempi"): no option hides a camera, removes one or
+    turns the video off -- 1.8.1's hidden list hid his Shelly when he switched the video on. The 1.6.0
+    links still give camera_id hints."""
     settings = camera_settings_from_options(
         {
             CONF_CAPTURE_CAMERAS: {
                 "6": _link("camera.talli", video=True, seconds=12),
                 "5": _link(SHELLY),
-                "7": _link(SHELLY, video=True, seconds=20),
+                "7": _link(SHELLY, video=False, seconds=20),
                 "x": _link("camera.roska"),
             },
             CONF_EXPORTED_CAMERAS: ["camera.talli"],
             CONF_EXCLUDED_CAMERAS: [SHELLY],
-        }
-    )
-    assert settings.hidden == ()
-    # The lowest Kameraposti camera id linked to each Home Assistant camera.
-    assert settings.hints == {SHELLY: 5, "camera.talli": 6}
-    assert settings.video is True
-    assert settings.video_seconds == 20
-    assert camera_settings_from_options({}) == CameraSettings(
-        hidden=(), removed=(), hints={}, video=False, video_seconds=10
-    )
-
-
-def test_hidden_cameras_are_read_and_only_their_removals_kept() -> None:
-    settings = camera_settings_from_options(
-        {
-            CONF_HIDDEN_CAMERAS: ["camera.olohuone", "sensor.ovi", "camera.Iso", 7, "camera.olohuone"],
-            # Saved by 1.7.0/1.8.0: a removal for a camera that is not hidden now would contradict its
-            # description, so only the hidden one's stays.
-            CONF_REMOVED_CAMERAS: [SHELLY, "camera.olohuone"],
+            CONF_HIDDEN_CAMERAS: [SHELLY, "camera.olohuone"],
+            CONF_REMOVED_CAMERAS: [SHELLY],
             CONF_CAMERA_VIDEO: False,
-            CONF_CAMERA_VIDEO_SECONDS: 99,
+            CONF_CAMERA_VIDEO_SECONDS: 30,
         }
     )
-    assert settings.hidden == ("camera.olohuone",)
-    assert settings.removed == ("camera.olohuone",)
-    assert settings.video is False
-    assert settings.video_seconds == 30
-
-
-def test_cameras_no_longer_reported_go_to_the_removal_list_and_reported_again_ones_leave_it() -> None:
-    assert removed_after_save(["camera.vanha"], [SHELLY, "camera.talli"], ["camera.talli"]) == [
-        "camera.vanha",
-        SHELLY,
-    ]
-    assert removed_after_save([SHELLY], [], [SHELLY]) == []
-    many = [f"camera.c{i}" for i in range(50)]
-    assert removed_after_save(many, [], []) == many
-    more = removed_after_save(many, ["camera.uusi"], [])
-    assert more[-1] == "camera.uusi"
-    assert len(more) == 50
+    assert settings == CameraSettings(
+        hidden=(), removed=(), hints={SHELLY: 5, "camera.talli": 6}, video=True, video_seconds=10
+    )
+    assert camera_settings_from_options({}) == CameraSettings(
+        hidden=(), removed=(), hints={}, video=True, video_seconds=10
+    )
 
 
 # -- what a camera is called and its MAC -------------------------------------------------
@@ -240,7 +212,7 @@ async def test_every_camera_in_home_assistant_is_found(hass: HomeAssistant) -> N
     assert home_assistant_cameras(hass) == [yaml_camera, loaded, not_loaded_yet]
 
 
-async def test_every_camera_is_reported_after_an_upgrade_and_only_hidden_ones_are_not(
+async def test_every_camera_is_reported_after_an_upgrade(
     hass: HomeAssistant,
 ) -> None:
     _shelly_device(hass)
@@ -260,9 +232,9 @@ async def test_every_camera_is_reported_after_an_upgrade_and_only_hidden_ones_ar
     assert from_1_6.hints == {"camera.talli": 5}
     # Fresh install.
     assert exported_cameras(hass, camera_settings_from_options({})) == every
-    # 1.8.1: only the hidden list hides.
-    hidden = camera_settings_from_options({CONF_HIDDEN_CAMERAS: ["camera.olohuone"]})
-    assert exported_cameras(hass, hidden) == (SHELLY, "camera.talli")
+    # 1.10.0: 1.8.1's hidden list hides nothing either (the Shelly hidden by mistake comes back).
+    hidden = camera_settings_from_options({CONF_HIDDEN_CAMERAS: [SHELLY, "camera.olohuone"]})
+    assert exported_cameras(hass, hidden) == every
 
 
 async def test_at_most_50_cameras_are_reported(hass: HomeAssistant) -> None:
@@ -271,8 +243,6 @@ async def test_at_most_50_cameras_are_reported(hass: HomeAssistant) -> None:
     assert exported_cameras(hass, camera_settings_from_options({})) == tuple(
         f"camera.c{i:02d}" for i in range(50)
     )
-    hidden = camera_settings_from_options({CONF_HIDDEN_CAMERAS: ["camera.c00"]})
-    assert exported_cameras(hass, hidden) == tuple(f"camera.c{i:02d}" for i in range(1, 51))
 
 
 # -- the exporter ---------------------------------------------------------------------------
@@ -423,8 +393,8 @@ async def test_nothing_to_send_without_cameras(hass: HomeAssistant) -> None:
     ("options", "reported"),
     [
         ({}, ["camera.olohuone", "camera.piha"]),
-        ({CONF_HIDDEN_CAMERAS: ["camera.olohuone"]}, ["camera.piha"]),
-        # 1.8.0's list hides nothing since 1.8.1.
+        # 1.10.0: 1.8.1's hidden list hides nothing; 1.8.0's has hidden nothing since 1.8.1.
+        ({CONF_HIDDEN_CAMERAS: ["camera.olohuone"]}, ["camera.olohuone", "camera.piha"]),
         ({CONF_EXCLUDED_CAMERAS: ["camera.olohuone"]}, ["camera.olohuone", "camera.piha"]),
     ],
 )

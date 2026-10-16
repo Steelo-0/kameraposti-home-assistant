@@ -5,15 +5,17 @@ alarms, or when the user presses "Ota kuva Home Assistantista" on the camera's
 page: it publishes a capture request (customers/<id>/cameras/<camera>/capture,
 QoS 1, not retained) with two signed, expiring upload URLs. 1.7.0: the request
 names the Home Assistant camera (entity_id), which must be one the integration
-reports to Kameraposti (camera_export.py; 1.8.1: every camera not hidden under
-"Hide cameras from Kameraposti", worked out when the request arrives); a request from an
+reports to Kameraposti (camera_export.py; 1.10.0: every camera, worked out when the
+request arrives); a request from an
 older server names none, and the 1.6.0 option linking its Kameraposti camera
 decides (its Home Assistant camera must be reported too). For that camera this module
 
 1. takes a still with camera.async_get_image (10 s) and POSTs it to photo_url
    as image/jpeg;
-2. then, if video is on for that camera, records N seconds (5-30, default 10)
-   with Home Assistant's stream integration -- the same mechanism as the
+2. then, unless Kameraposti's video link has already expired (a motion's has; 1.10.0: no
+   video setting in Home Assistant), records 10 seconds -- starting 5 seconds back when the
+   camera's stream is already running ("Preload stream") -- with Home Assistant's stream
+   integration, the same mechanism as the
    camera.record service: camera.async_create_stream() and
    stream.async_record() -- and POSTs the MP4 to video_url as video/mp4.
 
@@ -102,6 +104,10 @@ UPLOAD_RETRY_DELAY_SECONDS = 2
 RECORD_MARGIN_SECONDS = 30
 # How long unloading waits for cancelled captures to clean up.
 STOP_TIMEOUT_SECONDS = 10
+# 1.10.0: seconds before the request the video starts with, when Home Assistant already has the
+# camera's stream running (the camera's "Preload stream" setting); otherwise it starts from now. A
+# camera's own motion detection can be seconds late.
+VIDEO_LOOKBACK_SECONDS = 5
 # Kameraposti's limit for a video (25 MB): a bigger one is not uploaded just to be refused.
 VIDEO_MAX_BYTES = 25 * 1024 * 1024
 CAPTURE_DIR_NAME = ".kameraposti_capture"
@@ -413,8 +419,7 @@ class KameraportiCaptureHandler:
                 "Kameraposti capture request_id=%s camera_id=%s: %s, no photo",
                 request.request_id,
                 request.camera_id,
-                f"{entity_id} is hidden under Configure -> Hide cameras from Kameraposti "
-                "(or does not exist in Home Assistant)"
+                f"{entity_id} does not exist in Home Assistant (or is disabled)"
                 if entity_id is not None
                 else "no Home Assistant camera chosen for it in Kameraposti",
             )
@@ -463,12 +468,12 @@ class KameraportiCaptureHandler:
             await self._async_photo(request, camera)
             # Also after a cancel that the camera's own code swallowed (async_get_image does).
             if camera.video and not self._stopping:
-                if request.reason == "motion":
+                if request.reason == "motion" or _expired(request.video_expires_at):
                     # 1.9.0: Turva wants no video of a motion (its video link has already expired);
-                    # trying it only put a "link expired" warning in the log on every motion.
-                    _LOGGER.debug(
-                        "Kameraposti capture request_id=%s: no video for motion", request.request_id
-                    )
+                    # trying it only put a "link expired" warning in the log on every motion. 1.10.0:
+                    # Kameraposti decides the video -- a link already expired here means none is wanted
+                    # (the photo step cannot outlast a 5-minute link).
+                    _LOGGER.debug("Kameraposti capture request_id=%s: no video wanted", request.request_id)
                 else:
                     await self._async_video(request, camera)
         except Exception as err:  # noqa: BLE001 - never its message: it can carry a signed URL
@@ -682,11 +687,13 @@ class KameraportiCaptureHandler:
             self._warn_no_video(request, camera, "the camera does not support streaming")
             return False
 
-        timeout = recording_timeout(camera.video_seconds)
+        timeout = recording_timeout(camera.video_seconds) + VIDEO_LOOKBACK_SECONDS
         finished = False
         try:
             async with asyncio.timeout(timeout):
-                await stream.async_record(path, duration=camera.video_seconds, lookback=0)
+                await stream.async_record(
+                    path, duration=camera.video_seconds, lookback=VIDEO_LOOKBACK_SECONDS
+                )
             finished = True
         except TimeoutError:
             self._warn_no_video(request, camera, f"the recording did not finish within {timeout:.0f} s")
