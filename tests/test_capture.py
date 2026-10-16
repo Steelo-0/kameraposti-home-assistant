@@ -56,6 +56,7 @@ from custom_components.kameraposti.const import (
     DOMAIN,
 )
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
+from custom_components.kameraposti.models import CaptureRequestRejected, parse_capture_request
 
 CUSTOMER_ID = 3
 CAMERA_ID = 5
@@ -404,12 +405,40 @@ async def test_a_camera_that_is_not_ticked_is_never_used_and_says_so(
 
 
 @respx.mock
-async def test_an_invalid_entity_id_rejects_the_request(make_harness: Callable[..., Any]) -> None:
+async def test_an_invalid_entity_id_rejects_the_request(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Rejected while parsing (debug), not taken for an unticked camera (warning)."""
     h = await make_harness()
-    for request_id, entity_id in ((22, "sensor.ovi"), (23, 7), (24, "camera.Piha")):
-        _routes(request_id=request_id)
-        await h.send(_request(request_id=request_id, entity_id=entity_id))
+    with caplog.at_level(logging.WARNING):
+        for request_id, entity_id in ((22, "sensor.ovi"), (23, 7), (24, "camera.Piha")):
+            _routes(request_id=request_id)
+            await h.send(_request(request_id=request_id, entity_id=entity_id))
     h.take_photo.assert_not_awaited()
+    assert _warnings(caplog) == []
+
+
+def test_the_entity_id_is_parsed_and_validated() -> None:
+    parsed = parse_capture_request(
+        _topic(),
+        _request(entity_id="camera.talli"),
+        expected_customer_id=CUSTOMER_ID,
+        expected_host="cam.steels.me",
+    )
+    assert parsed.entity_id == "camera.talli"
+    assert (
+        parse_capture_request(
+            _topic(), _request(), expected_customer_id=CUSTOMER_ID, expected_host="cam.steels.me"
+        )
+    ).entity_id is None
+    for entity_id in ("sensor.ovi", 7, "camera.Piha", "camera." + "a" * 201):
+        with pytest.raises(CaptureRequestRejected, match="entity_id"):
+            parse_capture_request(
+                _topic(),
+                _request(entity_id=entity_id),
+                expected_customer_id=CUSTOMER_ID,
+                expected_host="cam.steels.me",
+            )
 
 
 @respx.mock
