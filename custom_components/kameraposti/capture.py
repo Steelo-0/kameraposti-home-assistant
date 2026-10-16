@@ -13,9 +13,9 @@ decides (its Home Assistant camera must be reported too). For that camera this m
 1. takes a still with camera.async_get_image (10 s) and POSTs it to photo_url
    as image/jpeg;
 2. then, unless Kameraposti's video link has already expired (a motion's has; 1.10.0: no
-   video setting in Home Assistant), records 10 seconds -- starting 5 seconds back when the
-   camera's stream is already running ("Preload stream") -- with Home Assistant's stream
-   integration, the same mechanism as the
+   video setting in Home Assistant), records 10 seconds -- including the last few seconds
+   before the request when the camera's stream is already running ("Preload stream") --
+   with Home Assistant's stream integration, the same mechanism as the
    camera.record service: camera.async_create_stream() and
    stream.async_record() -- and POSTs the MP4 to video_url as video/mp4.
 
@@ -104,10 +104,6 @@ UPLOAD_RETRY_DELAY_SECONDS = 2
 RECORD_MARGIN_SECONDS = 30
 # How long unloading waits for cancelled captures to clean up.
 STOP_TIMEOUT_SECONDS = 10
-# 1.10.0: seconds before the request the video starts with, when Home Assistant already has the
-# camera's stream running (the camera's "Preload stream" setting); otherwise it starts from now. A
-# camera's own motion detection can be seconds late.
-VIDEO_LOOKBACK_SECONDS = 5
 # Kameraposti's limit for a video (25 MB): a bigger one is not uploaded just to be refused.
 VIDEO_MAX_BYTES = 25 * 1024 * 1024
 CAPTURE_DIR_NAME = ".kameraposti_capture"
@@ -388,6 +384,7 @@ class KameraportiCaptureHandler:
         self._exported = exported
         self._video = video
         self._video_seconds = video_seconds
+        self._no_stream_warned: set[str] = set()
         self._dedup = EventDedupCache()
         self._tasks: set[asyncio.Task[None]] = set()
         # One recording at a time per Home Assistant camera: a stream records to one file.
@@ -684,16 +681,27 @@ class KameraportiCaptureHandler:
             self._warn_no_video(request, camera, type(err).__name__)
             return False
         if stream is None:
-            self._warn_no_video(request, camera, "the camera does not support streaming")
+            # Audit 1.10.0 M2: video is always asked for now, so a camera that cannot stream warns once
+            # per run, not on every alarm.
+            if camera.entity_id in self._no_stream_warned:
+                _LOGGER.debug(
+                    "Kameraposti capture request_id=%s: %s cannot stream, photo only",
+                    request.request_id,
+                    camera.entity_id,
+                )
+            else:
+                self._no_stream_warned.add(camera.entity_id)
+                self._warn_no_video(request, camera, "the camera does not support streaming (photos only)")
             return False
 
-        timeout = recording_timeout(camera.video_seconds) + VIDEO_LOOKBACK_SECONDS
+        timeout = recording_timeout(camera.video_seconds)
         finished = False
         try:
             async with asyncio.timeout(timeout):
-                await stream.async_record(
-                    path, duration=camera.video_seconds, lookback=VIDEO_LOOKBACK_SECONDS
-                )
+                # lookback=0: when the stream is already running ("Preload stream"), Home Assistant still
+                # prepends the last finished segment (a few seconds before the request); a larger lookback
+                # adds nothing below one segment's length (audit 1.10.0 L1).
+                await stream.async_record(path, duration=camera.video_seconds, lookback=0)
             finished = True
         except TimeoutError:
             self._warn_no_video(request, camera, f"the recording did not finish within {timeout:.0f} s")

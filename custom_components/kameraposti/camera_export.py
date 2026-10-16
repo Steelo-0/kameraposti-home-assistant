@@ -5,13 +5,14 @@ reported camera becomes a Kameraposti camera, which one a camera's page uses, th
 1.7.0 had the user tick cameras in the options, and settings in three places became a jungle.
 The reported cameras (the "exported set") are worked out whenever they are needed -- at every
 publish and every capture request -- so a camera added to Home Assistant later is reported at the
-next resend: every camera in Home Assistant except those under ``hidden_cameras``, sorted by
-entity_id, at most MAX_EXPORTED_CAMERAS.
+next resend: every camera in Home Assistant, sorted by entity_id, at most MAX_EXPORTED_CAMERAS.
 
 1.8.1: no other option decides. 1.8.0 kept a 1.7.0 tick list or 1.6.0 links as an allowlist and
 pre-filled its "must not use" list with every other camera; a user used to ticking ticked his Shelly
 there and hid it (16.10). ``excluded_cameras``, ``exported_cameras`` and the 1.6.0 links no longer
-limit anything, so an upgrade reports every camera with no setting at all.
+limit anything, so an upgrade reports every camera with no setting at all. 1.10.0 (steelo 2026-10-16
+"tee sitä nyt jo yksinkertaisempi"): 1.8.1's ``hidden_cameras`` is gone too -- switching the video on
+in that form, he hid his Shelly; there is no camera setting left.
 
 For each one this module publishes, over the integration's own connection, a description under the
 sensor prefix:
@@ -21,8 +22,8 @@ sensor prefix:
   Assistant cameras the user can add or pick (``camera_id``: the camera a 1.6.0 option already
   linked to it) and attaches a Shelly Camera device whose own id ends in the same MAC. The protocol
   is the same as in 1.7.0; only what Kameraposti does with a description changed (Turva V62).
-* the same topic with {"kind": "camera", "entity_id", "removed": true} for a camera hidden when the
-  options were saved, while it stays hidden.
+* the same topic with {"kind": "camera", "entity_id", "removed": true} for a camera in
+  ``CameraSettings.removed`` (1.7.0-1.9.x: one hidden in the options; since 1.10.0 never).
 
 ``<name>`` is the sensor exporter's topic name for the entity_id; Kameraposti keys the camera by
 the entity_id in the payload. Descriptions and removals go out on every (re)connect, at most once
@@ -72,7 +73,8 @@ PublishFn = Callable[[str, str, bool], bool]
 
 @dataclass(frozen=True, slots=True)
 class CameraSettings:
-    """Which cameras are hidden and their video setting, from the entry options."""
+    """The cameras' settings. 1.10.0: nothing hidden or removed, video on, 10 s (see
+    camera_settings_from_options); the fields stay for the exporter's and capture's tests."""
 
     hidden: tuple[str, ...]
     # Hidden on a save: described as removed (only while hidden).

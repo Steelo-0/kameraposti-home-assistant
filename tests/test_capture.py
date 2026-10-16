@@ -361,10 +361,10 @@ async def test_photo_then_video_are_posted_with_their_types(make_harness: Callab
     assert video.headers["content-type"] == "video/mp4"
     assert video.content == MP4
     # Recorded as the camera.record service does: 10 s (1.10.0: no setting, an old link's 12 s is
-    # ignored), starting 5 s back when the stream is already running ("Preload stream").
+    # ignored); a preloaded stream still gets its last segment prepended by Home Assistant.
     h.camera_stream.assert_awaited_once_with(h.hass, ENTITY_ID)
     [(path, duration, lookback)] = h.stream.records
-    assert (duration, lookback) == (10, 5)
+    assert (duration, lookback) == (10, 0)
     # A hidden folder in the media folder (allowlisted, served only to logged-in users) -- never www.
     assert Path(path).parent == h.dirs.media / ".kameraposti_capture"
     assert path.endswith(".mp4")
@@ -829,8 +829,11 @@ async def test_camera_without_streaming_sends_the_photo_and_warns_once(
 ) -> None:
     h = await make_harness(streaming=False)
     photo_route, video_route = _routes()
+    _routes(request_id=18)
 
     await h.send(_request())
+    # Audit 1.10.0 M2: the video is always asked for, so the next alarm does not warn again.
+    await h.send(_request(18))
 
     assert photo_route.call_count == 1
     assert not video_route.called
@@ -1091,7 +1094,7 @@ async def _frigate_harness(
     labels: tuple[str, ...] = ("person", "car"),
 ) -> Harness:
     freezer.move_to(NOW)
-    h = await make_harness({}, options={CONF_CAMERA_VIDEO: False})
+    h = await make_harness({})
     _frigate_camera(h.hass, labels)
     # Another integration's image on the same device, newer than any Frigate one: never used.
     h.frigate["image.kamera1_muu"] = b"\xff\xd8\xff\xe0not-frigate"
@@ -1314,14 +1317,18 @@ async def test_motion_never_records_a_video(
     make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture, reason: str, video: bool
 ) -> None:
     """Turva's video link for a motion has already expired: no recording, and no "link expired"
-    warning on every motion. Alarm and manual keep their video."""
+    warning on every motion. Alarm and manual keep their video. Audit 1.10.0 L3: a motion never
+    records, even with a live link."""
     h = await make_harness()
     photo_route, video_route = _routes(request_id=60)
+    _routes(request_id=61)
     overrides: dict[str, object] = {"reason": reason}
     if reason == "motion":
         overrides["video_expires_at"] = (dt_util.utcnow() - timedelta(seconds=1)).isoformat()
 
     await h.send(_request(60, **overrides))
+    if reason == "motion":
+        await h.send(_request(61, reason="motion"))
 
     assert photo_route.called
     assert video_route.called is video
@@ -1480,7 +1487,7 @@ async def test_a_motion_already_sent_reads_no_image(
 
 async def _motion_harness(make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory) -> Harness:
     freezer.move_to(NOW)
-    h = await make_harness(options={CONF_CAMERA_VIDEO: False})
+    h = await make_harness()
     h.hass.states.async_set("camera.talli", "idle")
     return h
 
@@ -1785,6 +1792,9 @@ async def test_the_options_have_no_camera_step_and_every_camera_is_reported(
 
     form = await hass.config_entries.options.async_init(entry.entry_id)
     assert (form["type"], form["step_id"]) == (FlowResultType.FORM, "sensors")
+    # Audit 1.10.0 M1: setup dropped the dead camera options (a downgrade cannot hide the camera again);
+    # the 1.6.0 links stay for their hints.
+    assert entry.options == {CONF_CAPTURE_CAMERAS: {"5": _link(video=False)}}
 
 
 async def test_an_old_removal_of_a_camera_that_is_reported_is_never_sent(

@@ -89,30 +89,27 @@ CAPTURE_VIDEO_SECONDS_DEFAULT: Final = 10
 CAPTURE_VIDEO_SECONDS_MIN: Final = 5
 CAPTURE_VIDEO_SECONDS_MAX: Final = 30
 
-# 1.7.0 (steelo 2026-10-16 "idioottivarma"): the Home Assistant cameras ticked under "Cameras to
-# Kameraposti". Each is described to Kameraposti under the sensor prefix
-# (kameraposti/<id>/anturit/<name>/config, kind "camera"); Kameraposti creates or links a camera
-# for it, and its capture requests name the entity_id. Kameraposti can ask for photos only from
-# these cameras. docs/kameraposti-turva-ha-kamerat-spec-2026-10-16.md in the steel-cloud repo.
-# 1.8.1: ignored; saving the camera options removes it.
+# Camera options of 1.7.0-1.9.x (the ticked list, 1.8.0's "must not use" list, 1.8.1's hidden list
+# and its removals, the one video setting). 1.10.0 (steelo 2026-10-16 "tee sitä nyt jo
+# yksinkertaisempi"): there are no camera options -- every camera is reported and chosen in
+# Kameraposti, and Kameraposti's request decides the video. Setup drops these keys
+# (DEAD_CAMERA_OPTIONS) so a downgrade cannot hide a camera again.
 CONF_EXPORTED_CAMERAS: Final = "exported_cameras"
-# 1.8.0's list of cameras Kameraposti must not use. 1.8.1: ignored; saving the camera options removes
-# it. Pre-filled from the 1.7.0 ticks, it hid the very camera the user ticked (16.10, steelo's Shelly).
 CONF_EXCLUDED_CAMERAS: Final = "excluded_cameras"
-# 1.8.1 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): every Home Assistant camera is
-# reported and chosen in Kameraposti, with no setting in Home Assistant; this option only hides
-# cameras Kameraposti must not see. A new key, so nothing saved by an earlier version hides a camera.
 CONF_HIDDEN_CAMERAS: Final = "hidden_cameras"
-# Cameras hidden on a save: described as removed on every connection while hidden, the newest
-# MAX_REMOVED_CAMERAS.
 CONF_REMOVED_CAMERAS: Final = "removed_cameras"
-# One video setting for all cameras (1.6.0 had one per linked camera).
 CONF_CAMERA_VIDEO: Final = "camera_video"
 CONF_CAMERA_VIDEO_SECONDS: Final = "camera_video_seconds"
-# 1.8.0: at most this many cameras are reported (the first after sorting, or of a saved list); as
-# many can be described as removed, so every camera that can be reported can also be withdrawn.
+DEAD_CAMERA_OPTIONS: Final = (
+    CONF_EXPORTED_CAMERAS,
+    CONF_EXCLUDED_CAMERAS,
+    CONF_HIDDEN_CAMERAS,
+    CONF_REMOVED_CAMERAS,
+    CONF_CAMERA_VIDEO,
+    CONF_CAMERA_VIDEO_SECONDS,
+)
+# 1.8.0: at most this many cameras are reported (the first after sorting).
 MAX_EXPORTED_CAMERAS: Final = 50
-MAX_REMOVED_CAMERAS: Final = 50
 # Kameraposti accepts camera.<object id> of lowercase letters, digits and underscores, 1-200.
 CAMERA_ENTITY_PATTERN: Final = re.compile(r"^camera\.[a-z0-9_]{1,200}$")
 

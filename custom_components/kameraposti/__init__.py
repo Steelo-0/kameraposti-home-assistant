@@ -14,7 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, callback
 
-from .const import CONF_CUSTOMER_ID, CONF_HOST, DEFAULT_HOST, DOMAIN, USERNAME_TEMPLATE
+from .const import CONF_CUSTOMER_ID, CONF_HOST, DEAD_CAMERA_OPTIONS, DEFAULT_HOST, DOMAIN, USERNAME_TEMPLATE
 from .coordinator import KameraportiCoordinator, roster_store
 from .login import entry_login
 
@@ -26,6 +26,11 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.IMAGE, Platform.ALARM_CON
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Kameraposti from a config entry."""
     _async_set_login_unique_id(hass, entry)
+    # 1.10.0 (audit M1): the camera options are gone; drop them so a downgrade cannot hide a camera again.
+    if any(key in entry.options for key in DEAD_CAMERA_OPTIONS):
+        hass.config_entries.async_update_entry(
+            entry, options={k: v for k, v in entry.options.items() if k not in DEAD_CAMERA_OPTIONS}
+        )
 
     coordinator = KameraportiCoordinator(
         hass,

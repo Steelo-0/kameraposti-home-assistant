@@ -18,7 +18,7 @@ nothing is linked by hand (1.6.0 linked one Kameraposti camera at a time).
 1.8.0: nothing to tick -- every camera is reported and chosen in Kameraposti; the
 cameras step only hides cameras from it (and keeps the one video setting). 1.8.1:
 the hidden list starts empty for everyone, never pre-filled from older options.
-Saving reloads the entry.
+1.10.0: no cameras step at all -- the options are the sensors. Saving reloads the entry.
 """
 
 from __future__ import annotations

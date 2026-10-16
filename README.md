@@ -300,8 +300,7 @@ There are no camera settings in Home Assistant (since 1.10.0): an alarm and
 **Ota kuva Home Assistantista** bring a photo and a 10-second video, a motion
 only a photo -- Kameraposti decides. Upgrading to 1.10.0: every camera is
 reported, also one hidden under 1.8.1's "Hide cameras from Kameraposti" (that
-form, with its video switch, is gone; 16.10 a Shelly was hidden there by
-mistake when its video was switched on). Kameraposti keeps using the cameras a
+form, with its video switch, is gone). Kameraposti keeps using the cameras a
 1.6 link pointed at.
 
 How the photo and the video are taken:
@@ -331,8 +330,9 @@ How the photo and the video are taken:
   live video) and `stream` must be set up (it is with `default_config`). The
   video starts a few seconds after the alarm -- unless the camera's stream is
   already running: switch on **Preload stream** in the camera entity's
-  settings in Home Assistant, and the video starts 5 seconds before the alarm
-  (useful when the camera's own motion detection is late). A video larger
+  settings in Home Assistant, and the video also has the last few seconds
+  before the alarm (useful when the camera's own motion detection is late).
+  A camera that cannot stream sends photos only (one warning per run). A video larger
   than Kameraposti's limit (25 MB) is not sent; use a shorter video for a
   high-resolution stream. If the camera cannot stream, or the recording
   fails, the log gets one warning and only the photo is sent.
