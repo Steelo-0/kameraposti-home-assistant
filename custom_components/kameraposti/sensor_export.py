@@ -30,6 +30,10 @@ A reading (temperature, CO2) is sent at most once a minute per entity (the
 latest value follows when the minute is up), so a chatty thermometer or CO2
 meter cannot use up the account's shared message budget and crowd out a leak
 alarm.
+1.8.0: only the first <limit> chosen entities (in the saved order) are sent,
+the limit being the account's plan from Kameraposti's roster (sensor_limit;
+DEFAULT_SENSOR_LIMIT until it is told). The rest are left out with one warning
+naming them; a higher limit later sends them without a restart.
 
 Everything here runs on the Home Assistant event loop; ``publish`` is the
 MQTT client's non-blocking publish and returns False while disconnected.
@@ -65,7 +69,12 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .const import SENSOR_TOPIC_TEMPLATE, SNAPSHOT_MIN_INTERVAL_SECONDS
+from .const import (
+    DEFAULT_SENSOR_LIMIT,
+    MAX_EXPORTED_SENSORS,
+    SENSOR_TOPIC_TEMPLATE,
+    SNAPSHOT_MIN_INTERVAL_SECONDS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -133,6 +142,12 @@ READING_INTERVAL_SECONDS = 60
 RESYNC_INTERVAL = timedelta(minutes=15)
 
 PublishFn = Callable[[str, str, bool], bool]
+
+
+def effective_sensor_limit(sensor_limit: int | None) -> int:
+    """How many chosen sensors are sent: the plan's limit from Kameraposti's roster, else
+    DEFAULT_SENSOR_LIMIT, never more than MAX_EXPORTED_SENSORS (1.8.0)."""
+    return min(sensor_limit if sensor_limit is not None else DEFAULT_SENSOR_LIMIT, MAX_EXPORTED_SENSORS)
 
 
 def kind_for(state: State | None) -> str | None:
@@ -315,11 +330,25 @@ class KameraportiSensorExporter:
         customer_id: int,
         entity_ids: list[str],
         publish: PublishFn,
+        limit: int = DEFAULT_SENSOR_LIMIT,
     ) -> None:
         self._hass = hass
         self._customer_id = customer_id
-        self._entity_ids = list(dict.fromkeys(entity_ids))
+        # Every chosen entity, in the saved order; only the first self._limit are sent.
+        self._entity_ids = list(dict.fromkeys(entity_ids))[:MAX_EXPORTED_SENSORS]
         self._publish = publish
+        # 1.8.0: the plan's limit, whether Kameraposti has told it yet, and the sent entities.
+        self._limit = limit
+        self._limit_told = False
+        self._exported: tuple[str, ...] = tuple(self._entity_ids[:limit])
+        # The left-out entities last named in the log, so each change is named once.
+        self._dropped_logged: tuple[str, ...] = ()
+        if len(self._entity_ids) > limit:
+            _LOGGER.debug(
+                "Kameraposti sending the first %d of %d chosen sensors until Kameraposti tells its limit",
+                limit,
+                len(self._entity_ids),
+            )
         self._unsub: Callable[[], None] | None = None
         self._unsub_resync: Callable[[], None] | None = None
         # entity_id -> (name, kind) last described on the current connection.
@@ -337,10 +366,13 @@ class KameraportiSensorExporter:
 
     @callback
     def _name_for(self, state: State) -> str:
+        # Every chosen entity, not only the sent ones: a sensor's name must not change with the limit.
         return kameraposti_name(self._hass, state, self._entity_ids)
 
     def async_start(self) -> None:
         if self._unsub is None and self._entity_ids:
+            # Every chosen entity is tracked (and filtered when its state changes), so a higher limit
+            # needs no new subscription.
             self._unsub = async_track_state_change_event(
                 self._hass, self._entity_ids, self._handle_state_event
             )
@@ -365,6 +397,56 @@ class KameraportiSensorExporter:
         self._described.clear()
         self._co_sent.clear()
         self._unsent.clear()
+
+    @callback
+    def async_set_limit(self, limit: int) -> None:
+        """1.8.0: the plan's sensor limit from a roster (DEFAULT_SENSOR_LIMIT when it carries none).
+
+        The entities over the limit stop being sent; Kameraposti would not take them, so no removal
+        message is needed. The entities a higher limit lets in go out at once, like those a break left
+        unsent (description, then state), so a leak that started earlier does not wait for the
+        15-minute resend. The left-out ones are named in one warning per change -- not before
+        Kameraposti has told the limit, when the default could only claim a limit the plan may not have.
+        """
+        first = not self._limit_told
+        self._limit_told = True
+        if limit == self._limit and not first:
+            return
+        if limit != self._limit:
+            previous = self._exported
+            self._limit = limit
+            self._exported = tuple(self._entity_ids[:limit])
+            for entity_id in previous:
+                if entity_id not in self._exported:
+                    self._forget(entity_id)
+            added = [entity_id for entity_id in self._exported if entity_id not in previous]
+            if added and self._unsub is not None:
+                self._unsent.update(added)
+                self._publish_unsent()
+        dropped = tuple(self._entity_ids[limit:])
+        if dropped == self._dropped_logged:
+            return
+        self._dropped_logged = dropped
+        if dropped:
+            _LOGGER.warning(
+                "Kameraposti: your Kameraposti plan takes at most %d sensors; not sending %s "
+                "(the last ones chosen under Configure -> Sensors to Kameraposti)",
+                limit,
+                ", ".join(dropped),
+            )
+        else:
+            _LOGGER.info(
+                "Kameraposti: your Kameraposti plan takes all %d chosen sensors", len(self._entity_ids)
+            )
+
+    def _forget(self, entity_id: str) -> None:
+        """An entity the limit leaves out: nothing of it is pending or remembered as sent."""
+        self._described.pop(entity_id, None)
+        self._co_sent.pop(entity_id, None)
+        self._unsent.discard(entity_id)
+        self._reading_sent_at.pop(entity_id, None)
+        if (cancel := self._reading_pending.pop(entity_id, None)) is not None:
+            cancel()
 
     @callback
     def async_on_connected(self) -> None:
@@ -396,7 +478,7 @@ class KameraportiSensorExporter:
         snapshot. A lost description is sent again before the state.
         """
         lost = set(topics)
-        for entity_id in self._entity_ids:
+        for entity_id in self._exported:
             topic = self._topic(entity_id)
             if f"{topic}/config" in lost:
                 self._described.pop(entity_id, None)
@@ -413,10 +495,10 @@ class KameraportiSensorExporter:
 
     @callback
     def publish_snapshot(self) -> None:
-        """Describe every exportable entity and send its current state."""
+        """Describe every exported entity and send its current state."""
         self._described.clear()
         sent = False
-        for entity_id in self._entity_ids:
+        for entity_id in self._exported:
             state = self._hass.states.get(entity_id)
             kind = kind_for(state)
             if state is None or kind is None:
@@ -438,7 +520,7 @@ class KameraportiSensorExporter:
     @callback
     def _publish_unsent(self) -> None:
         """Send what could not be sent during the break: its description if needed, its state."""
-        for entity_id in [entity_id for entity_id in self._entity_ids if entity_id in self._unsent]:
+        for entity_id in [entity_id for entity_id in self._exported if entity_id in self._unsent]:
             self._unsent.discard(entity_id)
             state = self._hass.states.get(entity_id)
             kind = kind_for(state)
@@ -460,7 +542,7 @@ class KameraportiSensorExporter:
         new_state = event.data["new_state"]
         old_state = event.data["old_state"]
         kind = kind_for(new_state)
-        if new_state is None or kind is None:
+        if new_state is None or kind is None or new_state.entity_id not in self._exported:
             return
         if self._described.get(new_state.entity_id) != (self._name_for(new_state), kind):
             if not self._describe(new_state, kind):

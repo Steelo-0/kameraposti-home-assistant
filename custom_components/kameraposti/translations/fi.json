@@ -64,7 +64,7 @@
       },
       "sensors": {
         "title": "Anturit Kamerapostiin",
-        "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm); enintään {max}. Kameraposti luo anturit automaattisesti. Jos poistat anturin vain Kamerapostista, se palaa seuraavassa yhteydessä; poista se myös tästä listasta. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem).",
+        "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm). Kamerapostin pakettisi ottaa enintään {max}. Kameraposti luo anturit automaattisesti. Jos poistat anturin vain Kamerapostista, se palaa seuraavassa yhteydessä; poista se myös tästä listasta. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem).",
         "data": {
           "exported_entities": "Vietävät anturit"
         }
@@ -80,7 +80,7 @@
       }
     },
     "error": {
-      "too_many": "Valitse enintään 200 anturia. Kameraposti lisää niistä pakettisi sallimat, ja sen Anturit-sivu kertoo, jos raja tuli vastaan.",
+      "too_many": "Kamerapostin pakettisi ottaa enintään {max} anturia.",
       "unknown_kind": "Näistä antureista ei tunnistettu, ovatko ne vuoto-, savu-, kaasu-, ovi-, ikkuna-, liike-, lämpö- vai CO₂-antureita: {entities}. Poista ne listasta.",
       "too_many_cameras": "Kameraposti ottaa Home Assistantista enintään 20 kameraa.",
       "invalid_camera": "Valitse vain kameroita (camera.…)."

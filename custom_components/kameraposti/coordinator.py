@@ -24,6 +24,9 @@ Assistant camera linked to the Kameraposti camera in the options.
 1.7.0: camera_export.py describes the cameras ticked under "Cameras to Kameraposti"
 on every connection; Kameraposti makes a camera of each, and its capture requests
 name the Home Assistant camera.
+1.8.0: the roster also tells the account's sensor limit (sensor_limit), kept here
+in memory per entry; the sensor exporter sends only that many of the chosen
+sensors (DEFAULT_SENSOR_LIMIT until a roster tells it).
 
 Not a homeassistant.helpers.update_coordinator.DataUpdateCoordinator --
 this integration is push-based (MQTT), not polling, so the usual
@@ -88,7 +91,7 @@ from .models import (
     parse_roster,
 )
 from .mqtt_client import ConnectionState, KameraportiMqttClient
-from .sensor_export import KameraportiSensorExporter
+from .sensor_export import KameraportiSensorExporter, effective_sensor_limit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -151,6 +154,9 @@ class KameraportiCoordinator:
         self._roster_store = roster_store(hass, entry.entry_id)
         # generated_at of the newest roster applied with removals (None = none yet).
         self._roster_applied_at: datetime | None = None
+        # 1.8.0: the plan's sensor limit from the last applied roster (None = not told, the default
+        # applies). In memory only: the retained roster tells it again right after every connect.
+        self.sensor_limit: int | None = None
 
         self._dedup = EventDedupCache()
         self._client = KameraportiMqttClient(
@@ -168,6 +174,7 @@ class KameraportiCoordinator:
             customer_id=customer_id,
             entity_ids=list(entry.options.get(CONF_EXPORTED_ENTITIES, [])),
             publish=self._client.publish,
+            limit=effective_sensor_limit(None),
         )
         # 1.7.0: the ticked Home Assistant cameras, described to Kameraposti and used for its photos.
         camera_settings = camera_settings_from_options(entry.options)
@@ -387,6 +394,9 @@ class KameraportiCoordinator:
             "newer, applying removals" if newer else "not newer, adding and renaming only",
             sorted(listed),
         )
+        # 1.8.0: every roster that is not older tells the limit; one without it means the default.
+        self.sensor_limit = roster.sensor_limit
+        self._exporter.async_set_limit(effective_sensor_limit(roster.sensor_limit))
         self._roster_camera_ids = set(listed)
         device_registry = dr.async_get(self.hass)
 

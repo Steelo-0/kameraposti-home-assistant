@@ -110,10 +110,14 @@ CAMERA_ENTITY_PATTERN: Final = re.compile(r"^camera\.[a-z0-9_]{1,200}$")
 # kameraposti/<id>/anturit/ prefix (broker ACL); "<name>/config" describes the
 # sensor, "<name>" carries its state in Kameraposti's simple format.
 SENSOR_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/{name}"
-# 1.7.1 (steelo 2026-10-16 "ei anturirajoja"): only a sanity cap. Kameraposti applies the
-# account's own sensor limit (by plan, or none) and lists the sensors it left out on its
-# Sensors page; the old 20 here stopped accounts whose limit is higher.
+# 1.7.1 (steelo 2026-10-16 "ei anturirajoja"): the most this integration ever sends; the old 20
+# here stopped accounts whose limit is higher.
 MAX_EXPORTED_SENSORS: Final = 200
+# 1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): below that, the account's plan
+# decides -- the roster's sensor_limit. Until Kameraposti tells it (or on a server that does not),
+# the first 20 chosen sensors are sent: the old behaviour, which the server's per-account message
+# budget is sized for.
+DEFAULT_SENSOR_LIMIT: Final = 20
 
 # The account's MQTT login on Kameraposti's broker is kp-<customer_id>, and the
 # broker only accepts that login with the same client id (dynsec clientid pin).
@@ -152,8 +156,9 @@ STABLE_CONNECTION_SECONDS: Final = 60
 SHORT_CONNECTION_DROPS_WARN_COUNT: Final = 3
 SHORT_CONNECTION_DROPS_WINDOW_SECONDS: Final = 120
 # 1.5.1: the full sensor snapshot (two messages per exported sensor) goes out at most this often.
-# Kameraposti counts every message against the account's 120 a minute before reading it, so a
-# reconnect storm must not use the budget that leak/smoke/door alarms need.
+# Kameraposti counts every message against the account's per-minute message budget before reading
+# it (120 when this was written; Turva V62 raises the default to 300), so a reconnect storm must not
+# use the budget that leak/smoke/door alarms need.
 SNAPSHOT_MIN_INTERVAL_SECONDS: Final = 60
 
 # How long the config flow's connection test waits for CONNACK+SUBACK

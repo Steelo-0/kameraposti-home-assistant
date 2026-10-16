@@ -12,6 +12,7 @@ Kameraposti drops repeated states itself.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,6 +27,7 @@ from custom_components.kameraposti.const import (
     CONF_CUSTOMER_ID,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
+    DEFAULT_SENSOR_LIMIT,
     DOMAIN,
     MAX_EXPORTED_SENSORS,
 )
@@ -33,6 +35,7 @@ from custom_components.kameraposti.coordinator import KameraportiCoordinator
 from custom_components.kameraposti.mqtt_client import ConnectionState
 from custom_components.kameraposti.sensor_export import (
     KameraportiSensorExporter,
+    effective_sensor_limit,
     event_for,
     kind_for,
     mqtt_name_for,
@@ -522,48 +525,280 @@ async def test_options_flow_selects_the_entities_to_export(hass: HomeAssistant) 
     assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.kellari"]
 
 
-async def test_options_flow_refuses_more_sensors_than_kameraposti_allows(hass: HomeAssistant) -> None:
+async def test_options_flow_refuses_more_sensors_than_the_default_until_kameraposti_tells(
+    hass: HomeAssistant,
+) -> None:
+    """1.8.0: without a limit from Kameraposti (the entry not running, or no roster yet) the default
+    20 applies, and the error names it."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
         version=2,
     )
     entry.add_to_hass(hass)
-    for i in range(MAX_EXPORTED_SENSORS + 1):
+    for i in range(DEFAULT_SENSOR_LIMIT + 1):
         _set(hass, f"binary_sensor.vuoto_{i}", "off", "moisture", f"Vuoto {i}")
 
     result = await _open_sensor_options(hass, entry)
+    assert result["description_placeholders"]["max"] == "20"
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_EXPORTED_ENTITIES: [f"binary_sensor.vuoto_{i}" for i in range(MAX_EXPORTED_SENSORS + 1)]},
+        {CONF_EXPORTED_ENTITIES: [f"binary_sensor.vuoto_{i}" for i in range(DEFAULT_SENSOR_LIMIT + 1)]},
     )
 
     assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {CONF_EXPORTED_ENTITIES: "too_many"}
+    assert result2["description_placeholders"]["max"] == "20"
     assert CONF_EXPORTED_ENTITIES not in entry.options
 
 
-async def test_options_flow_accepts_more_than_twenty_sensors(hass: HomeAssistant) -> None:
-    """1.7.1 (steelo 2026-10-16 "ei anturirajoja"): the account's own limit is Kameraposti's to apply;
-    the old cap of 20 stopped an account allowed more."""
-    assert MAX_EXPORTED_SENSORS == 200
+def _limit_roster(sensor_limit: object = None, *, second: int = 0) -> bytes:
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "generated_at": f"2026-10-16T12:00:{second:02d}+00:00",
+        "cameras": [],
+    }
+    if sensor_limit is not None:
+        payload["sensor_limit"] = sensor_limit
+    return json.dumps(payload).encode()
+
+
+async def _running_entry(hass: HomeAssistant, roster: bytes | None) -> MockConfigEntry:
+    """A set-up entry whose coordinator has received ``roster`` (None = no roster yet)."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
         version=2,
     )
     entry.add_to_hass(hass)
-    selected = [f"binary_sensor.ovi_{i}" for i in range(MAX_EXPORTED_SENSORS)]
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    if roster is not None:
+        hass.data[DOMAIN][entry.entry_id]._handle_message(f"customers/{CUSTOMER_ID}/cameras", roster)
+        await hass.async_block_till_done()
+    return entry
+
+
+@pytest.mark.parametrize(("sensor_limit", "effective"), [(30, 30), (200, 200), (500, 200), (7, 7)])
+async def test_options_flow_takes_as_many_sensors_as_the_plan_from_kameraposti(
+    hass: HomeAssistant, sensor_limit: int, effective: int
+) -> None:
+    """1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): the limit comes from Kameraposti's
+    roster, never more than 200; one more is refused with the plan's own number."""
+    selected = [f"binary_sensor.ovi_{i}" for i in range(effective + 1)]
     for i, entity_id in enumerate(selected):
         _set(hass, entity_id, "off", "door", f"Ovi {i}")
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        entry = await _running_entry(hass, _limit_roster(sensor_limit))
 
-    result = await _open_sensor_options(hass, entry)
-    result2 = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_EXPORTED_ENTITIES: selected}
+        result = await _open_sensor_options(hass, entry)
+        assert result["description_placeholders"]["max"] == str(effective)
+        refused = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: selected}
+        )
+        assert refused["type"] is FlowResultType.FORM
+        assert refused["errors"] == {CONF_EXPORTED_ENTITIES: "too_many"}
+        assert refused["description_placeholders"]["max"] == str(effective)
+
+        saved = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: selected[:effective]}
+        )
+        await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == selected[:effective]
+
+
+async def test_options_flow_falls_back_to_the_default_with_an_invalid_or_missing_limit(
+    hass: HomeAssistant,
+) -> None:
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        entry = await _running_entry(hass, _limit_roster("30"))
+        result = await _open_sensor_options(hass, entry)
+    assert result["description_placeholders"]["max"] == "20"
+
+
+def test_the_effective_limit_is_the_plans_up_to_200() -> None:
+    assert MAX_EXPORTED_SENSORS == 200
+    assert effective_sensor_limit(None) == DEFAULT_SENSOR_LIMIT == 20
+    assert effective_sensor_limit(1) == 1
+    assert effective_sensor_limit(30) == 30
+    assert effective_sensor_limit(200) == 200
+    assert effective_sensor_limit(1000) == 200
+
+
+# -- the plan's sensor limit in the exporter (1.8.0) -------------------------------------
+
+
+def _doors(hass: HomeAssistant, count: int) -> list[str]:
+    entity_ids = [f"binary_sensor.ovi_{i:02d}" for i in range(count)]
+    for i, entity_id in enumerate(entity_ids):
+        _set(hass, entity_id, "off", "door", f"Ovi {i}")
+    return entity_ids
+
+
+def _sent_entities(published: list[tuple[str, str, bool]]) -> list[str]:
+    """The entities whose state was sent, in order (descriptions left out)."""
+    return [topic.split("/")[3] for topic, _, _ in published if not topic.endswith("/config")]
+
+
+def _kameraposti_logs(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == level and r.name.startswith("custom_components.kameraposti")
+    ]
+
+
+async def test_only_the_first_chosen_sensors_up_to_the_limit_are_sent(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Saved order decides; the rest are named in ONE warning per change -- not before Kameraposti has
+    told the limit (the default would claim a limit the plan may not have)."""
+    entity_ids = _doors(hass, 25)
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=entity_ids, publish=publish
     )
+    exporter.async_start()
 
-    assert result2["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_EXPORTED_ENTITIES] == selected
+    with caplog.at_level(logging.INFO):
+        exporter.publish_snapshot()
+        assert _sent_entities(published) == entity_ids[:20]
+        assert _kameraposti_logs(caplog, logging.WARNING) == []
+
+        # A roster without sensor_limit: the default stands, now told -- named once.
+        exporter.async_set_limit(20)
+        exporter.async_set_limit(20)
+        assert _kameraposti_logs(caplog, logging.WARNING) == [
+            "Kameraposti: your Kameraposti plan takes at most 20 sensors; not sending "
+            + ", ".join(entity_ids[20:])
+            + " (the last ones chosen under Configure -> Sensors to Kameraposti)"
+        ]
+        # The left-out ones are not sent when they change either.
+        published.clear()
+        _set(hass, entity_ids[24], "on", "door", "Ovi 24")
+        _set(hass, entity_ids[0], "on", "door", "Ovi 0")
+        await hass.async_block_till_done()
+        assert _sent_entities(published) == [entity_ids[0]]
+    exporter.async_stop()
+
+
+async def test_a_higher_limit_sends_the_left_out_sensors_at_once_without_a_restart(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    entity_ids = _doors(hass, 25)
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=entity_ids, publish=publish
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    exporter.async_set_limit(20)
+    published.clear()
+    caplog.clear()
+
+    with caplog.at_level(logging.INFO):
+        exporter.async_set_limit(30)
+    # Described before their state, right away -- not only at the next 15-minute resend.
+    assert [topic for topic, _, _ in published] == [
+        topic
+        for entity_id in entity_ids[20:]
+        for topic in (f"kameraposti/3/anturit/{entity_id}/config", f"kameraposti/3/anturit/{entity_id}")
+    ]
+    assert _kameraposti_logs(caplog, logging.WARNING) == []
+    assert _kameraposti_logs(caplog, logging.INFO) == [
+        "Kameraposti: your Kameraposti plan takes all 25 chosen sensors"
+    ]
+
+    published.clear()
+    exporter.publish_snapshot()
+    assert _sent_entities(published) == entity_ids
+    published.clear()
+    _set(hass, entity_ids[24], "on", "door", "Ovi 24")
+    await hass.async_block_till_done()
+    assert _sent_entities(published) == [entity_ids[24]]
+    exporter.async_stop()
+
+
+async def test_a_lower_limit_stops_sending_the_extra_sensors_without_removal_messages(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    entity_ids = _doors(hass, 25)
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=entity_ids, publish=publish, limit=30
+    )
+    exporter.async_start()
+    exporter.async_set_limit(30)
+    exporter.publish_snapshot()
+    published.clear()
+
+    with caplog.at_level(logging.WARNING):
+        exporter.async_set_limit(22)
+        exporter.async_set_limit(22)
+    assert published == []
+    assert _kameraposti_logs(caplog, logging.WARNING) == [
+        "Kameraposti: your Kameraposti plan takes at most 22 sensors; not sending "
+        + ", ".join(entity_ids[22:])
+        + " (the last ones chosen under Configure -> Sensors to Kameraposti)"
+    ]
+    exporter.publish_snapshot()
+    assert _sent_entities(published) == entity_ids[:22]
+    published.clear()
+    _set(hass, entity_ids[23], "on", "door", "Ovi 23")
+    await hass.async_block_till_done()
+    assert published == []
+
+    # A different set left out is a change: named again.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        exporter.async_set_limit(24)
+    assert _kameraposti_logs(caplog, logging.WARNING) == [
+        "Kameraposti: your Kameraposti plan takes at most 24 sensors; not sending binary_sensor.ovi_24 "
+        "(the last ones chosen under Configure -> Sensors to Kameraposti)"
+    ]
+    exporter.async_stop()
+
+
+async def test_the_roster_sets_the_limit_and_a_roster_without_it_brings_the_default_back(
+    hass: HomeAssistant,
+) -> None:
+    entity_ids = _doors(hass, 25)
+    coordinator, client = await _connected_coordinator(hass, entity_ids)
+    roster_topic = f"customers/{CUSTOMER_ID}/cameras"
+    assert coordinator.sensor_limit is None
+    states = [c.args for c in client.publish.call_args_list]
+    assert _sent_entities(states) == entity_ids[:20]
+
+    client.publish.reset_mock()
+    coordinator._handle_message(roster_topic, _limit_roster(30, second=1))
+    await hass.async_block_till_done()
+    assert coordinator.sensor_limit == 30
+    states = [c.args for c in client.publish.call_args_list]
+    assert _sent_entities(states) == entity_ids[20:]
+
+    # The retained roster again (a reconnect): nothing more to send.
+    client.publish.reset_mock()
+    coordinator._handle_message(roster_topic, _limit_roster(30, second=1))
+    await hass.async_block_till_done()
+    assert _published_topics(client) == []
+
+    # An older roster changes nothing; a newer one without the field (or with junk) is the default.
+    coordinator._handle_message(roster_topic, _limit_roster(5, second=0))
+    assert coordinator.sensor_limit == 30
+    coordinator._handle_message(roster_topic, _limit_roster(0, second=2))
+    await hass.async_block_till_done()
+    assert coordinator.sensor_limit is None
+    client.publish.reset_mock()
+    _set(hass, entity_ids[24], "on", "door", "Ovi 24")
+    await hass.async_block_till_done()
+    assert _published_topics(client) == []
+    await coordinator.async_stop()
 
 
 async def test_zwave_problem_class_leak_is_exported_as_leak(hass: HomeAssistant) -> None:

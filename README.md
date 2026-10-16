@@ -193,10 +193,9 @@ you remove it (Settings → Devices & services → Generic Camera).
 ## Sensors to Kameraposti
 
 **Settings → Devices & services → Kameraposti → Configure → Sensors to
-Kameraposti** lets you pick
-Home Assistant entities to send to Kameraposti (at most 200; Kameraposti adds as many as your plan
-allows, and its Sensors page lists any it left out). Since 1.4.1 the list shows
-exactly the entities the integration can send:
+Kameraposti** lets you pick Home Assistant entities to send to Kameraposti, as
+many as your Kameraposti plan takes (see [How many sensors](#how-many-sensors-since-180)).
+Since 1.4.1 the list shows exactly the entities the integration can send:
 
 | Home Assistant entity | Kameraposti sensor | Sent |
 |---|---|---|
@@ -234,11 +233,26 @@ Kameraposti comes back on the next connection — remove it from this list
 as well.
 
 Since 1.5.1 this full resend happens at most once a minute: Kameraposti
-counts every message against the account's limit (120 a minute) before
+counts every message against the account's message budget per minute before
 reading it, so a connection that keeps dropping must not crowd out real
 alarms. A sensor whose message could not be sent during the break is still
 sent as soon as the connection is back; the full resend follows when the
 minute is up.
+
+### How many sensors (since 1.8.0)
+
+Your Kameraposti plan decides how many sensors Home Assistant sends:
+Kameraposti tells the number along with your camera list, and the list under
+**Sensors to Kameraposti** takes at most that many (the form says how many).
+Until Kameraposti has told it — for a moment after Home Assistant starts, or
+on a Kameraposti service that does not tell it yet — the number is 20, as in
+earlier versions. It is never more than 200.
+
+If you have chosen more sensors than the plan takes (say, after changing to a
+smaller plan), the first ones in the list are sent and Home Assistant's log
+names the rest once; Kameraposti gets no message about them and keeps what it
+had. When the plan takes more again, they are sent right away, without a
+restart.
 
 ## Security system (arm / disarm)
 

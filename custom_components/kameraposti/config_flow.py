@@ -60,12 +60,11 @@ from .const import (
     DEFAULT_HOST,
     DOMAIN,
     MAX_EXPORTED_CAMERAS,
-    MAX_EXPORTED_SENSORS,
     USERNAME_TEMPLATE,
 )
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .sensor_export import kameraposti_name, kind_for
+from .sensor_export import effective_sensor_limit, kameraposti_name, kind_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -311,7 +310,11 @@ class KameraportiOptionsFlow(OptionsFlow):
     async def async_step_sensors(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Choose the entities exported to Kameraposti as sensors."""
         errors: dict[str, str] = {}
-        placeholders = {"max": str(MAX_EXPORTED_SENSORS), "entities": ""}
+        # 1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): as many as the account's plan
+        # takes -- the limit the running entry's roster told, else the default.
+        coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        limit = effective_sensor_limit(coordinator.sensor_limit if coordinator is not None else None)
+        placeholders = {"max": str(limit), "entities": ""}
         current = list(self.config_entry.options.get(CONF_EXPORTED_ENTITIES, []))
 
         if user_input is not None:
@@ -323,7 +326,7 @@ class KameraportiOptionsFlow(OptionsFlow):
                 for entity_id in selected
                 if (state := self.hass.states.get(entity_id)) is not None and kind_for(state) is None
             ]
-            if len(selected) > MAX_EXPORTED_SENSORS:
+            if len(selected) > limit:
                 errors[CONF_EXPORTED_ENTITIES] = "too_many"
                 current = selected
             elif unknown:
