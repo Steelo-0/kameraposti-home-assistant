@@ -106,8 +106,10 @@ CAMERA_ENTITY_PATTERN: Final = re.compile(r"^camera\.[a-z0-9_]{1,200}$")
 # kameraposti/<id>/anturit/ prefix (broker ACL); "<name>/config" describes the
 # sensor, "<name>" carries its state in Kameraposti's simple format.
 SENSOR_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/{name}"
-# Kameraposti's per-account sensor cap (kameraposti_sensors.max_per_account).
-MAX_EXPORTED_SENSORS: Final = 20
+# 1.7.1 (steelo 2026-10-16 "ei anturirajoja"): only a sanity cap. Kameraposti applies the
+# account's own sensor limit (by plan, or none) and lists the sensors it left out on its
+# Sensors page; the old 20 here stopped accounts whose limit is higher.
+MAX_EXPORTED_SENSORS: Final = 200
 
 # The account's MQTT login on Kameraposti's broker is kp-<customer_id>, and the
 # broker only accepts that login with the same client id (dynsec clientid pin).

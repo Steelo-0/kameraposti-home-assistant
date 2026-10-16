@@ -22,7 +22,13 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.kameraposti.config_flow import exportable_entity_options
-from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
+from custom_components.kameraposti.const import (
+    CONF_CUSTOMER_ID,
+    CONF_EXPORTED_ENTITIES,
+    CONF_HOST,
+    DOMAIN,
+    MAX_EXPORTED_SENSORS,
+)
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
 from custom_components.kameraposti.mqtt_client import ConnectionState
 from custom_components.kameraposti.sensor_export import (
@@ -523,17 +529,41 @@ async def test_options_flow_refuses_more_sensors_than_kameraposti_allows(hass: H
         version=2,
     )
     entry.add_to_hass(hass)
-    for i in range(21):
+    for i in range(MAX_EXPORTED_SENSORS + 1):
         _set(hass, f"binary_sensor.vuoto_{i}", "off", "moisture", f"Vuoto {i}")
 
     result = await _open_sensor_options(hass, entry)
     result2 = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_EXPORTED_ENTITIES: [f"binary_sensor.vuoto_{i}" for i in range(21)]}
+        result["flow_id"],
+        {CONF_EXPORTED_ENTITIES: [f"binary_sensor.vuoto_{i}" for i in range(MAX_EXPORTED_SENSORS + 1)]},
     )
 
     assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {CONF_EXPORTED_ENTITIES: "too_many"}
     assert CONF_EXPORTED_ENTITIES not in entry.options
+
+
+async def test_options_flow_accepts_more_than_twenty_sensors(hass: HomeAssistant) -> None:
+    """1.7.1 (steelo 2026-10-16 "ei anturirajoja"): the account's own limit is Kameraposti's to apply;
+    the old cap of 20 stopped an account allowed more."""
+    assert MAX_EXPORTED_SENSORS == 200
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    selected = [f"binary_sensor.ovi_{i}" for i in range(MAX_EXPORTED_SENSORS)]
+    for i, entity_id in enumerate(selected):
+        _set(hass, entity_id, "off", "door", f"Ovi {i}")
+
+    result = await _open_sensor_options(hass, entry)
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_EXPORTED_ENTITIES: selected}
+    )
+
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == selected
 
 
 async def test_zwave_problem_class_leak_is_exported_as_leak(hass: HomeAssistant) -> None:

@@ -194,7 +194,8 @@ you remove it (Settings → Devices & services → Generic Camera).
 
 **Settings → Devices & services → Kameraposti → Configure → Sensors to
 Kameraposti** lets you pick
-Home Assistant entities to send to Kameraposti (at most 20 per account). Since 1.4.1 the list shows
+Home Assistant entities to send to Kameraposti (at most 200; Kameraposti adds as many as your plan
+allows, and its Sensors page lists any it left out). Since 1.4.1 the list shows
 exactly the entities the integration can send:
 
 | Home Assistant entity | Kameraposti sensor | Sent |

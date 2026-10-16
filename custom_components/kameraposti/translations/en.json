@@ -80,7 +80,7 @@
       }
     },
     "error": {
-      "too_many": "Kameraposti accepts at most 20 sensors per account.",
+      "too_many": "Choose at most 200 sensors. Kameraposti adds as many as your plan allows, and its Sensors page says if the limit was reached.",
       "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list.",
       "too_many_cameras": "Kameraposti accepts at most 20 cameras from Home Assistant.",
       "invalid_camera": "Choose cameras only (camera.…)."

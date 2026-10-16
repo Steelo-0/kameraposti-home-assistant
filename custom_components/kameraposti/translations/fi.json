@@ -80,7 +80,7 @@
       }
     },
     "error": {
-      "too_many": "Kameraposti ottaa enintään 20 anturia tiliä kohden.",
+      "too_many": "Valitse enintään 200 anturia. Kameraposti lisää niistä pakettisi sallimat, ja sen Anturit-sivu kertoo, jos raja tuli vastaan.",
       "unknown_kind": "Näistä antureista ei tunnistettu, ovatko ne vuoto-, savu-, kaasu-, ovi-, ikkuna-, liike-, lämpö- vai CO₂-antureita: {entities}. Poista ne listasta.",
       "too_many_cameras": "Kameraposti ottaa Home Assistantista enintään 20 kameraa.",
       "invalid_camera": "Valitse vain kameroita (camera.…)."
