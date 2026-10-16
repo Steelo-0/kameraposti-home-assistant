@@ -313,6 +313,17 @@ How the photo and the video are taken:
 - **Photo**: a still from the camera (Home Assistant's own camera snapshot,
   waiting at most 10 seconds), sent to Kameraposti right away. The photo is
   always sent before the video.
+- **Frigate cameras** (since 1.9.0): Kameraposti Turva also asks for a photo
+  on every motion of a sensor linked to the camera. For a camera whose Home
+  Assistant device has Frigate's last-detection pictures
+  (`image.<camera>_person`, `image.<camera>_car`, …), a motion or alarm
+  request sends Frigate's newest recognized picture instead of a live still,
+  if Frigate updated it within the last 2 minutes. The request can come a
+  moment before Frigate's picture, so Home Assistant waits up to 6 seconds for
+  it. Motion without a recognition sends no picture; an alarm without one
+  sends the live still, so an alarm always brings a picture. **Ota kuva Home
+  Assistantista** always takes a live still, and so does every request for a
+  camera without Frigate pictures (e.g. a Shelly camera).
 - **Video** (optional): recorded after the photo with Home Assistant's
   `stream` integration, the same way as the `camera.record` action. The
   camera must support streaming (the camera's page in Home Assistant shows
