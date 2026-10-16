@@ -169,6 +169,7 @@ class Harness:
     sent: list[str] = field(default_factory=list)
     # 1.9.0: what each Frigate image entity holds (async_frigate_image is patched to read it).
     frigate: dict[str, bytes | None] = field(default_factory=dict)
+    frigate_image: AsyncMock | None = None
 
     async def send(self, payload: bytes, topic: str | None = None) -> None:
         self.coordinator._handle_message(topic or _topic(), payload)
@@ -264,7 +265,16 @@ def make_harness(
         await hass.async_block_till_done()
         coordinator = hass.data[DOMAIN][entry.entry_id]
         return Harness(
-            hass, entry, coordinator, stream, events, take_photo, camera_stream, capture_dirs, frigate=frigate
+            hass,
+            entry,
+            coordinator,
+            stream,
+            events,
+            take_photo,
+            camera_stream,
+            capture_dirs,
+            frigate=frigate,
+            frigate_image=frigate_image,
         )
 
     yield _make
@@ -1428,6 +1438,130 @@ async def test_each_camera_remembers_its_own_recognition(
 
     assert first.calls.last.request.content == PERSON_JPEG
     assert second.calls.last.request.content == CAR_JPEG
+
+
+@respx.mock
+async def test_a_motion_already_sent_reads_no_image(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory
+) -> None:
+    """The "already sent" check comes before Frigate's image is read."""
+    h = await _frigate_harness(make_harness, freezer)
+    _frigate_updated(h, "person", NOW - timedelta(seconds=1), PERSON_JPEG)
+    _routes(request_id=73)
+    second, _ = _routes(request_id=74)
+
+    await h.send(_frigate_request(73, "motion", NOW - timedelta(seconds=2)))
+    assert h.frigate_image.await_count == 1
+    await h.send(_frigate_request(74, "motion", NOW - timedelta(seconds=2)))
+
+    assert not second.called
+    assert h.frigate_image.await_count == 1
+
+
+# -- one live still per camera a minute for motion (1.9.0) ----------------------------------
+
+
+async def _motion_harness(make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory) -> Harness:
+    freezer.move_to(NOW)
+    h = await make_harness(options={CONF_CAMERA_VIDEO: False})
+    h.hass.states.async_set("camera.talli", "idle")
+    return h
+
+
+def _motion(request_id: int, entity_id: str = ENTITY_ID, reason: str = "motion") -> bytes:
+    return _request(request_id, entity_id=entity_id, reason=reason)
+
+
+@pytest.mark.parametrize(("seconds", "sent"), [(59, False), (60, True)])
+@respx.mock
+async def test_motion_sends_one_live_still_a_minute_per_camera(
+    make_harness: Callable[..., Any],
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+    seconds: int,
+    sent: bool,
+) -> None:
+    """Two PIRs on one camera both ask (Turva limits motion per sensor): one still a minute."""
+    h = await _motion_harness(make_harness, freezer)
+    first, _ = _routes(request_id=80)
+    second, _ = _routes(request_id=81)
+    later, _ = _routes(request_id=82)
+    other_camera, _ = _routes(request_id=83)
+
+    with caplog.at_level(logging.INFO, logger="custom_components.kameraposti"):
+        await h.send(_motion(80))
+        await h.send(_motion(81))
+        await h.send(_motion(83, entity_id="camera.talli"))
+        freezer.tick(timedelta(seconds=seconds))
+        await h.send(_motion(82))
+
+    assert first.called
+    assert not second.called
+    assert other_camera.called
+    assert later.called is sent
+    assert (
+        "Kameraposti capture request_id=81 camera_id=5: a live still from camera.piha went less than 60 s "
+        "ago, no photo (motion)"
+    ) in _info(caplog)
+
+
+@pytest.mark.parametrize("reason", ["alarm", "manual"])
+@respx.mock
+async def test_alarm_and_manual_are_not_limited_and_do_not_count(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory, reason: str
+) -> None:
+    h = await _motion_harness(make_harness, freezer)
+    motion, _ = _routes(request_id=84)
+    first, _ = _routes(request_id=85)
+    second, _ = _routes(request_id=86)
+
+    await h.send(_motion(85, reason=reason))
+    await h.send(_motion(84))
+    await h.send(_motion(86, reason=reason))
+
+    assert first.called
+    assert motion.called
+    assert second.called
+
+
+@pytest.mark.parametrize("failure", ["refused", "no_still"])
+@respx.mock
+async def test_a_motion_still_not_delivered_does_not_count(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory, failure: str
+) -> None:
+    h = await _motion_harness(make_harness, freezer)
+    failed, _ = _routes(request_id=87, photo=403)
+    again, _ = _routes(request_id=88)
+    if failure == "no_still":
+        h.take_photo.side_effect = [HomeAssistantError("Camera is off"), JPEG]
+
+    await h.send(_motion(87))
+    await h.send(_motion(88))
+
+    assert failed.called is (failure == "refused")
+    assert again.called
+
+
+@respx.mock
+async def test_two_motions_handled_together_send_one_live_still(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory
+) -> None:
+    h = await _motion_harness(make_harness, freezer)
+
+    async def _slow_upload(request: httpx.Request) -> httpx.Response:
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return httpx.Response(202)
+
+    one = respx.post(photo_url(89)).mock(side_effect=_slow_upload)
+    other = respx.post(photo_url(90)).mock(side_effect=_slow_upload)
+
+    h.coordinator._handle_message(_topic(), _motion(89))
+    h.coordinator._handle_message(_topic(), _motion(90))
+    await h.hass.async_block_till_done(wait_background_tasks=True)
+
+    assert one.call_count + other.call_count == 1
+    assert h.take_photo.await_count == 1
 
 
 async def test_frigate_images_are_read_from_the_image_integration(hass: HomeAssistant) -> None:

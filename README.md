@@ -325,7 +325,8 @@ How the photo and the video are taken:
   sends the same Frigate picture twice (an alarm does; after a Home Assistant
   restart one may go again). **Ota kuva Home Assistantista** always takes a
   live still, and so does every request for a camera without Frigate pictures
-  (e.g. a Shelly camera).
+  (e.g. a Shelly camera) -- on motion at most one a minute per camera, however
+  many motion sensors are linked to it.
 - A motion never records a video; alarms and **Ota kuva Home Assistantista**
   do, when video is on.
 - **Video** (optional): recorded after the photo with Home Assistant's
