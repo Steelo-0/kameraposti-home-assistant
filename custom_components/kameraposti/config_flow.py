@@ -11,21 +11,21 @@ own customer namespace) before ever saving the entry (section 18) -- a
 malformed/incorrect account never gets silently accepted.
 
 Options (2026-10-05): the Home Assistant entities exported to Kameraposti as
-sensors (sensor_export.py). 1.6.0: a menu -- the sensors, or a Kameraposti
-camera's Home Assistant camera for Kameraposti Turva's photo requests
-(capture.py): one camera at a time, chosen from the account's camera list.
+sensors (sensor_export.py). 1.6.0: a menu -- the sensors, or the cameras.
+1.7.0: the cameras are one list of Home Assistant cameras ticked for Kameraposti
+(camera_export.py) and one video setting; Kameraposti makes a camera of each and
+nothing is linked by hand (1.6.0 linked one Kameraposti camera at a time).
 Saving reloads the entry.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.const import CONF_ENTITY_ID, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -43,21 +43,23 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .capture import CaptureCamera, capture_cameras_from_options
+from .camera_export import camera_settings_from_options, removed_after_save
 from .const import (
     BROKER_HOSTS,
+    CAMERA_ENTITY_PATTERN,
     CAPTURE_VIDEO_SECONDS_DEFAULT,
     CAPTURE_VIDEO_SECONDS_MAX,
     CAPTURE_VIDEO_SECONDS_MIN,
-    CONF_CAPTURE_CAMERAS,
-    CONF_CAPTURE_VIDEO,
-    CONF_CAPTURE_VIDEO_SECONDS,
+    CONF_CAMERA_VIDEO,
+    CONF_CAMERA_VIDEO_SECONDS,
     CONF_CUSTOMER_ID,
+    CONF_EXPORTED_CAMERAS,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
-    DEFAULT_CAMERA_NAME_TEMPLATE,
+    CONF_REMOVED_CAMERAS,
     DEFAULT_HOST,
     DOMAIN,
+    MAX_EXPORTED_CAMERAS,
     MAX_EXPORTED_SENSORS,
     USERNAME_TEMPLATE,
 )
@@ -244,104 +246,54 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-# The options' camera step: which Kameraposti camera to set.
-CONF_CAMERA = "camera"
-
-
-def _camera_label(name: str, link: CaptureCamera | None) -> str:
-    """ "Piha", or with its link "Piha → camera.piha · video 10 s"."""
-    if link is None:
-        return name
-    video = f" · video {link.video_seconds} s" if link.video else ""
-    return f"{name} → {link.entity_id}{video}"
-
-
 class KameraportiOptionsFlow(OptionsFlow):
-    """The entities exported to Kameraposti as sensors; the Home Assistant cameras for its photos."""
-
-    _camera_id: int | None = None
-    _camera_name: str = ""
+    """The entities exported to Kameraposti as sensors, and the Home Assistant cameras (1.7.0)."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """1.6.0: a menu -- the exported sensors, or a camera's link."""
+        """1.6.0: a menu -- the exported sensors, or the cameras."""
         return self.async_show_menu(step_id="init", menu_options=["sensors", "cameras"])
 
-    def _kameraposti_cameras(self) -> dict[int, str]:
-        """{camera_id: name}: the account's cameras (roster), and any camera linked earlier."""
-        cameras: dict[int, str] = {}
-        coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
-        if coordinator is not None:
-            cameras = {camera_id: coordinator.camera_name(camera_id) for camera_id in coordinator.cameras}
-        for camera_id in capture_cameras_from_options(self.config_entry.options):
-            cameras.setdefault(camera_id, DEFAULT_CAMERA_NAME_TEMPLATE.format(camera_id=camera_id))
-        return dict(sorted(cameras.items(), key=lambda item: (item[1].lower(), item[0])))
-
     async def async_step_cameras(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Choose the Kameraposti camera whose Home Assistant camera to set."""
-        cameras = self._kameraposti_cameras()
-        if not cameras:
-            return self.async_abort(reason="no_cameras")
-        if user_input is not None:
-            self._camera_id = int(user_input[CONF_CAMERA])
-            self._camera_name = cameras.get(self._camera_id, str(self._camera_id))
-            return await self.async_step_camera()
+        """1.7.0 (steelo 2026-10-16 "idioottivarma"): tick the Home Assistant cameras for Kameraposti.
 
-        links = capture_cameras_from_options(self.config_entry.options)
-        options = [
-            SelectOptionDict(value=str(camera_id), label=_camera_label(name, links.get(camera_id)))
-            for camera_id, name in cameras.items()
-        ]
+        Kameraposti makes a camera of each and asks only these for photos; nothing is linked by hand.
+        """
+        errors: dict[str, str] = {}
+        previous = camera_settings_from_options(self.config_entry.options)
+        current = list(previous.exported)
+        video = previous.video
+        seconds = previous.video_seconds
+
+        if user_input is not None:
+            selected = list(dict.fromkeys(user_input.get(CONF_EXPORTED_CAMERAS, [])))
+            video = bool(user_input.get(CONF_CAMERA_VIDEO, False))
+            seconds = int(user_input.get(CONF_CAMERA_VIDEO_SECONDS, CAPTURE_VIDEO_SECONDS_DEFAULT))
+            if len(selected) > MAX_EXPORTED_CAMERAS:
+                errors[CONF_EXPORTED_CAMERAS] = "too_many_cameras"
+                current = selected
+            elif any(CAMERA_ENTITY_PATTERN.fullmatch(entity_id) is None for entity_id in selected):
+                errors[CONF_EXPORTED_CAMERAS] = "invalid_camera"
+                current = selected
+            else:
+                return self.async_create_entry(
+                    data={
+                        **self.config_entry.options,
+                        CONF_EXPORTED_CAMERAS: selected,
+                        CONF_REMOVED_CAMERAS: removed_after_save(previous, selected),
+                        CONF_CAMERA_VIDEO: video,
+                        CONF_CAMERA_VIDEO_SECONDS: seconds,
+                    }
+                )
+
         return self.async_show_form(
             step_id="cameras",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_CAMERA): SelectSelector(
-                        SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
-                    )
-                }
-            ),
-        )
-
-    async def async_step_camera(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """The chosen camera's Home Assistant camera (none = unlinked), video and its length."""
-        camera_id = self._camera_id
-        if camera_id is None:
-            return await self.async_step_cameras()
-        key = str(camera_id)
-
-        if user_input is not None:
-            raw = self.config_entry.options.get(CONF_CAPTURE_CAMERAS)
-            links = dict(raw) if isinstance(raw, Mapping) else {}
-            entity_id = user_input.get(CONF_ENTITY_ID)
-            if entity_id:
-                links[key] = {
-                    CONF_ENTITY_ID: entity_id,
-                    CONF_CAPTURE_VIDEO: bool(user_input.get(CONF_CAPTURE_VIDEO, False)),
-                    CONF_CAPTURE_VIDEO_SECONDS: int(
-                        user_input.get(CONF_CAPTURE_VIDEO_SECONDS, CAPTURE_VIDEO_SECONDS_DEFAULT)
+                    vol.Optional(CONF_EXPORTED_CAMERAS, default=current): EntitySelector(
+                        EntitySelectorConfig(domain="camera", multiple=True)
                     ),
-                }
-            else:
-                links.pop(key, None)
-            return self.async_create_entry(data={**self.config_entry.options, CONF_CAPTURE_CAMERAS: links})
-
-        current = capture_cameras_from_options(self.config_entry.options).get(camera_id)
-        return self.async_show_form(
-            step_id="camera",
-            data_schema=vol.Schema(
-                {
-                    # suggested_value, not default: emptying the field unlinks the camera.
-                    vol.Optional(
-                        CONF_ENTITY_ID,
-                        description={"suggested_value": current.entity_id if current else None},
-                    ): EntitySelector(EntitySelectorConfig(domain="camera")),
-                    vol.Required(CONF_CAPTURE_VIDEO, default=current.video if current else False): (
-                        BooleanSelector()
-                    ),
-                    vol.Required(
-                        CONF_CAPTURE_VIDEO_SECONDS,
-                        default=current.video_seconds if current else CAPTURE_VIDEO_SECONDS_DEFAULT,
-                    ): NumberSelector(
+                    vol.Required(CONF_CAMERA_VIDEO, default=video): BooleanSelector(),
+                    vol.Required(CONF_CAMERA_VIDEO_SECONDS, default=seconds): NumberSelector(
                         NumberSelectorConfig(
                             min=CAPTURE_VIDEO_SECONDS_MIN,
                             max=CAPTURE_VIDEO_SECONDS_MAX,
@@ -352,7 +304,8 @@ class KameraportiOptionsFlow(OptionsFlow):
                     ),
                 }
             ),
-            description_placeholders={"camera": self._camera_name},
+            errors=errors,
+            description_placeholders={"max": str(MAX_EXPORTED_CAMERAS)},
         )
 
     async def async_step_sensors(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

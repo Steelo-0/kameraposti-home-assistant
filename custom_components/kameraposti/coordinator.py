@@ -21,6 +21,9 @@ platform.
 1.6.0: Kameraposti Turva's capture requests (customers/<id>/cameras/<camera>/capture)
 go to capture.py, which answers them with a photo (and a video) from the Home
 Assistant camera linked to the Kameraposti camera in the options.
+1.7.0: camera_export.py describes the cameras ticked under "Cameras to Kameraposti"
+on every connection; Kameraposti makes a camera of each, and its capture requests
+name the Home Assistant camera.
 
 Not a homeassistant.helpers.update_coordinator.DataUpdateCoordinator --
 this integration is push-based (MQTT), not polling, so the usual
@@ -46,6 +49,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
+from .camera_export import KameraportiCameraExporter, camera_settings_from_options
 from .capture import KameraportiCaptureHandler, capture_cameras_from_options
 from .const import (
     CAPTURE_TOPIC_PATTERN,
@@ -165,12 +169,20 @@ class KameraportiCoordinator:
             entity_ids=list(entry.options.get(CONF_EXPORTED_ENTITIES, [])),
             publish=self._client.publish,
         )
+        # 1.7.0: the ticked Home Assistant cameras, described to Kameraposti and used for its photos.
+        camera_settings = camera_settings_from_options(entry.options)
+        self._camera_exporter = KameraportiCameraExporter(
+            hass, customer_id=customer_id, settings=camera_settings, publish=self._client.publish
+        )
         self._capture = KameraportiCaptureHandler(
             hass,
             entry,
             host=host,
             customer_id=customer_id,
             cameras=capture_cameras_from_options(entry.options),
+            exported=camera_settings.exported,
+            video=camera_settings.video,
+            video_seconds=camera_settings.video_seconds,
         )
 
     @property
@@ -230,6 +242,7 @@ class KameraportiCoordinator:
         # Before any message can arrive: the retained roster comes right after connecting.
         self._roster_applied_at = await self._async_load_roster_applied_at()
         self._exporter.async_start()
+        self._camera_exporter.async_start()
         await self._client.async_start()
 
     async def async_stop(self) -> None:
@@ -238,6 +251,7 @@ class KameraportiCoordinator:
         1.6.0: then cancels the capture requests in flight (no new one can arrive).
         """
         self._exporter.async_stop()
+        self._camera_exporter.async_stop()
         await self._client.async_stop()
         await self._capture.async_stop()
 
@@ -260,6 +274,7 @@ class KameraportiCoordinator:
             # up the account's message budget); what failed during the break
             # goes out at once.
             self._exporter.async_on_connected()
+            self._camera_exporter.async_on_connected()
 
         if state == ConnectionState.AUTH_FAILURE:
             # Proactively surface Home Assistant's own reauth flow

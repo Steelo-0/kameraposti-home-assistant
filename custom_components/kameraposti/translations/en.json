@@ -59,7 +59,7 @@
         "title": "Kameraposti",
         "menu_options": {
           "sensors": "Sensors to Kameraposti",
-          "cameras": "Photos from Home Assistant cameras"
+          "cameras": "Cameras to Kameraposti"
         }
       },
       "sensors": {
@@ -70,28 +70,20 @@
         }
       },
       "cameras": {
-        "title": "Photos from Home Assistant cameras",
-        "description": "When a sensor linked to a Kameraposti camera alarms, or you press \"Take a photo from Home Assistant\" on the camera's page, Kameraposti asks Home Assistant for a photo (and, if you want, a short video) from the Home Assistant camera linked here. Choose the Kameraposti camera to set.",
+        "title": "Cameras to Kameraposti",
+        "description": "Tick the Home Assistant cameras whose photos you want in Kameraposti (at most {max}). Kameraposti makes a camera of each one automatically, and a Shelly Camera added in Kameraposti shows its photos too. When a sensor linked to the camera alarms, or you press \"Take a photo from Home Assistant\" in Kameraposti, Home Assistant sends a photo (and, if you want, a short video) from the ticked camera. Kameraposti can ask for photos only from the cameras ticked here. A Shelly Camera is usually \"… Stream 0\".",
         "data": {
-          "camera": "Kameraposti camera"
-        }
-      },
-      "camera": {
-        "title": "{camera}",
-        "description": "The Home Assistant camera that takes the photos for {camera}. Leave it empty to unlink. The photo is sent first; a video needs a camera that supports streaming and is recorded after the photo.",
-        "data": {
-          "entity_id": "Home Assistant camera",
-          "video": "Also send a video",
-          "video_seconds": "Video length"
+          "exported_cameras": "Cameras",
+          "camera_video": "Also send a video",
+          "camera_video_seconds": "Video length"
         }
       }
     },
     "error": {
       "too_many": "Kameraposti accepts at most 20 sensors per account.",
-      "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list."
-    },
-    "abort": {
-      "no_cameras": "Kameraposti has not sent its camera list yet. Wait until the integration is connected and try again."
+      "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list.",
+      "too_many_cameras": "Kameraposti accepts at most 20 cameras from Home Assistant.",
+      "invalid_camera": "Choose cameras only (camera.…)."
     }
   },
   "exceptions": {

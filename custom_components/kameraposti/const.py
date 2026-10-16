@@ -85,6 +85,22 @@ CAPTURE_VIDEO_SECONDS_DEFAULT: Final = 10
 CAPTURE_VIDEO_SECONDS_MIN: Final = 5
 CAPTURE_VIDEO_SECONDS_MAX: Final = 30
 
+# 1.7.0 (steelo 2026-10-16 "idioottivarma"): the Home Assistant cameras ticked under "Cameras to
+# Kameraposti". Each is described to Kameraposti under the sensor prefix
+# (kameraposti/<id>/anturit/<name>/config, kind "camera"); Kameraposti creates or links a camera
+# for it, and its capture requests name the entity_id. Kameraposti can ask for photos only from
+# these cameras. docs/kameraposti-turva-ha-kamerat-spec-2026-10-16.md in the steel-cloud repo.
+CONF_EXPORTED_CAMERAS: Final = "exported_cameras"
+# Cameras unticked since: described as removed on every connection, the newest MAX_REMOVED_CAMERAS.
+CONF_REMOVED_CAMERAS: Final = "removed_cameras"
+# One video setting for all ticked cameras (1.6.0 had one per linked camera).
+CONF_CAMERA_VIDEO: Final = "camera_video"
+CONF_CAMERA_VIDEO_SECONDS: Final = "camera_video_seconds"
+MAX_EXPORTED_CAMERAS: Final = 20
+MAX_REMOVED_CAMERAS: Final = 20
+# Kameraposti accepts camera.<object id> of lowercase letters, digits and underscores, 1-200.
+CAMERA_ENTITY_PATTERN: Final = re.compile(r"^camera\.[a-z0-9_]{1,200}$")
+
 # Sensor export (2026-10-05): chosen Home Assistant entities become sensors in
 # Kameraposti. The account login may publish only under its own
 # kameraposti/<id>/anturit/ prefix (broker ACL); "<name>/config" describes the

@@ -260,22 +260,32 @@ hours, and Kameraposti notifies you and your followers (arming still works). Eve
 "Home Assistant". Mode changes made in the Kameraposti app or website show up
 in Home Assistant right away, so automations can react to them too.
 
-## Photos from Home Assistant cameras (since 1.6.0)
+## Cameras to Kameraposti (since 1.7.0; photos since 1.6.0)
 
 Kameraposti Turva can ask Home Assistant for a photo when a sensor linked to
 one of its cameras alarms, or when you press **Ota kuva Home Assistantista**
-(take a photo from Home Assistant) on the camera's page. The photo arrives in
+(take a photo from Home Assistant) in Kameraposti. The photo arrives in
 Kameraposti as one of the camera's own photos: it is attached to the alarm
 (if the alarm has no photo yet), shows among the camera's photos and updates
 its Latest photo. This is for cameras that cannot send
 their photos to Kameraposti themselves (e.g. a Shelly camera, which sends
 only to Shelly's cloud) but are in Home Assistant.
 
-Link the cameras in **Settings → Devices & services → Kameraposti →
-Configure → Photos from Home Assistant cameras**: choose a Kameraposti
-camera, then its Home Assistant `camera` entity, and whether a video is sent
-as well (5–30 seconds, default 10). Leave the entity empty to unlink.
-Kameraposti cameras without a link are ignored.
+Tick the cameras in **Settings → Devices & services → Kameraposti →
+Configure → Cameras to Kameraposti** (at most 20), and choose whether a video
+is sent as well (5–30 seconds, default 10). That is all: Kameraposti makes a
+camera of each ticked one automatically, named after its device, and a Shelly
+Camera added on Kameraposti's Anturit page shows its photos on its own page
+(Kameraposti matches the Shelly's own id to the camera device's MAC address).
+Kameraposti can ask for photos only from the ticked cameras; a request for
+any other camera is refused with a warning in the log. Untick a camera to
+stop: Kameraposti keeps the camera and its photos but no longer asks for new
+ones. A camera removed in Kameraposti is not brought back while it stays
+ticked; untick and tick it again to get a new one.
+
+Upgrading from 1.6: the cameras linked under the old **Photos from Home
+Assistant cameras** count as ticked until you save the new list, and
+Kameraposti keeps using the cameras they were linked to.
 
 - **Photo**: a still from the camera (Home Assistant's own camera snapshot,
   waiting at most 10 seconds), sent to Kameraposti right away. The photo is

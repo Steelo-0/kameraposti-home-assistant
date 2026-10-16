@@ -26,6 +26,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from .const import (
+    CAMERA_ENTITY_PATTERN,
     CAPTURE_MAX_URL_LENGTH,
     CAPTURE_REASON_PATTERN,
     CAPTURE_TOPIC_PATTERN,
@@ -435,6 +436,9 @@ class CaptureRequest:
     photo_expires_at: datetime
     video_url: str = field(repr=False)
     video_expires_at: datetime
+    # 1.7.0: the Home Assistant camera to take it from (one ticked under "Cameras to Kameraposti");
+    # None from a server before Kameraposti Turva V60 (the 1.6.0 link by camera_id then decides).
+    entity_id: str | None = None
 
 
 def parse_capture_request(
@@ -502,7 +506,14 @@ def parse_capture_request(
         data.get("video_expires_at"), "video_expires_at", CaptureRequestRejected
     )
 
+    entity_id = data.get("entity_id")
+    if entity_id is not None and (
+        not isinstance(entity_id, str) or CAMERA_ENTITY_PATTERN.fullmatch(entity_id) is None
+    ):
+        raise CaptureRequestRejected(f"entity_id is not a camera entity id: {entity_id!r}")
+
     return CaptureRequest(
+        entity_id=entity_id,
         request_id=request_id,
         camera_id=topic_camera_id,
         reason=reason,

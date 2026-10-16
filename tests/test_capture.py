@@ -43,12 +43,16 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.kameraposti import capture
 from custom_components.kameraposti.capture import CaptureCamera, capture_cameras_from_options
 from custom_components.kameraposti.const import (
+    CONF_CAMERA_VIDEO,
+    CONF_CAMERA_VIDEO_SECONDS,
     CONF_CAPTURE_CAMERAS,
     CONF_CAPTURE_VIDEO,
     CONF_CAPTURE_VIDEO_SECONDS,
     CONF_CUSTOMER_ID,
+    CONF_EXPORTED_CAMERAS,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
+    CONF_REMOVED_CAMERAS,
     DOMAIN,
 )
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
@@ -206,7 +210,11 @@ def make_harness(
     patchers: list[Any] = []
 
     async def _make(
-        links: dict[str, Any] | None = None, *, streaming: bool = True, host: str | None = "cam.steels.me"
+        links: dict[str, Any] | None = None,
+        *,
+        streaming: bool = True,
+        host: str | None = "cam.steels.me",
+        options: dict[str, Any] | None = None,
     ) -> Harness:
         events: list[str] = []
         stream = FakeStream(hass, events) if streaming else None
@@ -229,7 +237,10 @@ def make_harness(
         entry = MockConfigEntry(
             domain=DOMAIN,
             data=data,
-            options={CONF_CAPTURE_CAMERAS: {str(CAMERA_ID): _link()} if links is None else links},
+            options={
+                CONF_CAPTURE_CAMERAS: {str(CAMERA_ID): _link()} if links is None else links,
+                **(options or {}),
+            },
             version=2,
         )
         entry.add_to_hass(hass)
@@ -328,7 +339,9 @@ async def test_photo_then_video_are_posted_with_their_types(make_harness: Callab
 
 
 @respx.mock
-async def test_unlinked_camera_is_ignored(make_harness: Callable[..., Any]) -> None:
+async def test_unlinked_camera_is_ignored(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture
+) -> None:
     h = await make_harness()
     photo_route, video_route = _routes(request_id=18)
 
@@ -337,6 +350,66 @@ async def test_unlinked_camera_is_ignored(make_harness: Callable[..., Any]) -> N
     h.take_photo.assert_not_awaited()
     assert not photo_route.called
     assert not video_route.called
+    assert _warnings(caplog) == [
+        "Kameraposti capture request_id=18 camera_id=6: no Home Assistant camera for it "
+        "(tick one under Configure -> Cameras to Kameraposti), no photo"
+    ]
+
+
+@respx.mock
+async def test_a_request_naming_a_ticked_camera_takes_the_photo_from_it(
+    make_harness: Callable[..., Any],
+) -> None:
+    """1.7.0: Kameraposti names the Home Assistant camera; no link by camera id is needed."""
+    h = await make_harness(
+        {},
+        options={
+            CONF_EXPORTED_CAMERAS: ["camera.talli"],
+            CONF_CAMERA_VIDEO: False,
+            CONF_CAMERA_VIDEO_SECONDS: 10,
+        },
+    )
+    photo_route, video_route = _routes(request_id=19)
+
+    await h.send(_request(request_id=19, camera_id=8, entity_id="camera.talli"), topic=_topic(8))
+
+    h.take_photo.assert_awaited_once_with(h.hass, "camera.talli")
+    assert photo_route.called
+    assert not video_route.called
+
+
+@respx.mock
+async def test_a_camera_that_is_not_ticked_is_never_used_and_says_so(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    """16.10 a request ignored at debug level left steelo guessing; Kameraposti can never pick an
+    unticked camera, and an old server's link counts only while its camera is ticked."""
+    h = await make_harness(options={CONF_EXPORTED_CAMERAS: ["camera.talli"]})
+    _routes(request_id=20)
+    _routes(request_id=21)
+
+    with caplog.at_level(logging.WARNING):
+        await h.send(_request(request_id=20, entity_id="camera.olohuone"))
+        # No entity_id (server before V60): camera 5 is linked to camera.piha, which is not ticked.
+        await h.send(_request(request_id=21))
+
+    h.take_photo.assert_not_awaited()
+    assert _warnings(caplog) == [
+        "Kameraposti capture request_id=20 camera_id=5: camera.olohuone is not ticked under "
+        "Configure -> Cameras to Kameraposti, no photo",
+        "Kameraposti capture request_id=21 camera_id=5: camera.piha is not ticked under "
+        "Configure -> Cameras to Kameraposti, no photo",
+    ]
+    _assert_no_url_logged(caplog)
+
+
+@respx.mock
+async def test_an_invalid_entity_id_rejects_the_request(make_harness: Callable[..., Any]) -> None:
+    h = await make_harness()
+    for request_id, entity_id in ((22, "sensor.ovi"), (23, 7), (24, "camera.Piha")):
+        _routes(request_id=request_id)
+        await h.send(_request(request_id=request_id, entity_id=entity_id))
+    h.take_photo.assert_not_awaited()
 
 
 @respx.mock
@@ -983,9 +1056,14 @@ async def _open_camera_options(hass: HomeAssistant, entry: MockConfigEntry) -> d
     return await hass.config_entries.options.async_configure(menu["flow_id"], {"next_step_id": "cameras"})
 
 
-async def test_options_flow_links_a_kameraposti_camera_to_a_home_assistant_camera(
+def _defaults(form: dict) -> dict[str, object]:
+    return {key.schema: key.default() for key in form["data_schema"].schema}
+
+
+async def test_options_flow_ticks_cameras_with_one_video_setting(
     hass: HomeAssistant, mock_mqtt_client: None
 ) -> None:
+    """1.7.0 (steelo 2026-10-16 "idioottivarma"): one list of cameras, nothing linked by hand."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
@@ -994,86 +1072,81 @@ async def test_options_flow_links_a_kameraposti_camera_to_a_home_assistant_camer
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    hass.data[DOMAIN][entry.entry_id]._handle_message(
-        f"customers/{CUSTOMER_ID}/cameras", _roster((CAMERA_ID, "Piha"), (6, "Talli"))
-    )
-    await hass.async_block_till_done()
 
-    choose = await _open_camera_options(hass, entry)
-    assert choose["type"] is FlowResultType.FORM
-    assert choose["step_id"] == "cameras"
-    [field_] = choose["data_schema"].schema
-    offered = {
-        option["value"]: option["label"] for option in choose["data_schema"].schema[field_].config["options"]
-    }
-    assert offered == {"5": "Piha", "6": "Talli"}
-
-    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
+    form = await _open_camera_options(hass, entry)
     assert form["type"] is FlowResultType.FORM
-    assert form["step_id"] == "camera"
-    assert form["description_placeholders"] == {"camera": "Piha"}
+    assert form["step_id"] == "cameras"
+    assert form["description_placeholders"] == {"max": "20"}
+    assert _defaults(form) == {
+        CONF_EXPORTED_CAMERAS: [],
+        CONF_CAMERA_VIDEO: False,
+        CONF_CAMERA_VIDEO_SECONDS: 10,
+    }
+
     saved = await hass.config_entries.options.async_configure(
-        form["flow_id"], {CONF_ENTITY_ID: ENTITY_ID, CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: 15}
+        form["flow_id"],
+        {
+            CONF_EXPORTED_CAMERAS: [ENTITY_ID, "camera.talli"],
+            CONF_CAMERA_VIDEO: True,
+            CONF_CAMERA_VIDEO_SECONDS: 15,
+        },
     )
     await hass.async_block_till_done()
 
     assert saved["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options == {
         CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"],
-        CONF_CAPTURE_CAMERAS: {
-            "5": {CONF_ENTITY_ID: ENTITY_ID, CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: 15}
-        },
+        CONF_EXPORTED_CAMERAS: [ENTITY_ID, "camera.talli"],
+        CONF_REMOVED_CAMERAS: [],
+        CONF_CAMERA_VIDEO: True,
+        CONF_CAMERA_VIDEO_SECONDS: 15,
     }
-    # Saving reloads the entry, and the new coordinator answers for the linked camera.
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    assert coordinator._capture._cameras == {5: CaptureCamera(ENTITY_ID, video=True, video_seconds=15)}
+    # Saving reloads the entry: the new coordinator takes photos from the ticked cameras.
+    handler = hass.data[DOMAIN][entry.entry_id]._capture
+    assert handler._exported == frozenset({ENTITY_ID, "camera.talli"})
+    assert (handler._video, handler._video_seconds) == (True, 15)
 
-    # The list shows the link (once the reloaded entry has the retained roster again);
-    # the form opens with it.
-    coordinator._handle_message(
-        f"customers/{CUSTOMER_ID}/cameras", _roster((CAMERA_ID, "Piha"), (6, "Talli"))
-    )
-    await hass.async_block_till_done()
-    choose = await _open_camera_options(hass, entry)
-    [field_] = choose["data_schema"].schema
-    labels = [option["label"] for option in choose["data_schema"].schema[field_].config["options"]]
-    assert labels == [f"Piha → {ENTITY_ID} · video 15 s", "Talli"]
-    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
-    defaults = {str(key): key.description for key in form["data_schema"].schema}
-    assert defaults[CONF_ENTITY_ID] == {"suggested_value": ENTITY_ID}
-    assert {
-        key.schema: key.default() for key in form["data_schema"].schema if key.schema != CONF_ENTITY_ID
-    } == {
-        CONF_CAPTURE_VIDEO: True,
-        CONF_CAPTURE_VIDEO_SECONDS: 15,
+    form = await _open_camera_options(hass, entry)
+    assert _defaults(form) == {
+        CONF_EXPORTED_CAMERAS: [ENTITY_ID, "camera.talli"],
+        CONF_CAMERA_VIDEO: True,
+        CONF_CAMERA_VIDEO_SECONDS: 15,
     }
 
 
-async def test_options_flow_unlinks_a_camera_and_keeps_the_others(
+async def test_options_flow_opens_with_the_1_6_links_and_remembers_unticked_cameras(
     hass: HomeAssistant, mock_mqtt_client: None
 ) -> None:
+    links = {"5": _link(), "6": _link("camera.talli", video=False)}
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
-        options={CONF_CAPTURE_CAMERAS: {"5": _link(), "6": _link("camera.talli", video=False)}},
+        options={CONF_CAPTURE_CAMERAS: links},
     )
     entry.add_to_hass(hass)
-    # Not set up: the cameras linked earlier are still listed (no roster to show).
-    choose = await _open_camera_options(hass, entry)
-    [field_] = choose["data_schema"].schema
-    offered = [option["value"] for option in choose["data_schema"].schema[field_].config["options"]]
-    assert offered == ["5", "6"]
 
-    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
-    saved = await hass.config_entries.options.async_configure(
-        form["flow_id"], {CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: 10}
+    form = await _open_camera_options(hass, entry)
+    assert _defaults(form) == {
+        CONF_EXPORTED_CAMERAS: [ENTITY_ID, "camera.talli"],
+        CONF_CAMERA_VIDEO: True,
+        CONF_CAMERA_VIDEO_SECONDS: 12,
+    }
+    await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_EXPORTED_CAMERAS: ["camera.talli"], CONF_CAMERA_VIDEO: False}
     )
+    # The 1.6.0 links stay (an older server's requests and the Kameraposti camera ids use them).
+    assert entry.options[CONF_CAPTURE_CAMERAS] == links
+    assert entry.options[CONF_EXPORTED_CAMERAS] == ["camera.talli"]
+    assert entry.options[CONF_REMOVED_CAMERAS] == [ENTITY_ID]
 
-    assert saved["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_CAPTURE_CAMERAS] == {"6": _link("camera.talli", video=False)}
+    form = await _open_camera_options(hass, entry)
+    await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_EXPORTED_CAMERAS: [ENTITY_ID, "camera.talli"], CONF_CAMERA_VIDEO: False}
+    )
+    assert entry.options[CONF_REMOVED_CAMERAS] == []
 
 
-async def test_options_flow_refuses_a_video_length_out_of_range(
+async def test_options_flow_refuses_a_video_length_out_of_range_and_too_many_cameras(
     hass: HomeAssistant, mock_mqtt_client: None
 ) -> None:
     entry = MockConfigEntry(
@@ -1082,29 +1155,26 @@ async def test_options_flow_refuses_a_video_length_out_of_range(
         options={CONF_CAPTURE_CAMERAS: {"5": _link()}},
     )
     entry.add_to_hass(hass)
-    choose = await _open_camera_options(hass, entry)
-    form = await hass.config_entries.options.async_configure(choose["flow_id"], {"camera": "5"})
+    form = await _open_camera_options(hass, entry)
 
     for seconds in (4, 31):
         with pytest.raises(Exception):  # noqa: B017 - the selector's own vol.Invalid / InvalidData
             await hass.config_entries.options.async_configure(
                 form["flow_id"],
-                {CONF_ENTITY_ID: ENTITY_ID, CONF_CAPTURE_VIDEO: True, CONF_CAPTURE_VIDEO_SECONDS: seconds},
+                {
+                    CONF_EXPORTED_CAMERAS: [ENTITY_ID],
+                    CONF_CAMERA_VIDEO: True,
+                    CONF_CAMERA_VIDEO_SECONDS: seconds,
+                },
             )
-    assert entry.options[CONF_CAPTURE_CAMERAS] == {"5": _link()}
-
-
-async def test_options_flow_without_cameras_says_so(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_CUSTOMER_ID: CUSTOMER_ID, CONF_USERNAME: "kp-3", CONF_PASSWORD: "secret"},
+    many = [f"camera.c{i}" for i in range(21)]
+    result = await hass.config_entries.options.async_configure(
+        form["flow_id"],
+        {CONF_EXPORTED_CAMERAS: many, CONF_CAMERA_VIDEO: False, CONF_CAMERA_VIDEO_SECONDS: 10},
     )
-    entry.add_to_hass(hass)
-
-    result = await _open_camera_options(hass, entry)
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "no_cameras"
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_EXPORTED_CAMERAS: "too_many_cameras"}
+    assert entry.options == {CONF_CAPTURE_CAMERAS: {"5": _link()}}
 
 
 async def test_saving_the_sensors_keeps_the_camera_links(hass: HomeAssistant) -> None:

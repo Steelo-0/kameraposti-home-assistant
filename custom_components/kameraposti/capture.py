@@ -3,8 +3,11 @@
 Kameraposti Turva asks for a photo when a sensor linked to one of its cameras
 alarms, or when the user presses "Ota kuva Home Assistantista" on the camera's
 page: it publishes a capture request (customers/<id>/cameras/<camera>/capture,
-QoS 1, not retained) with two signed, expiring upload URLs. For a Kameraposti
-camera linked to a Home Assistant camera in the options, this module
+QoS 1, not retained) with two signed, expiring upload URLs. 1.7.0: the request
+names the Home Assistant camera (entity_id), which must be one the user ticked
+under "Cameras to Kameraposti" (camera_export.py); a request from an older server
+names none, and the 1.6.0 option linking its Kameraposti camera decides (its Home
+Assistant camera must be ticked too). For that camera this module
 
 1. takes a still with camera.async_get_image (10 s) and POSTs it to photo_url
    as image/jpeg;
@@ -45,7 +48,7 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -281,13 +284,21 @@ class KameraportiCaptureHandler:
         host: str,
         customer_id: int,
         cameras: Mapping[int, CaptureCamera],
+        exported: Collection[str],
+        video: bool,
+        video_seconds: int,
     ) -> None:
         self._hass = hass
         self._entry = entry
         # The service the entry connects to: the only host the upload links may point at.
         self._host = host
         self._customer_id = customer_id
+        # 1.6.0 links {camera_id: camera}: only for requests that name no entity_id.
         self._cameras = dict(cameras)
+        # 1.7.0: the ticked cameras -- the only ones a photo is ever taken from -- and their video.
+        self._exported = frozenset(exported)
+        self._video = video
+        self._video_seconds = video_seconds
         self._dedup = EventDedupCache()
         self._tasks: set[asyncio.Task[None]] = set()
         # One recording at a time per Home Assistant camera: a stream records to one file.
@@ -306,14 +317,20 @@ class KameraportiCaptureHandler:
         except CaptureRequestRejected as err:
             _LOGGER.debug("Ignoring invalid Kameraposti capture request on %s: %s", topic, err)
             return
-        camera = self._cameras.get(request.camera_id)
-        if camera is None:
-            _LOGGER.debug(
-                "Kameraposti capture request_id=%s camera_id=%s: no Home Assistant camera linked, ignored",
+        entity_id = self._entity_for(request)
+        if entity_id is None or entity_id not in self._exported:
+            # 1.7.0: a warning, not debug -- 16.10 a request ignored at debug level left the user
+            # guessing why no photo came.
+            _LOGGER.warning(
+                "Kameraposti capture request_id=%s camera_id=%s: %s, no photo",
                 request.request_id,
                 request.camera_id,
+                f"{entity_id} is not ticked under Configure -> Cameras to Kameraposti"
+                if entity_id is not None
+                else "no Home Assistant camera for it (tick one under Configure -> Cameras to Kameraposti)",
             )
             return
+        camera = CaptureCamera(entity_id=entity_id, video=self._video, video_seconds=self._video_seconds)
         if self._dedup.seen(str(request.request_id)):
             _LOGGER.debug("Kameraposti capture request_id=%s: duplicate, ignored", request.request_id)
             return
@@ -333,6 +350,13 @@ class KameraportiCaptureHandler:
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _entity_for(self, request: CaptureRequest) -> str | None:
+        """The camera the request names, or (server before V60) the one its camera is linked to in 1.6.0."""
+        if request.entity_id is not None:
+            return request.entity_id
+        linked = self._cameras.get(request.camera_id)
+        return linked.entity_id if linked is not None else None
 
     async def async_stop(self) -> None:
         """Ignore new requests, cancel those in flight and wait (bounded) for their clean-up."""
