@@ -1211,6 +1211,14 @@ async def test_a_request_before_frigates_image_waits_for_it(
     h.coordinator._handle_message(_topic(), _frigate_request(48, "motion", NOW))
     await h.hass.async_block_till_done()
     assert not photo_route.called
+    # Home Assistant refreshes an image entity's access token now and then: no new image, keep waiting.
+    h.hass.states.async_set(
+        "image.kamera1_person", (NOW - timedelta(seconds=30)).isoformat(), {"access_token": "uusi"}
+    )
+    # Let the capture task run as far as it would (an upload takes a few turns of the loop).
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert not photo_route.called
 
     freezer.tick(timedelta(seconds=2))
     _frigate_updated(h, "car", dt_util.utcnow(), CAR_JPEG)
