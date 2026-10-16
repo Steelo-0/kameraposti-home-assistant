@@ -27,7 +27,9 @@ sensor turns on, possibly before Frigate's image: when the newest image is older
 than requested_at, the capture waits up to FRIGATE_WAIT_SECONDS for one of them to
 update. Without a fresh recognition a motion request sends no photo, and an alarm
 the live still (an alarm always brings a picture). A camera without Frigate images,
-and a "manual" request, always send the live still, as before.
+and a "manual" request, always send the live still, as before. A motion request
+never records a video, and never sends the same Frigate picture twice for a camera
+(an alarm always sends it).
 
 Both URLs must point at the service the entry connects to (its host, default
 port, no userinfo), or the request is refused. The photo always goes first;
@@ -369,6 +371,9 @@ class KameraportiCaptureHandler:
         self._tasks: set[asyncio.Task[None]] = set()
         # One recording at a time per Home Assistant camera: a stream records to one file.
         self._record_locks: dict[str, asyncio.Lock] = {}
+        # 1.9.0: camera entity_id -> update time of the Frigate picture last delivered for it, so motion
+        # does not send the same recognition again. In memory: after a restart it may go once more.
+        self._frigate_sent: dict[str, datetime] = {}
         self._stopping = False
 
     @callback
@@ -441,7 +446,14 @@ class KameraportiCaptureHandler:
             await self._async_photo(request, camera)
             # Also after a cancel that the camera's own code swallowed (async_get_image does).
             if camera.video and not self._stopping:
-                await self._async_video(request, camera)
+                if request.reason == "motion":
+                    # 1.9.0: Turva wants no video of a motion (its video link has already expired);
+                    # trying it only put a "link expired" warning in the log on every motion.
+                    _LOGGER.debug(
+                        "Kameraposti capture request_id=%s: no video for motion", request.request_id
+                    )
+                else:
+                    await self._async_video(request, camera)
         except Exception as err:  # noqa: BLE001 - never its message: it can carry a signed URL
             _LOGGER.warning(
                 "Kameraposti capture request_id=%s camera_id=%s failed: %s",
@@ -457,10 +469,28 @@ class KameraportiCaptureHandler:
         if request.reason in FRIGATE_REASONS and (images := frigate_images(self._hass, camera.entity_id)):
             frigate = await self._async_frigate_photo(request, images)
             if frigate is not None:
-                image_id, content = frigate
+                image_id, updated, content = frigate
+                previous = self._frigate_sent.get(camera.entity_id)
+                if request.reason == "motion" and previous == updated:
+                    _LOGGER.info(
+                        "Kameraposti capture request_id=%s camera_id=%s: Frigate detection already sent "
+                        "(%s), no photo (motion)",
+                        request.request_id,
+                        request.camera_id,
+                        image_id,
+                    )
+                    return
+                # Marked before the upload, so a second motion request handled meanwhile (two sensors
+                # of one camera) does not send it too; undone if it is not delivered after all.
+                self._frigate_sent[camera.entity_id] = updated
                 outcome = await self._async_upload(
                     request, "photo", request.photo_url, request.photo_expires_at, content, "image/jpeg"
                 )
+                if outcome != _DELIVERED and self._frigate_sent.get(camera.entity_id) == updated:
+                    if previous is None:
+                        self._frigate_sent.pop(camera.entity_id, None)
+                    else:
+                        self._frigate_sent[camera.entity_id] = previous
                 self._log_outcome(request, camera, "photo", outcome, source=image_id)
                 return
             if request.reason != "alarm":
@@ -492,8 +522,9 @@ class KameraportiCaptureHandler:
 
     async def _async_frigate_photo(
         self, request: CaptureRequest, images: list[str]
-    ) -> tuple[str, bytes] | None:
-        """Frigate's newest recognized picture of the camera, if fresh and a JPEG (1.9.0).
+    ) -> tuple[str, datetime, bytes] | None:
+        """Frigate's newest recognized picture of the camera, if fresh and a JPEG (1.9.0): the image
+        entity, its update time and the JPEG.
 
         Turva sends the request as soon as the sensor turns on, possibly before Frigate updates its
         image: then wait (up to FRIGATE_WAIT_SECONDS) for one of the camera's images to update.
@@ -532,7 +563,7 @@ class KameraportiCaptureHandler:
                 "no image" if not content else "no JPEG image",
             )
             return None
-        return image_id, content
+        return image_id, updated, content
 
     async def _async_wait_for_frigate(self, request: CaptureRequest, images: list[str]) -> None:
         """Until one of the images is updated at or after requested_at, at most FRIGATE_WAIT_SECONDS.

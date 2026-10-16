@@ -321,9 +321,13 @@ How the photo and the video are taken:
   if Frigate updated it within the last 2 minutes. The request can come a
   moment before Frigate's picture, so Home Assistant waits up to 6 seconds for
   it. Motion without a recognition sends no picture; an alarm without one
-  sends the live still, so an alarm always brings a picture. **Ota kuva Home
-  Assistantista** always takes a live still, and so does every request for a
-  camera without Frigate pictures (e.g. a Shelly camera).
+  sends the live still, so an alarm always brings a picture. A motion never
+  sends the same Frigate picture twice (an alarm does; after a Home Assistant
+  restart one may go again). **Ota kuva Home Assistantista** always takes a
+  live still, and so does every request for a camera without Frigate pictures
+  (e.g. a Shelly camera).
+- A motion never records a video; alarms and **Ota kuva Home Assistantista**
+  do, when video is on.
 - **Video** (optional): recorded after the photo with Home Assistant's
   `stream` integration, the same way as the `camera.record` action. The
   camera must support streaming (the camera's page in Home Assistant shows

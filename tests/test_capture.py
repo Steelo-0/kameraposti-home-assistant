@@ -1281,6 +1281,155 @@ async def test_unload_cancels_a_capture_waiting_for_frigate(
     assert not h.entry._background_tasks
 
 
+@pytest.mark.parametrize(("reason", "video"), [("motion", False), ("alarm", True), ("manual", True)])
+@respx.mock
+async def test_motion_never_records_a_video(
+    make_harness: Callable[..., Any], caplog: pytest.LogCaptureFixture, reason: str, video: bool
+) -> None:
+    """Turva's video link for a motion has already expired: no recording, and no "link expired"
+    warning on every motion. Alarm and manual keep their video."""
+    h = await make_harness()
+    photo_route, video_route = _routes(request_id=60)
+    overrides: dict[str, object] = {"reason": reason}
+    if reason == "motion":
+        overrides["video_expires_at"] = (dt_util.utcnow() - timedelta(seconds=1)).isoformat()
+
+    await h.send(_request(60, **overrides))
+
+    assert photo_route.called
+    assert video_route.called is video
+    assert len(h.stream.records) == (1 if video else 0)
+    assert h.camera_stream.await_count == (1 if video else 0)
+    assert _warnings(caplog) == []
+
+
+@respx.mock
+async def test_motion_sends_one_frigate_recognition_once(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two motions with no new recognition in between send the picture once; a new one is sent."""
+    h = await _frigate_harness(make_harness, freezer)
+    _frigate_updated(h, "person", NOW - timedelta(seconds=1), PERSON_JPEG)
+    first, _ = _routes(request_id=61)
+    second, _ = _routes(request_id=62)
+    third, _ = _routes(request_id=63)
+
+    with caplog.at_level(logging.INFO, logger="custom_components.kameraposti"):
+        await h.send(_frigate_request(61, "motion", NOW - timedelta(seconds=2)))
+        await h.send(_frigate_request(62, "motion", NOW - timedelta(seconds=2)))
+        _frigate_updated(h, "car", NOW, CAR_JPEG)
+        await h.send(_frigate_request(63, "motion", NOW - timedelta(seconds=2)))
+
+    assert first.calls.last.request.content == PERSON_JPEG
+    assert not second.called
+    assert third.calls.last.request.content == CAR_JPEG
+    assert (
+        "Kameraposti capture request_id=62 camera_id=5: Frigate detection already sent "
+        "(image.kamera1_person), no photo (motion)"
+    ) in _info(caplog)
+    h.take_photo.assert_not_awaited()
+
+
+@respx.mock
+async def test_an_alarm_sends_a_recognition_already_sent(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory
+) -> None:
+    h = await _frigate_harness(make_harness, freezer)
+    _frigate_updated(h, "person", NOW - timedelta(seconds=1), PERSON_JPEG)
+    motion, _ = _routes(request_id=64)
+    alarm, _ = _routes(request_id=65)
+    after, _ = _routes(request_id=66)
+
+    await h.send(_frigate_request(64, "motion", NOW - timedelta(seconds=2)))
+    await h.send(_frigate_request(65, "alarm", NOW - timedelta(seconds=2)))
+    await h.send(_frigate_request(66, "motion", NOW - timedelta(seconds=2)))
+
+    assert motion.calls.last.request.content == PERSON_JPEG
+    assert alarm.calls.last.request.content == PERSON_JPEG
+    assert not after.called
+
+
+@pytest.mark.parametrize("refusal", [403, 500])
+@respx.mock
+async def test_a_recognition_not_delivered_is_tried_again_on_the_next_motion(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory, refusal: int
+) -> None:
+    h = await _frigate_harness(make_harness, freezer)
+    _frigate_updated(h, "person", NOW - timedelta(seconds=1), PERSON_JPEG)
+    failed, _ = _routes(request_id=67, photo=refusal)
+    again, _ = _routes(request_id=68)
+
+    await h.send(_frigate_request(67, "motion", NOW - timedelta(seconds=2)))
+    await h.send(_frigate_request(68, "motion", NOW - timedelta(seconds=2)))
+
+    assert failed.called
+    assert again.calls.last.request.content == PERSON_JPEG
+
+
+@respx.mock
+async def test_two_motions_waiting_for_the_same_recognition_send_it_once(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory
+) -> None:
+    """Two sensors linked to one camera turn on together: both requests wait for Frigate's picture."""
+    h = await _frigate_harness(make_harness, freezer)
+    _frigate_updated(h, "person", NOW - timedelta(seconds=30), PERSON_JPEG)
+
+    async def _slow_upload(request: httpx.Request) -> httpx.Response:
+        # An upload takes a while: the other request runs meanwhile.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return httpx.Response(202)
+
+    one = respx.post(photo_url(69)).mock(side_effect=_slow_upload)
+    other = respx.post(photo_url(70)).mock(side_effect=_slow_upload)
+
+    h.coordinator._handle_message(_topic(), _frigate_request(69, "motion", NOW))
+    h.coordinator._handle_message(_topic(), _frigate_request(70, "motion", NOW))
+    await h.hass.async_block_till_done()
+    freezer.tick(timedelta(seconds=1))
+    _frigate_updated(h, "car", dt_util.utcnow(), CAR_JPEG)
+    await h.hass.async_block_till_done(wait_background_tasks=True)
+
+    assert one.call_count + other.call_count == 1
+    assert [route.calls.last.request.content for route in (one, other) if route.called] == [CAR_JPEG]
+
+
+@respx.mock
+async def test_each_camera_remembers_its_own_recognition(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory
+) -> None:
+    """The same update time on another camera's Frigate picture is another picture."""
+    h = await _frigate_harness(make_harness, freezer)
+    _frigate_updated(h, "person", NOW - timedelta(seconds=1), PERSON_JPEG)
+    config_entry = MockConfigEntry(domain="frigate")
+    config_entry.add_to_hass(h.hass)
+    device = dr.async_get(h.hass).async_get_or_create(
+        config_entry_id=config_entry.entry_id, identifiers={("frigate", "kamera2")}, name="Kamera2"
+    )
+    for domain, object_id in (("camera", "kamera2"), ("image", "kamera2_person")):
+        er.async_get(h.hass).async_get_or_create(
+            domain, "frigate", object_id, suggested_object_id=object_id, device_id=device.id
+        )
+    h.hass.states.async_set("camera.kamera2", "idle")
+    h.frigate["image.kamera2_person"] = CAR_JPEG
+    h.hass.states.async_set("image.kamera2_person", (NOW - timedelta(seconds=1)).isoformat())
+    first, _ = _routes(request_id=71)
+    second, _ = _routes(request_id=72)
+
+    await h.send(_frigate_request(71, "motion", NOW - timedelta(seconds=2)))
+    await h.send(
+        _request(
+            72,
+            entity_id="camera.kamera2",
+            reason="motion",
+            requested_at=(NOW - timedelta(seconds=2)).isoformat(),
+        )
+    )
+
+    assert first.calls.last.request.content == PERSON_JPEG
+    assert second.calls.last.request.content == CAR_JPEG
+
+
 async def test_frigate_images_are_read_from_the_image_integration(hass: HomeAssistant) -> None:
     """ImageEntity.async_image through the image integration's EntityComponent (hass.data["image"])."""
     entity = SimpleNamespace(async_image=AsyncMock(return_value=PERSON_JPEG))
