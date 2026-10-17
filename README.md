@@ -324,6 +324,19 @@ How the photo and the video are taken:
   many motion sensors are linked to it.
 - A motion never records a video; alarms and **Ota kuva Home Assistantista**
   do.
+- **Frigate's detections** (since 1.11.0): every new object Frigate detects
+  (its own MQTT event `frigate/events`, type `new` -- the same events
+  Frigate-Notify reads) is a motion of that camera in Kameraposti, with
+  nothing to tick. Kameraposti gets a sensor `binary_sensor.<camera>_frigate`
+  ("<camera> Frigate") and links it to the camera `camera.<camera>` by its
+  name; the motion brings Frigate's picture of the detection, and an alarm
+  when armed. Home Assistant's MQTT integration must be on the broker Frigate
+  publishes to (Frigate's integration needs that anyway); the topic prefix is
+  read from Frigate's integration. A parked car (stationary) is no detection,
+  and several objects within 5 seconds on one camera are one motion. This
+  replaces ticking Frigate's binary sensors: a sensor that stays on (a parked
+  car, a tree in the wind) never changes, so it never told Kameraposti
+  anything.
 - **Video**: 10 seconds, recorded after the photo with Home Assistant's
   `stream` integration, the same way as the `camera.record` action. The
   camera must support streaming (the camera's page in Home Assistant shows

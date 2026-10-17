@@ -82,6 +82,7 @@ from .const import (
     SIGNAL_SECURITY,
 )
 from .dedup import EventDedupCache
+from .frigate_events import KameraportiFrigateDetections
 from .models import (
     CameraRoster,
     Detection,
@@ -185,6 +186,11 @@ class KameraportiCoordinator:
         self._camera_exporter = KameraportiCameraExporter(
             hass, customer_id=customer_id, settings=camera_settings, publish=self._client.publish
         )
+        # 1.11.0: each new Frigate detection is a motion of its camera in Kameraposti.
+        self._frigate = KameraportiFrigateDetections(
+            hass, customer_id=customer_id, publish=self._client.publish
+        )
+        self._frigate_task: asyncio.Task[None] | None = None
         self._capture = KameraportiCaptureHandler(
             hass,
             entry,
@@ -255,6 +261,10 @@ class KameraportiCoordinator:
         self._exporter.async_start()
         self._camera_exporter.async_start()
         await self._client.async_start()
+        # In the background: Home Assistant's MQTT may still be starting.
+        self._frigate_task = self.hass.async_create_background_task(
+            self._frigate.async_start(), "kameraposti_frigate_detections"
+        )
 
     async def async_stop(self) -> None:
         """Disconnect the MQTT client and stop any pending reconnect. Idempotent.
@@ -263,6 +273,10 @@ class KameraportiCoordinator:
         """
         self._exporter.async_stop()
         self._camera_exporter.async_stop()
+        if self._frigate_task is not None:
+            self._frigate_task.cancel()
+            self._frigate_task = None
+        self._frigate.async_stop()
         await self._client.async_stop()
         await self._capture.async_stop()
 
@@ -286,6 +300,7 @@ class KameraportiCoordinator:
             # goes out at once.
             self._exporter.async_on_connected()
             self._camera_exporter.async_on_connected()
+            self._frigate.async_on_connected()
 
         if state == ConnectionState.AUTH_FAILURE:
             # Proactively surface Home Assistant's own reauth flow
