@@ -1053,9 +1053,12 @@ def _info(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 
 def _frigate_camera(hass: HomeAssistant) -> MockConfigEntry:
-    """camera.kamera1 as the Frigate integration (set up with FRIGATE_URL) registers it."""
+    """camera.kamera1 as the Frigate integration (set up with FRIGATE_URL, loaded: its API client in
+    hass.data, Frigate's unauthenticated port) registers it."""
     config_entry = MockConfigEntry(domain="frigate", data={"url": FRIGATE_URL})
     config_entry.add_to_hass(hass)
+    api = SimpleNamespace(get_auth_headers=AsyncMock(return_value={}), validate_ssl=True)
+    hass.data.setdefault("frigate", {})[config_entry.entry_id] = {"client": api}
     er.async_get(hass).async_get_or_create(
         "camera",
         "frigate",
@@ -1262,10 +1265,8 @@ async def test_the_picture_is_fetched_logged_in_as_the_frigate_integration(
 ) -> None:
     """Frigate's authenticated port: the Frigate integration's API client gives the login."""
     h = await _detection_harness(make_harness, freezer)
-    api = SimpleNamespace(
-        get_auth_headers=AsyncMock(return_value={"Authorization": "Bearer frigate-jwt"}), validate_ssl=True
-    )
-    h.hass.data.setdefault("frigate", {})[h.frigate_entry.entry_id] = {"client": api}
+    api = h.hass.data["frigate"][h.frigate_entry.entry_id]["client"]
+    api.get_auth_headers.return_value = {"Authorization": "Bearer frigate-jwt"}
     _detected(h, "logged-in")
     snapshot = _snapshot("logged-in")
     photo_route, _ = _routes(request_id=69)
@@ -1285,6 +1286,66 @@ async def test_the_picture_is_fetched_logged_in_as_the_frigate_integration(
     assert _warnings(caplog)[-1].endswith(
         "Frigate gave no picture of its detection: Frigate login failed: RuntimeError"
     )
+
+
+@respx.mock
+async def test_a_frigate_integration_not_loaded_is_not_asked(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Audit 1.11.1 L: an entry without the Frigate integration's client (not loaded) gets no request."""
+    h = await _detection_harness(make_harness, freezer)
+    del h.hass.data["frigate"][h.frigate_entry.entry_id]
+    _detected(h, "unloaded")
+    snapshot = _snapshot("unloaded")
+    photo_route, video_route = _routes(request_id=73)
+
+    await h.send(_frigate_request(73, "alarm"))
+
+    assert not snapshot.called
+    assert not photo_route.called
+    assert video_route.called
+    assert _warnings(caplog)[-1].endswith(
+        "Frigate gave no picture of its detection: the Frigate integration is not set up"
+    )
+
+
+@pytest.mark.parametrize(
+    ("seconds", "answered_before", "warned"), [(15, False, True), (61, False, False), (15, True, False)]
+)
+@respx.mock
+async def test_a_late_request_for_a_detection_is_warned_with_its_age(
+    make_harness: Callable[..., Any],
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+    seconds: int,
+    answered_before: bool,
+    warned: bool,
+) -> None:
+    """Audit 1.11.1 M: a request more than 10 s after a detection not yet answered (Kameraposti's queue,
+    a reconnect) sends nothing but says so as a warning, not as the quiet "no Frigate detection"."""
+    h = await _detection_harness(make_harness, freezer)
+    _detected(h, "late")
+    _snapshot("late")
+    _routes(request_id=74)
+    photo_route, video_route = _routes(request_id=75)
+    if answered_before:
+        await h.send(_frigate_request(74, "alarm"))
+    freezer.tick(timedelta(seconds=seconds))
+
+    with caplog.at_level(logging.INFO, logger="custom_components.kameraposti"):
+        await h.send(_frigate_request(75, "alarm"))
+
+    assert not photo_route.called
+    assert not video_route.called
+    late = (
+        f"Kameraposti capture request_id=75 camera_id=5: Frigate's detection late on camera.kamera1 was "
+        f"{seconds} s before the request, more than 10 s: no photo or video (alarm)"
+    )
+    assert (late in _warnings(caplog)) is warned
+    assert (
+        "Kameraposti capture request_id=75 camera_id=5: no Frigate detection on camera.kamera1, "
+        "no photo or video (alarm)" in _info(caplog)
+    ) is not warned
 
 
 @respx.mock

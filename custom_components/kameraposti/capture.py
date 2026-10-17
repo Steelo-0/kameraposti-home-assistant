@@ -112,6 +112,9 @@ STALE_FILE_SECONDS = 600
 # request for it follows within a second or two.
 FRIGATE_REASONS = frozenset({"motion", "alarm"})
 DETECTION_BEFORE_SECONDS = 10
+# Audit 1.11.1 M: a detection not answered yet and at most this old, but older than the window, means
+# its request came late (a queue, a reconnect): warned, with its age, instead of the quiet "no detection".
+LATE_DETECTION_WARNING_SECONDS = 60
 # At most one live still per camera this often for motion: Turva limits motion per sensor, and two
 # PIRs on one camera would otherwise bring two stills a minute.
 MOTION_LIVE_MIN_SECONDS = 60
@@ -498,6 +501,26 @@ class KameraportiCaptureHandler:
         since = received - timedelta(seconds=DETECTION_BEFORE_SECONDS)
         detection = self._detections.latest(camera.entity_id, since) if self._detections is not None else None
         if detection is None:
+            last = self._detections.latest(camera.entity_id) if self._detections is not None else None
+            age = (received - last.at).total_seconds() if last is not None else None
+            if (
+                last is not None
+                and age is not None
+                and age <= LATE_DETECTION_WARNING_SECONDS
+                and self._detection_sent.get(camera.entity_id) != last.event_id
+            ):
+                _LOGGER.warning(
+                    "Kameraposti capture request_id=%s camera_id=%s: Frigate's detection %s on %s was "
+                    "%.0f s before the request, more than %d s: no photo or video (%s)",
+                    request.request_id,
+                    request.camera_id,
+                    last.event_id,
+                    camera.entity_id,
+                    age,
+                    DETECTION_BEFORE_SECONDS,
+                    request.reason,
+                )
+                return False
             _LOGGER.info(
                 "Kameraposti capture request_id=%s camera_id=%s: no Frigate detection on %s, "
                 "no photo or video (%s)",

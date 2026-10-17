@@ -81,9 +81,12 @@ async def async_detection_snapshot(hass: HomeAssistant, event_id: str) -> tuple[
             continue
         entry_data = frigate_data.get(entry.entry_id) if isinstance(frigate_data, dict) else None
         api = entry_data.get("client") if isinstance(entry_data, dict) else None
+        if api is None:
+            # Audit 1.11.1 L: an entry the Frigate integration has not loaded (no client) is not asked.
+            continue
         try:
             async with asyncio.timeout(SNAPSHOT_TIMEOUT_SECONDS):
-                # An older Frigate integration has no login: no headers.
+                # A Frigate integration before its login support has no get_auth_headers: no headers.
                 headers = await api.get_auth_headers() if hasattr(api, "get_auth_headers") else {}
                 response = await get_async_client(hass, verify_ssl=getattr(api, "validate_ssl", True)).get(
                     f"{url.rstrip('/')}/api/events/{quote(event_id, safe='')}/snapshot.jpg",
@@ -163,10 +166,12 @@ class KameraportiFrigateDetections:
         self._latest: dict[str, FrigateDetection] = {}
 
     @callback
-    def latest(self, entity_id: str, since: datetime) -> FrigateDetection | None:
+    def latest(self, entity_id: str, since: datetime | None = None) -> FrigateDetection | None:
         """The camera's latest detection if it was heard at or after `since` (Home Assistant's clock)."""
         detection = self._latest.get(entity_id)
-        return detection if detection is not None and detection.at >= since else None
+        if detection is None or (since is not None and detection.at < since):
+            return None
+        return detection
 
     async def async_start(self) -> None:
         """Subscribe to Frigate's events, if Home Assistant has MQTT (Frigate's integration needs it)."""

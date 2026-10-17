@@ -316,7 +316,10 @@ How the photo and the video are taken:
   then, for an alarm, the video. Without such a detection nothing is sent: no
   photo, no video, never an older picture, never a live still. One detection
   is answered once (another sensor of the camera alarming right after gets
-  nothing). **Ota kuva Home Assistantista** takes a live still from any
+  nothing). Frigate keeps the picture of a detection that has already ended
+  only with `snapshots: enabled: true` for the camera in Frigate's config, so
+  switch that on (without it a fast car may bring a video but no photo).
+  **Ota kuva Home Assistantista** takes a live still from any
   camera, and every request for a camera not of Frigate (e.g. a Shelly
   camera) does too -- on motion at most one a minute per camera, however many
   motion sensors are linked to it.
