@@ -200,6 +200,7 @@ class KameraportiCoordinator:
             exported=partial(exported_cameras, hass, camera_settings),
             video=camera_settings.video,
             video_seconds=camera_settings.video_seconds,
+            detections=self._frigate,
         )
 
     @property

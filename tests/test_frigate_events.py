@@ -14,6 +14,7 @@ from freezegun.api import FrozenDateTimeFactory
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_mqtt_message
 from pytest_homeassistant_custom_component.typing import MqttMockHAClient
 
@@ -270,3 +271,34 @@ async def test_the_coordinator_reads_frigate_and_describes_again_after_a_reconne
     frigate = [c.args[0] for c in client.publish.call_args_list if "_frigate" in c.args[0]]
     base = f"kameraposti/{CUSTOMER_ID}/anturit/binary_sensor.etupiha_frigate"
     assert frigate == [f"{base}/config", base, f"{base}/config", base]
+
+
+async def test_each_detection_is_remembered_before_kameraposti_hears_of_it(
+    hass: HomeAssistant, mqtt_mock: MqttMockHAClient, freezer: FrozenDateTimeFactory
+) -> None:
+    """1.11.1: the capture request a detection's motion brings must find it (capture.py), also a newer
+    detection within the 5 s in which no motion is sent."""
+    broker = _Broker()
+    detections = await _started(hass, broker)
+    at_publish: list[str | None] = []
+
+    def publish(topic: str, payload: str, retain: bool) -> bool:
+        if not topic.endswith("/config"):
+            latest = detections.latest("camera.etupiha", dt_util.utcnow())
+            at_publish.append(latest.event_id if latest is not None else None)
+        return broker.publish(topic, payload, retain)
+
+    detections._publish = publish
+    start = dt_util.utcnow()
+    async_fire_mqtt_message(hass, "frigate/events", _event("first", label="car"))
+    await hass.async_block_till_done()
+    freezer.tick(timedelta(seconds=2))
+    async_fire_mqtt_message(hass, "frigate/events", _event("second"))
+    await hass.async_block_till_done()
+
+    assert at_publish == ["first"]
+    latest = detections.latest("camera.etupiha", start)
+    assert (latest.event_id, latest.label) == ("second", "person")
+    assert detections.latest("camera.etupiha", dt_util.utcnow() + timedelta(seconds=1)) is None
+    assert detections.latest("camera.muu", start) is None
+    detections.async_stop()

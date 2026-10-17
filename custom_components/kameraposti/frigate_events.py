@@ -11,19 +11,30 @@ picture of the detection, capture.py) and, armed, the alarm.
 Nothing to set or tick. A Frigate binary sensor that stays on (a parked car, a tree in the wind)
 never changes, so the sensor export never told Kameraposti anything from such a camera; a new
 detection still is one.
+
+1.11.1 (steelo 2026-10-17 "frigatelta tulee tunnistus jonka pitää laukaista video"): this is the only
+way anything of Frigate reaches Kameraposti. Frigate's own binary sensors (pixel motion, occupancy)
+are not sent (sensor_export.frigate_own_sensor), and a Frigate camera sends a photo and video only for
+a detection heard here (capture.py).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from urllib.parse import quote
 
+import httpx
 from homeassistant.components import mqtt
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
@@ -41,6 +52,60 @@ MIN_INTERVAL_SECONDS = 5
 _SEEN_EVENTS = 500
 _MAX_NAME_LENGTH = 60
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+SNAPSHOT_TIMEOUT_SECONDS = 10
+_JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+@dataclass(frozen=True)
+class FrigateDetection:
+    """1.11.1: a camera's latest new detection -- its picture is fetched from Frigate by its id."""
+
+    event_id: str
+    label: str
+    at: datetime
+
+
+async def async_detection_snapshot(hass: HomeAssistant, event_id: str) -> tuple[bytes | None, str]:
+    """1.11.1 (steelo 2026-10-17 "heti kun tunnistus tapahtuu"): Frigate's own picture of this
+    detection -- api/events/<id>/snapshot.jpg, the picture the Frigate integration's own snapshot view
+    serves, there also while the object is still in view -- from each Frigate server the Frigate
+    integration is set up with, logged in as that integration is (its API client's auth headers).
+    (the JPEG, "") or (None, why not)."""
+    why_not = "the Frigate integration is not set up"
+    frigate_data = hass.data.get("frigate")
+    for entry in hass.config_entries.async_entries("frigate"):
+        url = entry.data.get("url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            continue
+        entry_data = frigate_data.get(entry.entry_id) if isinstance(frigate_data, dict) else None
+        api = entry_data.get("client") if isinstance(entry_data, dict) else None
+        try:
+            async with asyncio.timeout(SNAPSHOT_TIMEOUT_SECONDS):
+                # An older Frigate integration has no login: no headers.
+                headers = await api.get_auth_headers() if hasattr(api, "get_auth_headers") else {}
+                response = await get_async_client(hass, verify_ssl=getattr(api, "validate_ssl", True)).get(
+                    f"{url.rstrip('/')}/api/events/{quote(event_id, safe='')}/snapshot.jpg",
+                    params={"bbox": "0"},
+                    headers=headers,
+                )
+        except (httpx.HTTPError, TimeoutError) as err:
+            why_not = type(err).__name__
+            continue
+        except Exception as err:  # noqa: BLE001 -- the Frigate integration's login may raise anything
+            why_not = f"Frigate login failed: {type(err).__name__}"
+            continue
+        if response.status_code == 200 and response.content.startswith(_JPEG_MAGIC):
+            return response.content, ""
+        why_not = f"HTTP {response.status_code}" if response.status_code != 200 else "no JPEG"
+    return None, why_not
+
+
+def is_frigate_camera(hass: HomeAssistant, entity_id: str) -> bool:
+    """A camera of Frigate's integration (its detections are heard through Frigate's events)."""
+    entry = er.async_get(hass).async_get(entity_id)
+    return entry is not None and entry.platform == "frigate"
 
 
 def sensor_entity_id(camera_object_id: str) -> str:
@@ -94,6 +159,14 @@ class KameraportiFrigateDetections:
         self._last_sent: dict[str, float] = {}
         # Sensors described on the current connection (Kameraposti makes the sensor from the description).
         self._described: set[str] = set()
+        # 1.11.1: camera entity_id -> its latest new detection (capture.py answers only it).
+        self._latest: dict[str, FrigateDetection] = {}
+
+    @callback
+    def latest(self, entity_id: str, since: datetime) -> FrigateDetection | None:
+        """The camera's latest detection if it was heard at or after `since` (Home Assistant's clock)."""
+        detection = self._latest.get(entity_id)
+        return detection if detection is not None and detection.at >= since else None
 
     async def async_start(self) -> None:
         """Subscribe to Frigate's events, if Home Assistant has MQTT (Frigate's integration needs it)."""
@@ -142,11 +215,15 @@ class KameraportiFrigateDetections:
         self._seen[event_id] = None
         if len(self._seen) > _SEEN_EVENTS:
             self._seen.popitem(last=False)
-        now = dt_util.utcnow().timestamp()
+        object_id, name = self._camera(camera)
+        # 1.11.1: every new detection is the camera's latest, for its photo (also within the 5 s below);
+        # remembered before Kameraposti hears of it, so its capture request always finds it.
+        heard = FrigateDetection(event_id, label, dt_util.utcnow())
+        self._latest[f"camera.{object_id}"] = heard
+        now = heard.at.timestamp()
         last = self._last_sent.get(camera)
         if last is not None and now - last < MIN_INTERVAL_SECONDS:
             return
-        object_id, name = self._camera(camera)
         entity_id = sensor_entity_id(object_id)
         topic = SENSOR_TOPIC_TEMPLATE.format(customer_id=self._customer_id, name=mqtt_name_for(entity_id))
         if entity_id not in self._described:

@@ -19,21 +19,19 @@ decides (its Home Assistant camera must be reported too). For that camera this m
    camera.record service: camera.async_create_stream() and
    stream.async_record() -- and POSTs the MP4 to video_url as video/mp4.
 
-1.9.0 (steelo 2026-10-16 "otetaan frigatesta last recognize pic"): Turva V63 asks
-for a photo on every motion of a sensor linked to the camera (reason "motion"), and
-a live still on each would be noise. For a "motion" or "alarm" request, a camera
-whose device has Frigate's last-detection image entities (image.<camera>_<object>,
-platform frigate) sends the newest of those instead -- if it was updated within
-FRIGATE_DETECTION_MAX_AGE_SECONDS and is a JPEG. The request comes as soon as the
-sensor turns on, possibly before Frigate's image: when the newest image is older
-than requested_at, the capture waits up to FRIGATE_WAIT_SECONDS for one of them to
-update. Without a fresh recognition a motion request sends no photo, and an alarm
-the live still (an alarm always brings a picture). A camera without Frigate images,
-and a "manual" request, always send the live still, as before. A motion request
-never records a video, and never sends the same Frigate picture twice for a camera
-(an alarm always sends it); a camera without Frigate images sends at most one live
-still per MOTION_LIVE_MIN_SECONDS for motion (several motion sensors on one camera
-each ask).
+1.11.1 (steelo 2026-10-17 "frigatelta tulee tunnistus jonka pitää laukaista video", "ei vanhaa vaan
+heti kun tunnistus tapahtuu"): on a Frigate camera (platform frigate) only Frigate's detection brings
+anything. A "motion" or "alarm" request is answered only when Frigate detected something on that camera
+at most DETECTION_BEFORE_SECONDS before the request reached Home Assistant (frigate_events.py hears it
+and sends it to Kameraposti, whose request follows within a second or two): the photo is Frigate's own
+picture of that detection, fetched from Frigate by its id, then the video as for any camera. Without
+such a detection -- or when its picture already went for an earlier request -- nothing is sent: no
+photo, no video, never an older picture, never a live still. (1.9.0-1.11.0 sent Frigate's newest
+last-detection image up to 120 s old, and an alarm without one the live still: 17.10 Frigate's pixel
+motion sensors brought a live still with every alarm while nothing happened.)
+Any other camera, and a "manual" request (the user's own "Ota kuva"), take the live still as before. A
+motion request never records a video; a camera other than Frigate's sends at most one live still per
+MOTION_LIVE_MIN_SECONDS for motion (several motion sensors on one camera each ask).
 
 Both URLs must point at the service the entry connects to (its host, default
 port, no userinfo), or the request is refused. The photo always goes first;
@@ -69,17 +67,15 @@ import secrets
 import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ENTITY_ID
-from homeassistant.core import Event, EventStateChangedData, HassJob, HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.util import dt as dt_util
 
@@ -92,6 +88,7 @@ from .const import (
     CONF_CAPTURE_VIDEO_SECONDS,
 )
 from .dedup import EventDedupCache
+from .frigate_events import KameraportiFrigateDetections, async_detection_snapshot, is_frigate_camera
 from .models import CaptureRequest, CaptureRequestRejected, parse_capture_request
 
 _LOGGER = logging.getLogger(__name__)
@@ -110,12 +107,11 @@ CAPTURE_DIR_NAME = ".kameraposti_capture"
 FILE_PREFIX = "capture-"
 # A recording older than this in the capture folder is a leftover of an interrupted run.
 STALE_FILE_SECONDS = 600
-# 1.9.0 (steelo 2026-10-16 "otetaan frigatesta last recognize pic"): the reasons that send Frigate's
-# last recognized picture instead of a live still, how recent it must be, and how long a request
-# waits for Frigate to update it when the request came first.
+# 1.11.1: the reasons a Frigate camera answers only with Frigate's detection ("manual" takes the live
+# still), and how long before the request reached Home Assistant that detection may be: Kameraposti's
+# request for it follows within a second or two.
 FRIGATE_REASONS = frozenset({"motion", "alarm"})
-FRIGATE_DETECTION_MAX_AGE_SECONDS = 120
-FRIGATE_WAIT_SECONDS = 6
+DETECTION_BEFORE_SECONDS = 10
 # At most one live still per camera this often for motion: Turva limits motion per sensor, and two
 # PIRs on one camera would otherwise bring two stills a minute.
 MOTION_LIVE_MIN_SECONDS = 60
@@ -193,48 +189,6 @@ async def async_camera_stream(hass: HomeAssistant, entity_id: str) -> Any | None
     """The camera's stream, as the camera.record service gets it. None = no streaming."""
     _require_camera_integration(hass)
     return await _camera_entity(hass, entity_id).async_create_stream()
-
-
-def frigate_images(hass: HomeAssistant, entity_id: str) -> list[str]:
-    """Frigate's last-detection image entities on the camera's own device (1.9.0), e.g.
-    image.kamera1_person and image.kamera1_car for camera.kamera1. Empty for any other camera."""
-    registry = er.async_get(hass)
-    entry = registry.async_get(entity_id)
-    if entry is None or entry.device_id is None:
-        return []
-    return [
-        other.entity_id
-        for other in er.async_entries_for_device(registry, entry.device_id)
-        if other.domain == "image" and other.platform == "frigate"
-    ]
-
-
-def newest_frigate_image(hass: HomeAssistant, image_ids: list[str]) -> tuple[str, datetime] | None:
-    """The image entity updated last and when: an image entity's state is its last update time."""
-    newest: tuple[str, datetime] | None = None
-    for image_id in image_ids:
-        state = hass.states.get(image_id)
-        updated = dt_util.parse_datetime(state.state) if state is not None else None
-        if updated is None or updated.tzinfo is None:
-            continue
-        if newest is None or updated > newest[1]:
-            newest = (image_id, updated)
-    return newest
-
-
-async def async_frigate_image(hass: HomeAssistant, entity_id: str) -> bytes | None:
-    """The image entity's current image (ImageEntity.async_image), None when there is none.
-
-    Looked up in the image integration's EntityComponent (hass.data["image"]), as its own
-    image proxy view does; no import, so a Home Assistant without the image integration just
-    has no Frigate image.
-    """
-    component = hass.data.get("image")
-    entity = component.get_entity(entity_id) if component is not None else None
-    if entity is None:
-        return None
-    async with asyncio.timeout(PHOTO_TIMEOUT_SECONDS):
-        return await entity.async_image()
 
 
 def _camera_entity(hass: HomeAssistant, entity_id: str) -> Any:
@@ -370,8 +324,14 @@ class KameraportiCaptureHandler:
         exported: Callable[[], Collection[str]],
         video: bool,
         video_seconds: int,
+        detections: KameraportiFrigateDetections | None = None,
     ) -> None:
         self._hass = hass
+        # 1.11.1: Frigate's detections as they happen: a Frigate camera answers only them.
+        self._detections = detections
+        # camera entity_id -> the detection whose picture went last: one detection, one photo and video.
+        # In memory: after a restart Frigate's next detection is new anyway.
+        self._detection_sent: dict[str, str] = {}
         self._entry = entry
         # The service the entry connects to: the only host the upload links may point at.
         self._host = host
@@ -389,9 +349,6 @@ class KameraportiCaptureHandler:
         self._tasks: set[asyncio.Task[None]] = set()
         # One recording at a time per Home Assistant camera: a stream records to one file.
         self._record_locks: dict[str, asyncio.Lock] = {}
-        # 1.9.0: camera entity_id -> update time of the Frigate picture last delivered for it, so motion
-        # does not send the same recognition again. In memory: after a restart it may go once more.
-        self._frigate_sent: dict[str, datetime] = {}
         # camera entity_id -> when a live still for motion was last sent (MOTION_LIVE_MIN_SECONDS).
         self._motion_live_sent: dict[str, datetime] = {}
         self._stopping = False
@@ -401,6 +358,8 @@ class KameraportiCaptureHandler:
         """Runs on the event loop: validate, dedupe, start the work in a task. Never waits."""
         if self._stopping:
             return
+        # 1.11.1: on Home Assistant's own clock, like Frigate's detections (Kameraposti's may differ).
+        received = dt_util.utcnow()
         try:
             request = parse_capture_request(
                 topic, payload, expected_customer_id=self._customer_id, expected_host=self._host
@@ -435,7 +394,7 @@ class KameraportiCaptureHandler:
         )
         task = self._entry.async_create_background_task(
             self._hass,
-            self._async_capture(request, camera),
+            self._async_capture(request, camera, received),
             f"kameraposti capture {request.request_id}",
             eager_start=False,
         )
@@ -460,9 +419,16 @@ class KameraportiCaptureHandler:
             if pending:
                 _LOGGER.debug("%d Kameraposti captures did not stop in time", len(pending))
 
-    async def _async_capture(self, request: CaptureRequest, camera: CaptureCamera) -> None:
+    async def _async_capture(
+        self, request: CaptureRequest, camera: CaptureCamera, received: datetime
+    ) -> None:
         try:
-            await self._async_photo(request, camera)
+            if request.reason in FRIGATE_REASONS and is_frigate_camera(self._hass, camera.entity_id):
+                # 1.11.1: a Frigate camera answers only Frigate's detection -- else nothing, no video either.
+                if not await self._async_detection_photo(request, camera, received):
+                    return
+            else:
+                await self._async_photo(request, camera)
             # Also after a cancel that the camera's own code swallowed (async_get_image does).
             if camera.video and not self._stopping:
                 if request.reason == "motion" or _expired(request.video_expires_at):
@@ -485,21 +451,6 @@ class KameraportiCaptureHandler:
         if _expired(request.photo_expires_at):
             self._log_outcome(request, camera, "photo", "link expired")
             return
-        if request.reason in FRIGATE_REASONS and (images := frigate_images(self._hass, camera.entity_id)):
-            if await self._async_frigate_photo(request, camera, images):
-                return
-            if request.reason != "alarm":
-                # Plain motion without a recognition never brings a picture: that was the noise.
-                _LOGGER.info(
-                    "Kameraposti capture request_id=%s camera_id=%s: no fresh Frigate detection for %s, "
-                    "no photo (%s)",
-                    request.request_id,
-                    request.camera_id,
-                    camera.entity_id,
-                    request.reason,
-                )
-                return
-            # An alarm always brings a picture: the live still.
         # Marked before the still is taken, so another sensor's motion handled meanwhile does not
         # send one too; undone if nothing is delivered.
         marked: datetime | None = None
@@ -538,99 +489,51 @@ class KameraportiCaptureHandler:
             if marked is not None and outcome != _DELIVERED:
                 _unmark(self._motion_live_sent, camera.entity_id, marked, previous)
 
-    async def _async_frigate_photo(
-        self, request: CaptureRequest, camera: CaptureCamera, images: list[str]
+    async def _async_detection_photo(
+        self, request: CaptureRequest, camera: CaptureCamera, received: datetime
     ) -> bool:
-        """Send Frigate's newest recognized picture of the camera, if fresh and a JPEG (1.9.0). False
-        when there is none to send (the caller decides: nothing for motion, the live still for alarm).
-
-        Turva sends the request as soon as the sensor turns on, possibly before Frigate updates its
-        image: then wait (up to FRIGATE_WAIT_SECONDS) for one of the camera's images to update. A motion
-        never sends the picture already delivered for the camera -- checked before the image is read.
-        """
-        newest = newest_frigate_image(self._hass, images)
-        if newest is None or newest[1] < request.requested_at:
-            await self._async_wait_for_frigate(request, images)
-            newest = newest_frigate_image(self._hass, images)
-        if newest is None:
-            return False
-        image_id, updated = newest
-        age = (dt_util.utcnow() - updated).total_seconds()
-        if not 0 <= age <= FRIGATE_DETECTION_MAX_AGE_SECONDS:
-            _LOGGER.debug(
-                "Kameraposti capture request_id=%s: Frigate's %s is %.0f s old, not used",
-                request.request_id,
-                image_id,
-                age,
-            )
-            return False
-        previous = self._frigate_sent.get(camera.entity_id)
-        if request.reason == "motion" and previous == updated:
+        """1.11.1: send Frigate's picture of the detection that set off the request. False -- and nothing
+        is sent for the request, no video either -- when Frigate detected nothing on the camera within
+        DETECTION_BEFORE_SECONDS before the request, or that detection was answered already."""
+        since = received - timedelta(seconds=DETECTION_BEFORE_SECONDS)
+        detection = self._detections.latest(camera.entity_id, since) if self._detections is not None else None
+        if detection is None:
             _LOGGER.info(
-                "Kameraposti capture request_id=%s camera_id=%s: Frigate detection already sent "
-                "(%s), no photo (motion)",
+                "Kameraposti capture request_id=%s camera_id=%s: no Frigate detection on %s, "
+                "no photo or video (%s)",
                 request.request_id,
                 request.camera_id,
-                image_id,
+                camera.entity_id,
+                request.reason,
             )
-            return True
-        # Marked before the image is read, so a second motion request handled meanwhile (two sensors
-        # of one camera) does not send it too; undone if it is not delivered after all.
-        self._frigate_sent[camera.entity_id] = updated
-        outcome: str | None = None
-        try:
-            try:
-                content = await async_frigate_image(self._hass, image_id)
-            except Exception as err:  # noqa: BLE001 - an image entity's own code may raise anything
-                _LOGGER.warning(
-                    "Kameraposti capture request_id=%s: could not read Frigate's %s: %s",
-                    request.request_id,
-                    image_id,
-                    type(err).__name__,
-                )
-                return False
-            if not content or not content.startswith(_JPEG_MAGIC):
-                _LOGGER.warning(
-                    "Kameraposti capture request_id=%s: Frigate's %s has %s, not used",
-                    request.request_id,
-                    image_id,
-                    "no image" if not content else "no JPEG image",
-                )
-                return False
-            outcome = await self._async_upload(
-                request, "photo", request.photo_url, request.photo_expires_at, content, "image/jpeg"
+            return False
+        if self._detection_sent.get(camera.entity_id) == detection.event_id:
+            _LOGGER.info(
+                "Kameraposti capture request_id=%s camera_id=%s: Frigate's detection %s on %s already "
+                "answered, no photo or video (%s)",
+                request.request_id,
+                request.camera_id,
+                detection.event_id,
+                camera.entity_id,
+                request.reason,
             )
-            self._log_outcome(request, camera, "photo", outcome, source=image_id)
+            return False
+        # Taken before anything is awaited: a second request handled meanwhile (another sensor of the
+        # camera) gets nothing. One detection, one photo and video -- also when the photo fails.
+        self._detection_sent[camera.entity_id] = detection.event_id
+        source = f"Frigate's {detection.label or 'detection'} on {camera.entity_id}"
+        if _expired(request.photo_expires_at):
+            self._log_outcome(request, camera, "photo", "link expired", source=source)
             return True
-        finally:
-            if outcome != _DELIVERED:
-                _unmark(self._frigate_sent, camera.entity_id, updated, previous)
-
-    async def _async_wait_for_frigate(self, request: CaptureRequest, images: list[str]) -> None:
-        """Until one of the images is updated at or after requested_at, at most FRIGATE_WAIT_SECONDS.
-
-        Waits on state changes and a timer, never polls; runs in the capture's own task, so unloading
-        cancels it like the rest of the capture.
-        """
-        done = asyncio.Event()
-
-        @callback
-        def _updated(_event: Event[EventStateChangedData]) -> None:
-            newest = newest_frigate_image(self._hass, images)
-            if newest is not None and newest[1] >= request.requested_at:
-                done.set()
-
-        @callback
-        def _timeout(_now: datetime) -> None:
-            done.set()
-
-        unsub_state = async_track_state_change_event(self._hass, images, _updated)
-        unsub_timer = async_call_later(self._hass, FRIGATE_WAIT_SECONDS, HassJob(_timeout))
-        try:
-            await done.wait()
-        finally:
-            unsub_state()
-            unsub_timer()
+        content, why_not = await async_detection_snapshot(self._hass, detection.event_id)
+        if content is None:
+            self._warn_no_photo(request, camera, f"Frigate gave no picture of its detection: {why_not}")
+            return True
+        outcome = await self._async_upload(
+            request, "photo", request.photo_url, request.photo_expires_at, content, "image/jpeg"
+        )
+        self._log_outcome(request, camera, "photo", outcome, source=source)
+        return True
 
     async def _async_video(self, request: CaptureRequest, camera: CaptureCamera) -> None:
         if _expired(request.video_expires_at):
@@ -780,7 +683,7 @@ class KameraportiCaptureHandler:
         *,
         source: str | None = None,
     ) -> None:
-        # source: where the photo came from when not the camera itself (1.9.0: Frigate's image).
+        # source: where the photo came from when not the camera itself (1.11.1: Frigate's detection).
         if outcome == _DELIVERED:
             _LOGGER.info(
                 "Kameraposti capture request_id=%s camera_id=%s: %s from %s delivered",

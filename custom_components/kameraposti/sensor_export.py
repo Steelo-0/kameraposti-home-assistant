@@ -150,6 +150,17 @@ def effective_sensor_limit(sensor_limit: int | None) -> int:
     return min(sensor_limit if sensor_limit is not None else DEFAULT_SENSOR_LIMIT, MAX_EXPORTED_SENSORS)
 
 
+def frigate_own_sensor(hass: HomeAssistant, entity_id: str) -> bool:
+    """1.11.1 (steelo 2026-10-17): a binary sensor of the Frigate integration -- pixel motion
+    (binary_sensor.<camera>_motion), occupancy -- is never sent. 17.10 Frigate's pixel motion alarmed
+    every five minutes while nothing happened; Frigate reaches Kameraposti only through its detections
+    (frigate_events.py, "<camera> Frigate")."""
+    if not entity_id.startswith("binary_sensor."):
+        return False
+    entry = er.async_get(hass).async_get(entity_id)
+    return entry is not None and entry.platform == "frigate"
+
+
 def kind_for(state: State | None) -> str | None:
     """Kameraposti kind for an entity, or None when it cannot be exported."""
     if state is None:
@@ -334,8 +345,18 @@ class KameraportiSensorExporter:
     ) -> None:
         self._hass = hass
         self._customer_id = customer_id
+        # 1.11.1: Frigate's own binary sensors chosen before are left out (the form no longer offers them).
+        frigate_own = [entity_id for entity_id in entity_ids if frigate_own_sensor(hass, entity_id)]
+        if frigate_own:
+            _LOGGER.info(
+                "Kameraposti: not sending Frigate's own sensors %s -- Frigate's detections go to Kameraposti "
+                'as "<camera> Frigate"',
+                ", ".join(frigate_own),
+            )
         # Every chosen entity, in the saved order; only the first self._limit are sent.
-        self._entity_ids = list(dict.fromkeys(entity_ids))[:MAX_EXPORTED_SENSORS]
+        self._entity_ids = list(
+            dict.fromkeys(entity_id for entity_id in entity_ids if entity_id not in frigate_own)
+        )[:MAX_EXPORTED_SENSORS]
         self._publish = publish
         # 1.8.0: the plan's limit, whether Kameraposti has told it yet, and the sent entities.
         self._limit = limit

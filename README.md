@@ -308,20 +308,18 @@ How the photo and the video are taken:
 - **Photo**: a still from the camera (Home Assistant's own camera snapshot,
   waiting at most 10 seconds), sent to Kameraposti right away. The photo is
   always sent before the video.
-- **Frigate cameras** (since 1.9.0): Kameraposti Turva also asks for a photo
-  on every motion of a sensor linked to the camera. For a camera whose Home
-  Assistant device has Frigate's last-detection pictures
-  (`image.<camera>_person`, `image.<camera>_car`, …), a motion or alarm
-  request sends Frigate's newest recognized picture instead of a live still,
-  if Frigate updated it within the last 2 minutes. The request can come a
-  moment before Frigate's picture, so Home Assistant waits up to 6 seconds for
-  it. Motion without a recognition sends no picture; an alarm without one
-  sends the live still, so an alarm always brings a picture. A motion never
-  sends the same Frigate picture twice (an alarm does; after a Home Assistant
-  restart one may go again). **Ota kuva Home Assistantista** always takes a
-  live still, and so does every request for a camera without Frigate pictures
-  (e.g. a Shelly camera) -- on motion at most one a minute per camera, however
-  many motion sensors are linked to it.
+- **Frigate cameras** (since 1.11.1): a camera of Frigate's integration
+  answers only Frigate's detection. A motion or alarm request sends Frigate's
+  own picture of the detection that set it off -- the detection Frigate made
+  on that camera at most 10 seconds before the request reached Home Assistant,
+  fetched from Frigate by its id, logged in as Frigate's integration is -- and
+  then, for an alarm, the video. Without such a detection nothing is sent: no
+  photo, no video, never an older picture, never a live still. One detection
+  is answered once (another sensor of the camera alarming right after gets
+  nothing). **Ota kuva Home Assistantista** takes a live still from any
+  camera, and every request for a camera not of Frigate (e.g. a Shelly
+  camera) does too -- on motion at most one a minute per camera, however many
+  motion sensors are linked to it.
 - A motion never records a video; alarms and **Ota kuva Home Assistantista**
   do.
 - **Frigate's detections** (since 1.11.0): every new object Frigate detects
@@ -336,7 +334,10 @@ How the photo and the video are taken:
   and several objects within 5 seconds on one camera are one motion. This
   replaces ticking Frigate's binary sensors: a sensor that stays on (a parked
   car, a tree in the wind) never changes, so it never told Kameraposti
-  anything.
+  anything. Since 1.11.1 Frigate's own binary sensors (pixel motion
+  `binary_sensor.<camera>_motion`, occupancy) are not sent at all and no
+  longer offered under Configure: Frigate's pixel motion alarmed every few
+  minutes while nothing happened.
 - **Video**: 10 seconds, recorded after the photo with Home Assistant's
   `stream` integration, the same way as the `camera.record` action. The
   camera must support streaming (the camera's page in Home Assistant shows

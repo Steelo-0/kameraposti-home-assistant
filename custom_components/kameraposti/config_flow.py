@@ -51,7 +51,7 @@ from .const import (
 )
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .sensor_export import effective_sensor_limit, kameraposti_name, kind_for
+from .sensor_export import effective_sensor_limit, frigate_own_sensor, kameraposti_name, kind_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,8 +105,11 @@ def exportable_entity_options(hass: HomeAssistant, current: list[str]) -> list[S
     # 1.4.2 (steelo 2026-10-07 "liian pitkät nimet"): "<name in Kameraposti> · <kind>", not
     # "<friendly name> (<entity_id>)"; the entity id is added only when two rows would read the same.
     kind_labels = KIND_LABELS_FI if (hass.config.language or "").startswith("fi") else KIND_LABELS_EN
+    # 1.11.1: Frigate's own binary sensors are never sent (sensor_export.frigate_own_sensor), so not offered.
     candidates = [
-        state for state in hass.states.async_all(("binary_sensor", "sensor")) if kind_for(state) is not None
+        state
+        for state in hass.states.async_all(("binary_sensor", "sensor"))
+        if kind_for(state) is not None and not frigate_own_sensor(hass, state.entity_id)
     ]
     candidate_ids = [state.entity_id for state in candidates]
     labels: dict[str, str] = {}
@@ -252,7 +255,12 @@ class KameraportiOptionsFlow(OptionsFlow):
         coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
         limit = effective_sensor_limit(coordinator.sensor_limit if coordinator is not None else None)
         placeholders = {"max": str(limit), "entities": ""}
-        current = list(self.config_entry.options.get(CONF_EXPORTED_ENTITIES, []))
+        # 1.11.1: Frigate's own binary sensors chosen before drop out of the form; saving it forgets them.
+        current = [
+            entity_id
+            for entity_id in self.config_entry.options.get(CONF_EXPORTED_ENTITIES, [])
+            if not frigate_own_sensor(self.hass, entity_id)
+        ]
 
         if user_input is not None:
             selected = list(dict.fromkeys(user_input.get(CONF_EXPORTED_ENTITIES, [])))

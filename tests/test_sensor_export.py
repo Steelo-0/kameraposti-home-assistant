@@ -19,6 +19,7 @@ import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HassJob, HassJobType, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
@@ -1350,3 +1351,102 @@ async def test_device_name_does_not_decide_and_tamper_is_no_door(hass: HomeAssis
     offered = {option["value"] for option in exportable_entity_options(hass, [])}
     assert "binary_sensor.eteinen_smoke_eteinen_smoke_alarm_status" not in offered
     assert "binary_sensor.nodeid_11_nodeid_11_cover_status" not in offered
+
+
+# -- 1.11.1: Frigate's own binary sensors are never sent ----------------------------------------
+#
+# steelo 2026-10-17: Frigate's pixel motion (binary_sensor.<camera>_motion) alarmed every five minutes
+# while nothing happened. Frigate reaches Kameraposti only through its detections ("<camera> Frigate").
+
+
+def _frigate_sensors(hass: HomeAssistant) -> None:
+    """Frigate's pixel motion and person occupancy of kamera1, and a PIR of another integration."""
+    registry = er.async_get(hass)
+    frigate = MockConfigEntry(domain="frigate")
+    frigate.add_to_hass(hass)
+    for platform, unique_id, object_id, device_class, name in (
+        ("frigate", "x:motion_sensor:kamera1", "kamera1_motion", "motion", "Kamera1 Motion"),
+        (
+            "frigate",
+            "x:occupancy_sensor:kamera1_person",
+            "kamera1_person_occupancy",
+            "occupancy",
+            "Kamera1 Person",
+        ),
+        ("zha", "pir-1", "piha_liike", "motion", "Pihan liike"),
+    ):
+        registry.async_get_or_create(
+            "binary_sensor",
+            platform,
+            unique_id,
+            suggested_object_id=object_id,
+            config_entry=frigate if platform == "frigate" else None,
+        )
+        _set(hass, f"binary_sensor.{object_id}", "off", device_class, name)
+
+
+async def test_frigates_own_sensors_are_not_sent(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    _frigate_sensors(hass)
+    published, publish = _recorder()
+    with caplog.at_level(logging.INFO, logger="custom_components.kameraposti"):
+        exporter = KameraportiSensorExporter(
+            hass,
+            customer_id=CUSTOMER_ID,
+            entity_ids=[
+                "binary_sensor.kamera1_motion",
+                "binary_sensor.kamera1_person_occupancy",
+                "binary_sensor.piha_liike",
+            ],
+            publish=publish,
+            limit=1,
+        )
+    exporter.async_start()
+
+    exporter.publish_snapshot()
+    for entity_id in ("binary_sensor.kamera1_motion", "binary_sensor.kamera1_person_occupancy"):
+        hass.states.async_set(entity_id, "on", hass.states.get(entity_id).attributes)
+    hass.states.async_set(
+        "binary_sensor.piha_liike", "on", hass.states.get("binary_sensor.piha_liike").attributes
+    )
+    await hass.async_block_till_done()
+
+    # Left out before the limit is counted: the plan's one sensor is the PIR.
+    assert {topic for topic, _, _ in published} == {
+        "kameraposti/3/anturit/binary_sensor.piha_liike/config",
+        "kameraposti/3/anturit/binary_sensor.piha_liike",
+    }
+    assert (
+        "Kameraposti: not sending Frigate's own sensors binary_sensor.kamera1_motion, "
+        "binary_sensor.kamera1_person_occupancy -- Frigate's detections go to Kameraposti as "
+        '"<camera> Frigate"'
+    ) in _kameraposti_logs(caplog, logging.INFO)
+
+
+async def test_the_options_no_longer_offer_or_keep_frigates_own_sensors(hass: HomeAssistant) -> None:
+    _frigate_sensors(hass)
+    offered = [option["value"] for option in exportable_entity_options(hass, [])]
+    assert offered == ["binary_sensor.piha_liike"]
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        options={CONF_EXPORTED_ENTITIES: ["binary_sensor.kamera1_motion", "binary_sensor.piha_liike"]},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        result = await _open_sensor_options(hass, entry)
+        schema = result["data_schema"].schema
+        default = next(key for key in schema if key == CONF_EXPORTED_ENTITIES).default()
+        assert default == ["binary_sensor.piha_liike"]
+        result2 = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: default}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.piha_liike"]
