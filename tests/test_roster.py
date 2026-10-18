@@ -165,13 +165,13 @@ async def test_roster_names_a_camera_first_seen_in_a_detection(
     coordinator = _coordinator(hass, setup_entry)
     coordinator._handle_message(*_detection(12))
     await hass.async_block_till_done()
-    assert _camera_device(hass, 12).name == "Riistakamera 12"
+    assert _camera_device(hass, 12).name == "Kamera 12"
 
     coordinator._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera")))
     await hass.async_block_till_done()
 
     assert _camera_device(hass, 12).name == "Pihakamera"
-    assert hass.states.get("sensor.riistakamera_12_last_detection").state == "animal"
+    assert hass.states.get("sensor.kamera_12_last_detection").state == "animal"
 
 
 async def test_camera_that_leaves_the_roster_loses_its_device_and_entities(
@@ -288,8 +288,8 @@ async def test_detection_for_a_camera_not_on_the_roster_still_creates_it(
 
     device = _camera_device(hass, 40)
     assert device is not None
-    assert device.name == "Riistakamera 40"
-    assert hass.states.get("sensor.riistakamera_40_last_detection").state == "animal"
+    assert device.name == "Kamera 40"
+    assert hass.states.get("sensor.kamera_40_last_detection").state == "animal"
     assert [e.data["camera_id"] for e in events] == [40]
 
 

@@ -554,6 +554,27 @@ async def test_options_flow_saves_more_than_the_default_until_kameraposti_tells_
     assert entry.options[CONF_EXPORTED_ENTITIES] == chosen
 
 
+async def test_before_the_limit_is_known_only_the_hard_maximum_is_refused(hass: HomeAssistant) -> None:
+    """Fable audit 2026-10-18 L6: without a limit from Kameraposti, 200 is not called the plan limit."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    chosen = [f"binary_sensor.vuoto_{i}" for i in range(MAX_EXPORTED_SENSORS + 1)]
+    for i, entity_id in enumerate(chosen):
+        _set(hass, entity_id, "off", "moisture", f"Vuoto {i}")
+
+    result = await _open_sensor_options(hass, entry)
+    refused = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_EXPORTED_ENTITIES: chosen}
+    )
+
+    assert refused["errors"] == {CONF_EXPORTED_ENTITIES: "too_many_max"}
+    assert refused["description_placeholders"]["max"] == str(MAX_EXPORTED_SENSORS)
+
+
 def _limit_roster(sensor_limit: object = None, *, second: int = 0) -> bytes:
     payload: dict[str, object] = {
         "schema_version": 1,

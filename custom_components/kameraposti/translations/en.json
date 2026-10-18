@@ -70,6 +70,7 @@
     },
     "error": {
       "too_many": "Your Kameraposti plan takes at most {max} sensors.",
+      "too_many_max": "At most {max} sensors.",
       "unknown_kind": "Could not tell whether these are leak, smoke, gas, door, window, motion, temperature or CO₂ sensors: {entities}. Remove them from the list."
     }
   },

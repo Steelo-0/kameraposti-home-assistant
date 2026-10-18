@@ -404,11 +404,11 @@ async def test_latest_photo_creates_the_camera_when_there_is_no_roster(
 
     device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:{CAMERA_ID}")})
     assert device is not None
-    assert device.name == f"Riistakamera {CAMERA_ID}"
+    assert device.name == f"Kamera {CAMERA_ID}"
     assert (
-        hass.states.get(f"image.riistakamera_{CAMERA_ID}_latest_photo").state == "2026-10-07T04:31:10+00:00"
+        hass.states.get(f"image.kamera_{CAMERA_ID}_latest_photo").state == "2026-10-07T04:31:10+00:00"
     )
-    assert hass.states.get(f"sensor.riistakamera_{CAMERA_ID}_last_detection").state == "unknown"
+    assert hass.states.get(f"sensor.kamera_{CAMERA_ID}_last_detection").state == "unknown"
 
 
 async def test_empty_latest_photo_for_an_unknown_camera_creates_nothing(

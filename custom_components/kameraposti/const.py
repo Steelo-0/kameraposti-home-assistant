@@ -149,7 +149,8 @@ MANUFACTURER: Final = "Kameraposti"
 # Design review TOP 10 (2026-10-18): a camera, not a trail camera (Turva cameras are home cameras).
 MODEL: Final = "Kamera"
 # Device name for a camera the roster has not named (or with no roster at all).
-DEFAULT_CAMERA_NAME_TEMPLATE: Final = "Riistakamera {camera_id}"
+# Fable audit 2026-10-18 L5: the same word as the model ("Kamera"); a named camera keeps its own name.
+DEFAULT_CAMERA_NAME_TEMPLATE: Final = "Kamera {camera_id}"
 
 # Contract section 8: "noin 500 viimeisintä event_id:tä" -- a reasonable
 # bounded size, not required to survive a HA restart.

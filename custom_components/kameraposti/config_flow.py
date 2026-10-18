@@ -302,7 +302,9 @@ class KameraportiOptionsFlow(OptionsFlow):
                 if (state := self.hass.states.get(entity_id)) is not None and kind_for(state) is None
             ]
             if len(selected) > limit:
-                errors[CONF_EXPORTED_ENTITIES] = "too_many"
+                # Fable audit L6: before the plan's limit is known, the error names only the hard maximum.
+                too_many = "too_many" if known is not None else "too_many_max"
+                errors[CONF_EXPORTED_ENTITIES] = too_many
                 current = selected
             elif unknown:
                 errors[CONF_EXPORTED_ENTITIES] = "unknown_kind"

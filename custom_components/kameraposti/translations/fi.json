@@ -70,6 +70,7 @@
     },
     "error": {
       "too_many": "Kamerapostin pakettisi ottaa enintään {max} anturia.",
+      "too_many_max": "Enintään {max} anturia.",
       "unknown_kind": "Näistä antureista ei tunnistettu, ovatko ne vuoto-, savu-, kaasu-, ovi-, ikkuna-, liike-, lämpö- vai CO₂-antureita: {entities}. Poista ne listasta."
     }
   },
