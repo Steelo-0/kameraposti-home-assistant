@@ -52,6 +52,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import instance_id
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time
@@ -85,7 +86,7 @@ from .const import (
     SIGNAL_SECURITY,
 )
 from .dedup import EventDedupCache
-from .frigate_events import KameraportiFrigateDetections
+from .frigate_events import KameraportiFrigateDetections, frigate_detection_names
 from .models import (
     CameraRoster,
     Detection,
@@ -190,7 +191,9 @@ class KameraportiCoordinator:
             entity_ids=list(entry.options.get(CONF_EXPORTED_ENTITIES, [])),
             publish=self._client.publish,
             limit=effective_sensor_limit(None),
+            extra_names=partial(frigate_detection_names, hass),
         )
+        self._username = username
         # 1.7.0: the Home Assistant cameras described to Kameraposti and used for its photos (1.8.0:
         # every camera not hidden, worked out each time they are needed).
         camera_settings = camera_settings_from_options(entry.options)
@@ -270,6 +273,17 @@ class KameraportiCoordinator:
         """Start the MQTT client (contract section 21/22 counterpart is async_stop)."""
         # Before any message can arrive: the retained roster comes right after connecting.
         self._roster_applied_at = await self._async_load_roster_applied_at()
+        # 1.12.0 (Fable audit H1): the login and this installation, so two Home Assistants never pass for one.
+        # Unreadable (Fable audit L-D): no list and no source -- Kameraposti then drops nothing of this one.
+        try:
+            source: str | None = f"{self._username}.{await instance_id.async_get(self.hass)}"
+        except Exception:  # noqa: BLE001 -- the integration never fails setup over this
+            _LOGGER.warning(
+                "Kameraposti: Home Assistant's installation id could not be read; sensors are not synced"
+            )
+            source = None
+        self._exporter.async_set_source(source)
+        self._frigate.async_set_source(source)
         self._exporter.async_start()
         self._camera_exporter.async_start()
         await self._client.async_start()

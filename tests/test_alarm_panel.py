@@ -262,7 +262,8 @@ async def test_foreign_results_are_ignored_and_nothing_is_left_pending(hass: Hom
     first = hass.async_create_task(coordinator.async_set_security_mode("home", None))
     second = hass.async_create_task(coordinator.async_set_security_mode("away", None))
     await asyncio.sleep(0)
-    ids = [json.loads(c.args[1])["request_id"] for c in client.publish.call_args_list]
+    calls = [c.args for c in client.publish.call_args_list if "/turva/" in c.args[0]]
+    ids = [json.loads(payload)["request_id"] for _, payload, _ in calls]
     assert len(set(ids)) == 2
 
     # Tuntematon request_id ei ratkaise kumpaakaan.

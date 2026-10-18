@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HassJob, HassJobType, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import instance_id
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
@@ -33,6 +35,7 @@ from custom_components.kameraposti.const import (
     MAX_EXPORTED_SENSORS,
 )
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
+from custom_components.kameraposti.frigate_events import frigate_detection_names
 from custom_components.kameraposti.mqtt_client import ConnectionState
 from custom_components.kameraposti.sensor_export import (
     KameraportiSensorExporter,
@@ -376,9 +379,15 @@ async def test_coordinator_describes_exported_sensors_when_connected(hass: HomeA
         assert [c[0] for c in calls] == [
             "kameraposti/3/anturit/binary_sensor.kellari/config",
             "kameraposti/3/anturit/binary_sensor.kellari",
+            "kameraposti/3/anturit/_ha/sync",
         ]
         assert json.loads(calls[0][1])["kind"] == "leak"
         assert calls[1][1:] == ("dry", False)
+        # 1.12.0: this Home Assistant (login + installation id), every chosen entity, after the descriptions.
+        source = f"kp-3.{await instance_id.async_get(hass)}"
+        assert json.loads(calls[0][1])["source"] == source
+        assert json.loads(calls[2][1]) == {"source": source, "entities": ["binary_sensor.kellari"]}
+        assert calls[2][2] is False
 
         _set(hass, "binary_sensor.kellari", "on", "moisture", "Kellarin vuoto")
         await hass.async_block_till_done()
@@ -428,6 +437,7 @@ async def test_a_reconnect_storm_sends_the_full_snapshot_at_most_once_a_minute(
         "kameraposti/3/anturit/binary_sensor.kellari",
         "kameraposti/3/anturit/binary_sensor.ovi/config",
         "kameraposti/3/anturit/binary_sensor.ovi",
+        "kameraposti/3/anturit/_ha/sync",
     ]
     assert _published_topics(client) == snapshot  # the first connect sends it at once
 
@@ -672,8 +682,12 @@ def _doors(hass: HomeAssistant, count: int) -> list[str]:
 
 
 def _sent_entities(published: list[tuple[str, str, bool]]) -> list[str]:
-    """The entities whose state was sent, in order (descriptions left out)."""
-    return [topic.split("/")[3] for topic, _, _ in published if not topic.endswith("/config")]
+    """The entities whose state was sent, in order (descriptions and the 1.12.0 list left out)."""
+    return [
+        topic.split("/")[3]
+        for topic, _, _ in published
+        if not topic.endswith("/config") and not topic.endswith("/_ha/sync")
+    ]
 
 
 def _kameraposti_logs(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
@@ -1480,3 +1494,166 @@ async def test_the_options_no_longer_offer_or_keep_frigates_own_sensors(hass: Ho
 
     assert result2["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.piha_liike"]
+
+
+async def test_the_selection_list_names_every_chosen_entity_after_the_descriptions(
+    hass: HomeAssistant,
+) -> None:
+    """1.12.0 (steelo 2026-10-18 "HA:n valinta synkronoi ja tiputtaa muut"): Kameraposti drops the sensors
+    this Home Assistant created that are not on the list. Every chosen entity is on it -- also one over
+    the plan's limit (a lower plan never drops a sensor) and one with no state yet (Z-Wave still starting)."""
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    _set(hass, "binary_sensor.ovi", "off", "door", "Etuovi")
+    long_id = "binary_sensor." + "pitka_nimi_" * 6
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=["binary_sensor.kellari", "binary_sensor.ei_viela", "binary_sensor.ovi", long_id],
+        publish=publish,
+        limit=2,
+        source="kp-3-2",
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+
+    topic, payload, retain = published[-1]
+    assert topic == "kameraposti/3/anturit/_ha/sync"
+    assert retain is False
+    assert json.loads(payload) == {
+        "source": "kp-3-2",
+        "entities": [
+            "binary_sensor.kellari",
+            "binary_sensor.ei_viela",
+            "binary_sensor.ovi",
+            mqtt_name_for(long_id),
+        ],
+    }
+    assert [json.loads(p)["source"] for t, p, _ in published if t.endswith("/config")] == ["kp-3-2"]
+    exporter.async_stop()
+
+
+async def test_no_list_goes_out_when_a_description_could_not_be_sent(hass: HomeAssistant) -> None:
+    """A list without its new sensors' descriptions would be fine, but a broken connection sends neither."""
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    published: list[str] = []
+
+    def publish(topic: str, payload: str, retain: bool) -> bool:
+        published.append(topic)
+        return False
+
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=["binary_sensor.kellari"], publish=publish, source="kp-3"
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    assert published == ["kameraposti/3/anturit/binary_sensor.kellari/config"]
+    exporter.async_stop()
+
+
+async def test_an_empty_selection_sends_the_empty_list_every_15_minutes(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Nothing chosen = nothing of this Home Assistant stays in Kameraposti; repeated like the snapshot,
+    since Kameraposti's listener may be reconnecting when one goes out."""
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=[], publish=publish, source="kp-3"
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    assert published == [("kameraposti/3/anturit/_ha/sync", '{"source": "kp-3", "entities": []}', False)]
+
+    freezer.tick(15 * 60 + 1)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(published) == 2
+
+    exporter.async_stop()
+    freezer.tick(16 * 60)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(published) == 2
+
+
+async def test_without_a_login_no_list_is_sent(hass: HomeAssistant) -> None:
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=["binary_sensor.kellari"], publish=publish
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    assert [t for t, _, _ in published] == [
+        "kameraposti/3/anturit/binary_sensor.kellari/config",
+        "kameraposti/3/anturit/binary_sensor.kellari",
+    ]
+    assert "source" not in json.loads(published[0][1])
+    exporter.async_stop()
+
+
+async def test_a_long_list_goes_out_in_parts_under_the_brokers_limit(hass: HomeAssistant) -> None:
+    """Fable audit M2: the broker drops a message over 4096 bytes without a word. 200 long names go
+    out as parts of one snapshot; Kameraposti drops only once every part has come."""
+    entity_ids = [f"binary_sensor.pitka_anturin_nimi_{n:03d}_x" for n in range(200)]
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=entity_ids, publish=publish, source="kp-3.abc"
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+
+    payloads = [payload for topic, payload, _ in published if topic.endswith("/_ha/sync")]
+    parts = [json.loads(payload) for payload in payloads]
+    assert len(parts) > 1
+    assert all(len(payload.encode()) <= 3500 for payload in payloads)
+    assert {p["snapshot"] for p in parts} == {parts[0]["snapshot"]}
+    assert [(p["part"], p["parts"]) for p in parts] == [(n, len(parts)) for n in range(1, len(parts) + 1)]
+    assert [name for p in parts for name in p["entities"]] == entity_ids
+    assert all(p["source"] == "kp-3.abc" for p in parts)
+    exporter.async_stop()
+
+
+async def test_the_frigate_cameras_detection_sensors_are_on_the_list(hass: HomeAssistant) -> None:
+    """Fable audit M3: a camera's detection sensor is the camera's; a long (hashed) name too."""
+    registry = er.async_get(hass)
+    registry.async_get_or_create("camera", "frigate", "frigate:camera:piha", suggested_object_id="piha")
+    long_object_id = "erittain_pitka_kameran_nimi_jota_kukaan_ei_jaksa_kirjoittaa"
+    registry.async_get_or_create(
+        "camera", "frigate", "frigate:camera:pitka", suggested_object_id=long_object_id
+    )
+    registry.async_get_or_create("camera", "demo", "demo-1", suggested_object_id="muu")
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=[],
+        publish=publish,
+        source="kp-3.abc",
+        extra_names=partial(frigate_detection_names, hass),
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+
+    [(_, payload, _)] = published
+    assert json.loads(payload)["entities"] == [
+        "binary_sensor.piha_frigate",
+        mqtt_name_for(f"binary_sensor.{long_object_id}_frigate"),
+    ]
+    exporter.async_stop()
+
+
+async def test_an_unreadable_installation_id_sends_no_list_and_setup_goes_on(hass: HomeAssistant) -> None:
+    """Fable audit L-D: the id's store can fail (disk full); then nothing is synced, nothing is dropped."""
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    with patch(
+        "custom_components.kameraposti.coordinator.instance_id.async_get", side_effect=OSError("disk full")
+    ):
+        coordinator, client = await _connected_coordinator(hass, ["binary_sensor.kellari"])
+    calls = [c.args for c in client.publish.call_args_list]
+    assert [c[0] for c in calls] == [
+        "kameraposti/3/anturit/binary_sensor.kellari/config",
+        "kameraposti/3/anturit/binary_sensor.kellari",
+    ]
+    assert "source" not in json.loads(calls[0][1])
+    await coordinator.async_stop()

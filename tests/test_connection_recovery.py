@@ -219,7 +219,7 @@ async def test_an_alarm_the_broker_never_acknowledged_goes_out_again_at_once(
     entry = await _setup_entry(hass, {CONF_EXPORTED_ENTITIES: [entity_id, "binary_sensor.ovi"]})
     paho.on_connect(paho, None, MagicMock(), 0, None)
     await hass.async_block_till_done()
-    assert len(broker.sent) == 4  # the first connect describes both and sends their states
+    assert len(broker.sent) == 5  # the first connect describes both, sends their states and the list (1.12.0)
     broker.ack()
 
     freezer.tick(5)
@@ -249,11 +249,13 @@ async def test_a_description_lost_in_a_drop_is_sent_again_before_the_state(
     assert [topic for topic, _ in broker.sent_since(0)] == [
         "kameraposti/3/anturit/binary_sensor.kellari/config",
         "kameraposti/3/anturit/binary_sensor.kellari",
+        "kameraposti/3/anturit/_ha/sync",
     ]
-    before_drop = len(broker.sent)  # neither acknowledged
+    before_drop = len(broker.sent)  # none acknowledged
 
     freezer.tick(5)
     await _drop_and_reconnect(hass, paho, freezer)
 
-    assert broker.sent_since(before_drop) == broker.sent_since(0)[:before_drop]
+    # The list follows with the next full snapshot (a minute after the first).
+    assert broker.sent_since(before_drop) == broker.sent_since(0)[:2]
     assert await hass.config_entries.async_unload(entry.entry_id)

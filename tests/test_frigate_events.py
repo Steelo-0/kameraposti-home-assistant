@@ -302,3 +302,19 @@ async def test_each_detection_is_remembered_before_kameraposti_hears_of_it(
     assert detections.latest("camera.etupiha", dt_util.utcnow() + timedelta(seconds=1)) is None
     assert detections.latest("camera.muu", start) is None
     detections.async_stop()
+
+
+async def test_the_detection_sensor_is_described_as_this_home_assistants(
+    hass: HomeAssistant, mqtt_mock: MqttMockHAClient
+) -> None:
+    """1.12.0 (Fable audit L-B): the same source as the sensor export, so Kameraposti knows whose it is."""
+    hass.states.async_set("camera.etupiha", "idle", {"friendly_name": "Etupiha"})
+    broker = _Broker()
+    detections = await _started(hass, broker)
+    detections.async_set_source("kp-3.abc")
+
+    async_fire_mqtt_message(hass, "frigate/events", _event("1700000000.1-abc"))
+    await hass.async_block_till_done()
+
+    assert json.loads(broker.sent[0][1])["source"] == "kp-3.abc"
+    detections.async_stop()

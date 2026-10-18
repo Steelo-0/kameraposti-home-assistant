@@ -116,6 +116,16 @@ def sensor_entity_id(camera_object_id: str) -> str:
     return f"binary_sensor.{camera_object_id}_frigate"
 
 
+def frigate_detection_names(hass: HomeAssistant) -> list[str]:
+    """1.12.0: the detection sensors' topic names of every Frigate camera, for the selection list
+    (sensor_export): a camera's detections are the camera's, never dropped while it exists."""
+    return [
+        mqtt_name_for(sensor_entity_id(entry.entity_id.split(".", 1)[1]))
+        for entry in er.async_get(hass).entities.values()
+        if entry.platform == "frigate" and entry.domain == "camera"
+    ]
+
+
 def frigate_topic_prefixes(hass: HomeAssistant) -> set[str]:
     """Frigate's MQTT topic prefixes: the default and those the Frigate integration read from Frigate."""
     prefixes = {DEFAULT_TOPIC_PREFIX}
@@ -156,6 +166,8 @@ class KameraportiFrigateDetections:
         self._hass = hass
         self._customer_id = customer_id
         self._publish = publish
+        # 1.12.0 (Fable audit L-B): who describes the detection sensor, like the sensor export.
+        self._source: str | None = None
         self._unsubscribe: list[Callable[[], None]] = []
         self._stopped = False
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -197,6 +209,11 @@ class KameraportiFrigateDetections:
         )
 
     @callback
+    def async_set_source(self, source: str | None) -> None:
+        """1.12.0: this Home Assistant's login and installation id (sensor_export's selection list)."""
+        self._source = source
+
+    @callback
     def async_stop(self) -> None:
         self._stopped = True
         for unsubscribe in self._unsubscribe:
@@ -232,7 +249,10 @@ class KameraportiFrigateDetections:
         entity_id = sensor_entity_id(object_id)
         topic = SENSOR_TOPIC_TEMPLATE.format(customer_id=self._customer_id, name=mqtt_name_for(entity_id))
         if entity_id not in self._described:
-            payload = json.dumps({"name": name, "kind": "motion", "format": "simple"}, ensure_ascii=False)
+            description = {"name": name, "kind": "motion", "format": "simple"}
+            if self._source is not None:
+                description["source"] = self._source
+            payload = json.dumps(description, ensure_ascii=False)
             if not self._publish(f"{topic}/config", payload, False):
                 return
             self._described.add(entity_id)

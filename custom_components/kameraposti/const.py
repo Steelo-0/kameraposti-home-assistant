@@ -122,6 +122,12 @@ CAMERA_ENTITY_PATTERN: Final = re.compile(r"^camera\.[a-z0-9_]{1,200}$")
 # kameraposti/<id>/anturit/ prefix (broker ACL); "<name>/config" describes the
 # sensor, "<name>" carries its state in Kameraposti's simple format.
 SENSOR_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/{name}"
+# 1.12.0 (steelo 2026-10-18 "HA:n valinta synkronoi ja tiputtaa muut"): every chosen entity, after each full
+# snapshot; Kameraposti drops the sensors this Home Assistant created that are no longer chosen. Two levels,
+# so it never matches a sensor's own topic.
+SYNC_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/_ha/sync"
+# The broker's message_size_limit is 4096 bytes; a longer list goes out in parts of at most this.
+SYNC_PART_MAX_BYTES: Final = 3500
 # 1.7.1 (steelo 2026-10-16 "ei anturirajoja"): the most this integration ever sends; the old 20
 # here stopped accounts whose limit is higher.
 MAX_EXPORTED_SENSORS: Final = 200

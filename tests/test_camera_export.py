@@ -504,7 +504,10 @@ async def test_coordinator_describes_a_1_6_entrys_linked_cameras_when_connected(
         coordinator._handle_state_change(ConnectionState.CONNECTED)
         await hass.async_block_till_done()
 
-        [(topic, payload, retain)] = [c.args for c in client.publish.call_args_list]
+        # 1.12.0: the (empty) selection list goes out too; this test is about the cameras.
+        [(topic, payload, retain)] = [
+            c.args for c in client.publish.call_args_list if not c.args[0].endswith("/_ha/sync")
+        ]
         assert topic == f"kameraposti/3/anturit/{SHELLY}/config"
         assert json.loads(payload) == {
             "kind": "camera",
@@ -540,7 +543,8 @@ async def test_coordinator_of_a_fresh_entry_reports_every_camera(hass: HomeAssis
         coordinator._handle_state_change(ConnectionState.CONNECTED)
         await hass.async_block_till_done()
 
-        assert [json.loads(c.args[1]) for c in client.publish.call_args_list] == [
+        calls = [c.args for c in client.publish.call_args_list if not c.args[0].endswith("/_ha/sync")]
+        assert [json.loads(c[1]) for c in calls] == [
             {"kind": "camera", "entity_id": "camera.piha", "name": "Piha", "mac": None},
             {"kind": "camera", "entity_id": "camera.talli", "name": "Talli", "mac": None},
         ]

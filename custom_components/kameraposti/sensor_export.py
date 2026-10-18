@@ -30,6 +30,17 @@ A reading (temperature, CO2) is sent at most once a minute per entity (the
 latest value follows when the minute is up), so a chatty thermometer or CO2
 meter cannot use up the account's shared message budget and crowd out a leak
 alarm.
+1.12.0 (steelo 2026-10-18 "HA:n valinta synkronoi ja tiputtaa muut, mutta ei kameraa, erikseen
+määriteltyjä"): each full snapshot ends with the list of every chosen entity
+(``kameraposti/<id>/anturit/_ha/sync``) with this Home Assistant as ``source`` -- its login and
+its installation id, so two Home Assistants never pass for one even on one login; the descriptions
+carry it too. Kameraposti drops the sensors this Home Assistant described that are not on the list:
+an entity taken out of the options leaves Kameraposti, and comes back when chosen again. Cameras,
+a camera's Frigate detection sensor (also on the list) and sensors added in Kameraposti itself never
+drop, nor the sensors another Home Assistant on the account described, however long it is away. The
+list is not cut by the plan's limit, so a lower plan never drops a sensor; it is not sent when a
+description of the same snapshot could not be, and over the broker's 4096 bytes it goes out in
+parts (Kameraposti drops only once every part has come).
 1.8.0: only the first <limit> chosen entities (in the saved order) are sent,
 the limit being the account's plan from Kameraposti's roster (sensor_limit;
 DEFAULT_SENSOR_LIMIT until it is told). The rest are left out with one warning
@@ -46,7 +57,8 @@ import json
 import logging
 import math
 import re
-from collections.abc import Callable
+import secrets
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from functools import partial
 
@@ -74,6 +86,8 @@ from .const import (
     MAX_EXPORTED_SENSORS,
     SENSOR_TOPIC_TEMPLATE,
     SNAPSHOT_MIN_INTERVAL_SECONDS,
+    SYNC_PART_MAX_BYTES,
+    SYNC_TOPIC_TEMPLATE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -342,9 +356,15 @@ class KameraportiSensorExporter:
         entity_ids: list[str],
         publish: PublishFn,
         limit: int = DEFAULT_SENSOR_LIMIT,
+        source: str | None = None,
+        extra_names: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         self._hass = hass
         self._customer_id = customer_id
+        # 1.12.0: "<login>.<installation id>" (async_set_source); without it no list is sent (Kameraposti
+        # could not tell two Home Assistants apart). extra_names: the Frigate detection sensors' names.
+        self._source = source
+        self._extra_names = extra_names
         # 1.11.1: Frigate's own binary sensors chosen before are left out (the form no longer offers them).
         frigate_own = [entity_id for entity_id in entity_ids if frigate_own_sensor(hass, entity_id)]
         if frigate_own:
@@ -397,6 +417,8 @@ class KameraportiSensorExporter:
             self._unsub = async_track_state_change_event(
                 self._hass, self._entity_ids, self._handle_state_event
             )
+        # 1.12.0: also with nothing chosen -- the empty list is what drops the sensors left behind.
+        if self._unsub_resync is None:
             self._unsub_resync = async_track_time_interval(
                 self._hass, self._handle_resync, RESYNC_INTERVAL, cancel_on_shutdown=True
             )
@@ -532,11 +554,59 @@ class KameraportiSensorExporter:
                 self._unsent.discard(entity_id)
             else:
                 self._publish_state(state, kind, throttle=False)
+        else:
+            sent = self._publish_selection() or sent
         if sent:
             self._snapshot_sent_at = dt_util.utcnow()
             if self._snapshot_pending is not None:
                 self._snapshot_pending()
                 self._snapshot_pending = None
+
+    @callback
+    def async_set_source(self, source: str | None) -> None:
+        """1.12.0: who this Home Assistant is to Kameraposti, known once the installation id is read."""
+        self._source = source
+
+    def _publish_selection(self) -> bool:
+        """1.12.0: every chosen entity's topic name, after the snapshot's descriptions (module doc)."""
+        if self._source is None:
+            return False
+        topic = SYNC_TOPIC_TEMPLATE.format(customer_id=self._customer_id)
+        return all(self._publish(topic, payload, False) for payload in self._selection_payloads())
+
+    def _selection_payloads(self) -> list[str]:
+        """The list as one message, or in parts of at most SYNC_PART_MAX_BYTES under one snapshot id."""
+        extra = list(self._extra_names()) if self._extra_names is not None else []
+        names = list(dict.fromkeys([*(mqtt_name_for(entity_id) for entity_id in self._entity_ids), *extra]))
+        whole = json.dumps({"source": self._source, "entities": names})
+        if len(whole.encode()) <= SYNC_PART_MAX_BYTES:
+            return [whole]
+        snapshot = secrets.token_hex(4)
+
+        def part(n: int, parts: int, entities: list[str]) -> str:
+            return json.dumps(
+                {
+                    "source": self._source,
+                    "snapshot": snapshot,
+                    "part": n,
+                    "parts": parts,
+                    "entities": entities,
+                }
+            )
+
+        # The part fields at their longest (two digits); each further name adds ", ".
+        base = len(part(99, 99, []).encode())
+        chunks: list[list[str]] = [[]]
+        size = base
+        for name in names:
+            added = len(json.dumps(name).encode()) + (2 if chunks[-1] else 0)
+            if chunks[-1] and size + added > SYNC_PART_MAX_BYTES:
+                chunks.append([])
+                size = base
+                added -= 2
+            chunks[-1].append(name)
+            size += added
+        return [part(n, len(chunks), chunk) for n, chunk in enumerate(chunks, start=1)]
 
     @callback
     def _publish_unsent(self) -> None:
@@ -577,7 +647,10 @@ class KameraportiSensorExporter:
 
     def _describe(self, state: State, kind: str) -> bool:
         name = self._name_for(state)
-        payload = json.dumps({"name": name, "kind": kind, "format": "simple"}, ensure_ascii=False)
+        description = {"name": name, "kind": kind, "format": "simple"}
+        if self._source is not None:
+            description["source"] = self._source
+        payload = json.dumps(description, ensure_ascii=False)
         if not self._publish(f"{self._topic(state.entity_id)}/config", payload, False):
             self._unsent.add(state.entity_id)
             return False
