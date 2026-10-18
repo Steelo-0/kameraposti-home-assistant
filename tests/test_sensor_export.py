@@ -525,11 +525,12 @@ async def test_options_flow_selects_the_entities_to_export(hass: HomeAssistant) 
     assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.kellari"]
 
 
-async def test_options_flow_refuses_more_sensors_than_the_default_until_kameraposti_tells(
+async def test_options_flow_saves_more_than_the_default_until_kameraposti_tells_the_limit(
     hass: HomeAssistant,
 ) -> None:
-    """1.8.0: without a limit from Kameraposti (the entry not running, or no roster yet) the default
-    20 applies, and the error names it."""
+    """Design review TOP 8 (2026-10-18): without a limit from Kameraposti (the entry not running, or no
+    roster yet) the form does not refuse at the default 20 -- a 30-sensor plan could not be saved right
+    after a restart -- and says the limit is not known yet. (1.8.0 refused at 20.)"""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
@@ -540,16 +541,17 @@ async def test_options_flow_refuses_more_sensors_than_the_default_until_kamerapo
         _set(hass, f"binary_sensor.vuoto_{i}", "off", "moisture", f"Vuoto {i}")
 
     result = await _open_sensor_options(hass, entry)
-    assert result["description_placeholders"]["max"] == "20"
+    assert result["description_placeholders"]["limit_note"] == (
+        "Your plan's sensor limit has not arrived from Kameraposti yet; "
+        "if you choose more than it takes, the rest are left out."
+    )
+    chosen = [f"binary_sensor.vuoto_{i}" for i in range(DEFAULT_SENSOR_LIMIT + 1)]
     result2 = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {CONF_EXPORTED_ENTITIES: [f"binary_sensor.vuoto_{i}" for i in range(DEFAULT_SENSOR_LIMIT + 1)]},
+        result["flow_id"], {CONF_EXPORTED_ENTITIES: chosen}
     )
 
-    assert result2["type"] is FlowResultType.FORM
-    assert result2["errors"] == {CONF_EXPORTED_ENTITIES: "too_many"}
-    assert result2["description_placeholders"]["max"] == "20"
-    assert CONF_EXPORTED_ENTITIES not in entry.options
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == chosen
 
 
 def _limit_roster(sensor_limit: object = None, *, second: int = 0) -> bytes:
@@ -595,6 +597,10 @@ async def test_options_flow_takes_as_many_sensors_as_the_plan_from_kameraposti(
 
         result = await _open_sensor_options(hass, entry)
         assert result["description_placeholders"]["max"] == str(effective)
+        assert (
+            result["description_placeholders"]["limit_note"]
+            == f"Your Kameraposti plan takes at most {effective}."
+        )
         refused = await hass.config_entries.options.async_configure(
             result["flow_id"], {CONF_EXPORTED_ENTITIES: selected}
         )
@@ -619,7 +625,10 @@ async def test_options_flow_falls_back_to_the_default_with_an_invalid_or_missing
         mock_cls.return_value.async_stop = AsyncMock()
         entry = await _running_entry(hass, _limit_roster("30"))
         result = await _open_sensor_options(hass, entry)
-    assert result["description_placeholders"]["max"] == "20"
+    # Design review TOP 8: an invalid limit is no limit yet -- the form waits for a valid one.
+    assert result["description_placeholders"]["max"] == str(MAX_EXPORTED_SENSORS)
+    note = result["description_placeholders"]["limit_note"]
+    assert note.startswith("Your plan's sensor limit has not arrived")
 
 
 def test_the_effective_limit_is_the_plans_up_to_200() -> None:

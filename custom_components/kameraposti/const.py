@@ -20,6 +20,10 @@ DOMAIN: Final = "kameraposti"
 # MQTT over WSS behind the service's HTTPS proxy.
 DEFAULT_HOST: Final = "kameraposti.fi"
 BROKER_HOSTS: Final = ("kameraposti.fi", "cam.steels.me")
+# Design review TOP 8 (steelo 2026-10-18): a new setup offers Kameraposti Turva's service first --
+# kameraposti.fi has no sensor broker. DEFAULT_HOST stays the fallback for entries stored without a
+# host (version 1 migration), so an existing installation never changes service.
+SETUP_DEFAULT_HOST: Final = "cam.steels.me"
 MQTT_PORT: Final = 443
 MQTT_WS_PATH: Final = "/mqtt"
 MQTT_TRANSPORT: Final = "websockets"

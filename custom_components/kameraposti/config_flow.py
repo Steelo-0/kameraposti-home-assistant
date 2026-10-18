@@ -47,17 +47,24 @@ from .const import (
     CONF_HOST,
     DEFAULT_HOST,
     DOMAIN,
+    SETUP_DEFAULT_HOST,
     USERNAME_TEMPLATE,
 )
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .sensor_export import effective_sensor_limit, frigate_own_sensor, kameraposti_name, kind_for
+from .sensor_export import (
+    MAX_EXPORTED_SENSORS,
+    effective_sensor_limit,
+    frigate_own_sensor,
+    kameraposti_name,
+    kind_for,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_HOST, default=DEFAULT_HOST): SelectSelector(
+        vol.Required(CONF_HOST, default=SETUP_DEFAULT_HOST): SelectSelector(
             SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
         ),
         # 1.3.1: the login as shown on the Anturit page ("kp-2", "kp-2-2") or just the account number.
@@ -93,6 +100,24 @@ KIND_LABELS_EN: dict[str, str] = {
     "temperature": "Temperature",
     "co2": "CO₂",
 }
+
+
+def _limit_note(known: int | None, finnish: bool) -> str:
+    """The plan's limit in the sensors form, or that it is not known yet (design review TOP 8)."""
+    if known is not None:
+        limit = effective_sensor_limit(known)
+        if finnish:
+            return f"Kamerapostin pakettisi ottaa enintään {limit}."
+        return f"Your Kameraposti plan takes at most {limit}."
+    if finnish:
+        return (
+            "Pakettisi anturirajaa ei ole vielä saatu Kamerapostista; "
+            "jos valitset enemmän kuin paketti ottaa, ylimenevät jäävät pois."
+        )
+    return (
+        "Your plan's sensor limit has not arrived from Kameraposti yet; "
+        "if you choose more than it takes, the rest are left out."
+    )
 
 
 def exportable_entity_options(hass: HomeAssistant, current: list[str]) -> list[SelectOptionDict]:
@@ -253,8 +278,13 @@ class KameraportiOptionsFlow(OptionsFlow):
         # 1.8.0 (steelo 2026-10-16 "maalaisjärjellä, pari klikkausta"): as many as the account's plan
         # takes -- the limit the running entry's roster told, else the default.
         coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
-        limit = effective_sensor_limit(coordinator.sensor_limit if coordinator is not None else None)
-        placeholders = {"max": str(limit), "entities": ""}
+        known = coordinator.sensor_limit if coordinator is not None else None
+        # Design review TOP 8: until Kameraposti has told the plan's limit (entry not running, no roster
+        # yet) the form does not refuse at the default 20 -- a 30-sensor plan could not be saved right
+        # after a restart. The exporter still sends only what the plan takes once the limit is known.
+        limit = effective_sensor_limit(known) if known is not None else MAX_EXPORTED_SENSORS
+        finnish = (self.hass.config.language or "").startswith("fi")
+        placeholders = {"max": str(limit), "entities": "", "limit_note": _limit_note(known, finnish)}
         # 1.11.1: Frigate's own binary sensors chosen before drop out of the form; saving it forgets them.
         current = [
             entity_id

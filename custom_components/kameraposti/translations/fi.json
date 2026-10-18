@@ -57,7 +57,7 @@
     "step": {
       "sensors": {
         "title": "Anturit Kamerapostiin",
-        "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm). Kamerapostin pakettisi ottaa enintään {max}. Kameraposti luo anturit automaattisesti. Kamerapostissa poistettu anturi ei palaa (Anturit-sivun Palauta tuo sen takaisin). Kamerat valitaan Kamerapostissa: Home Assistant kertoo sille kaikki kameransa, ja hälytys tuo kuvan ja lyhyen videon. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem).",
+        "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm). {limit_note} Kameraposti luo anturit automaattisesti. Kamerapostissa poistettu anturi ei palaa (Anturit-sivun Palauta tuo sen takaisin). Kamerat valitaan Kamerapostissa: Home Assistant kertoo sille kaikki kameransa, ja hälytys tuo kuvan ja lyhyen videon. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem). Jos anturi puuttuu listalta, avaa se Home Assistantissa ja valitse kohdasta Näytä muodossa sen tyyppi (esim. Ovi, Ikkuna, Kosteus tai Liike). Ikkunana Kamerapostiin tulee vain anturi, jonka muoto on Ikkuna.",
         "data": {
           "exported_entities": "Vietävät anturit"
         }

@@ -43,6 +43,16 @@ async def test_successful_setup_creates_entry(hass: HomeAssistant) -> None:
     }
 
 
+async def test_a_new_setup_offers_kameraposti_turva_first(hass: HomeAssistant) -> None:
+    """Design review TOP 8 (steelo 2026-10-18): kameraposti.fi has no sensor broker, so a new setup
+    defaults to cam.steels.me; both services stay selectable."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+
+    host = next(key for key in result["data_schema"].schema if key == CONF_HOST)
+    assert host.default() == "cam.steels.me"
+    assert result["data_schema"].schema[host].config["options"] == ["kameraposti.fi", "cam.steels.me"]
+
+
 async def test_invalid_auth_shows_error_and_does_not_create_entry(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
 
