@@ -73,7 +73,7 @@ async def test_first_detection_creates_one_device_and_three_entities(
     device = device_registry.async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:{CAMERA_ID}")})
     assert device is not None
     assert device.manufacturer == "Kameraposti"
-    assert device.model == "Riistakamera"
+    assert device.model == "Kamera"
     assert device.name == f"Riistakamera {CAMERA_ID}"
 
     entity_registry = er.async_get(hass)

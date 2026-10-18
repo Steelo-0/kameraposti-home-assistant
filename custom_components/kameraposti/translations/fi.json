@@ -3,31 +3,31 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Valitse palvelu ja syötä MQTT-tunnus ja salasana. Anturit-sivun Home Assistant -kohta näyttää ne täsmälleen tässä muodossa (esim. palvelu cam.steels.me, tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
+        "description": "Valitse palvelu ja syötä tunnus ja salasana. Turva-sivun Home Assistant -kohta näyttää ne täsmälleen tässä muodossa (esim. palvelu cam.steels.me, tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
         "data": {
           "host": "Palvelu",
-          "customer_id": "MQTT-tunnus tai tilin numero",
-          "password": "MQTT-salasana"
+          "customer_id": "Tunnus (esim. kp-2) tai tilin numero",
+          "password": "Salasana"
         }
       },
       "reauth_confirm": {
         "title": "Yhdistä uudelleen Kamerapostiin",
-        "description": "Kameraposti hylkäsi tallennetun salasanan. Luo tai vaihda MQTT-salasana Kamerapostin Anturit-sivulla ja syötä se tähän.",
+        "description": "Kameraposti hylkäsi tallennetun salasanan. Luo tai vaihda salasana Kamerapostin Turva-sivulla ja syötä se tähän.",
         "data": {
-          "password": "MQTT-salasana"
+          "password": "Salasana"
         }
       }
     },
     "error": {
-      "cannot_connect": "Kameraposti-brokeriin ei saatu yhteyttä. Tarkista verkkoyhteys ja yritä uudelleen.",
-      "invalid_auth": "Kameraposti hylkäsi tunnukset. Tarkista MQTT-tunnus ja salasana.",
+      "cannot_connect": "Kamerapostin palvelimeen ei saatu yhteyttä. Tarkista verkkoyhteys ja yritä uudelleen.",
+      "invalid_auth": "Kameraposti hylkäsi tunnukset. Tarkista tunnus ja salasana.",
       "unknown": "Odottamaton virhe. Yritä uudelleen.",
-      "invalid_login": "Tuntematon tunnus. Kirjoita se kuten Anturit-sivulla, esim. kp-2 tai kp-2-2 (tai pelkkä tilin numero).",
-      "device_login": "Tämä on laitteen (esim. Shellyn) oma tunnus, eikä se käy Home Assistantille. Luo Home Assistantille oma tunnus Anturit-sivulla: Home Assistant → Lisää toinen Home Assistant."
+      "invalid_login": "Tuntematon tunnus. Kirjoita se kuten Turva-sivulla, esim. kp-2 tai kp-2-2 (tai pelkkä tilin numero).",
+      "device_login": "Tämä on laitteen (esim. Shellyn) oma tunnus, eikä se käy Home Assistantille. Luo Home Assistantille oma tunnus Turva-sivulla: Home Assistant → Lisää toinen Home Assistant."
     },
     "abort": {
-      "already_configured": "Tämä Kamerapostin MQTT-tunnus on jo käytössä. Toinen Home Assistant samalla tilillä tarvitsee oman tunnuksen: Anturit-sivu → Home Assistant → Lisää toinen Home Assistant.",
-      "reauth_successful": "Uudelleentunnistautuminen onnistui."
+      "already_configured": "Tämä Kamerapostin tunnus on jo käytössä. Toinen Home Assistant samalla tilillä tarvitsee oman tunnuksen: Turva-sivu → Home Assistant → Lisää toinen Home Assistant.",
+      "reauth_successful": "Yhteys palautettu uudella salasanalla."
     }
   },
   "entity": {
@@ -62,7 +62,7 @@
     "step": {
       "sensors": {
         "title": "Anturit Kamerapostiin",
-        "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm). {limit_note} Kameraposti luo anturit automaattisesti. Kamerapostissa poistettu anturi ei palaa (Anturit-sivun Palauta tuo sen takaisin). Kamerat valitaan Kamerapostissa: Home Assistant kertoo sille kaikki kameransa, ja hälytys tuo kuvan ja lyhyen videon. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem). Jos anturi puuttuu listalta, avaa se Home Assistantissa ja valitse kohdasta Näytä muodossa sen tyyppi (esim. Ovi, Ikkuna, Kosteus tai Liike). Ikkunana Kamerapostiin tulee vain anturi, jonka muoto on Ikkuna.",
+        "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm). {limit_note} Kameraposti luo anturit automaattisesti. Kamerapostissa poistettu anturi ei palaa (Turva-sivun Palauta tuo sen takaisin). Kamerat valitaan Kamerapostissa: Home Assistant kertoo sille kaikki kameransa, ja hälytys tuo kuvan ja lyhyen videon. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem). Jos anturi puuttuu listalta, avaa se Home Assistantissa ja valitse kohdasta Näytä muodossa sen tyyppi (esim. Ovi, Ikkuna, Kosteus tai Liike). Ikkunana Kamerapostiin tulee vain anturi, jonka muoto on Ikkuna.",
         "data": {
           "exported_entities": "Vietävät anturit"
         }
@@ -81,7 +81,7 @@
       "message": "Liian monta väärää koodia: purku on lukossa (15 min, toistuvista virheistä vuorokauden). Viritys toimii."
     },
     "code_not_set": {
-      "message": "Aseta purkukoodi Kamerapostissa (Anturit → Turvajärjestelmä), niin Home Assistant voi purkaa."
+      "message": "Aseta purkukoodi Kamerapostissa (Turva-sivu → Turvajärjestelmä), niin Home Assistant voi purkaa."
     },
     "no_response": {
       "message": "Kameraposti ei vastannut. Yritä uudelleen."

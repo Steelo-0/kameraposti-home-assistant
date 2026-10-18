@@ -113,7 +113,7 @@ async def test_roster_creates_a_named_device_per_camera_before_any_detection(
     assert piha is not None and piha.name == "Pihakamera"
     assert polku is not None and polku.name == "Riistapolku"
     assert piha.manufacturer == "Kameraposti"
-    assert piha.model == "Riistakamera"
+    assert piha.model == "Kamera"
     # The detection sensors exist (no detection yet -> unknown).
     state = hass.states.get("sensor.pihakamera_last_detection")
     assert state is not None

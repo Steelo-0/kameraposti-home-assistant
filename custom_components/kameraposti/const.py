@@ -146,7 +146,8 @@ LOGIN_PATTERN: Final = re.compile(r"^(?:kp-)?([1-9]\d{0,9})(?:-([2-9]|[1-9]\d))?
 DEVICE_LOGIN_PATTERN: Final = re.compile(r"^kp-[1-9]\d{0,9}-d[1-9]\d{0,9}$", re.IGNORECASE)
 
 MANUFACTURER: Final = "Kameraposti"
-MODEL: Final = "Riistakamera"
+# Design review TOP 10 (2026-10-18): a camera, not a trail camera (Turva cameras are home cameras).
+MODEL: Final = "Kamera"
 # Device name for a camera the roster has not named (or with no roster at all).
 DEFAULT_CAMERA_NAME_TEMPLATE: Final = "Riistakamera {camera_id}"
 
