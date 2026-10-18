@@ -72,6 +72,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ENTITY_ID
 from homeassistant.core import HomeAssistant, callback
@@ -122,6 +123,10 @@ _JPEG_MAGIC = b"\xff\xd8\xff"
 
 _DELIVERED = "delivered"
 _ALREADY_RECEIVED = "HTTP 409"
+
+
+# Design review TOP 9: a "no Frigate detection, no photo" notice at most once a day per camera.
+NO_DETECTION_NOTICE_INTERVAL = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +359,8 @@ class KameraportiCaptureHandler:
         self._record_locks: dict[str, asyncio.Lock] = {}
         # camera entity_id -> when a live still for motion was last sent (MOTION_LIVE_MIN_SECONDS).
         self._motion_live_sent: dict[str, datetime] = {}
+        # Design review TOP 9: camera entity_id -> when a "no Frigate detection, no photo" notice was shown.
+        self._no_detection_noticed: dict[str, datetime] = {}
         self._stopping = False
 
     @callback
@@ -492,6 +499,35 @@ class KameraportiCaptureHandler:
             if marked is not None and outcome != _DELIVERED:
                 _unmark(self._motion_live_sent, camera.entity_id, marked, previous)
 
+    @callback
+    def _notice_no_detection(self, camera_entity_id: str, now: datetime) -> None:
+        """Design review TOP 9 (2026-10-18): a Frigate camera sent nothing because Frigate had detected
+        nothing just before the request -- said in Home Assistant's notifications, not only in the log,
+        at most once a day per camera (one notice per camera, a new one replaces it)."""
+        last = self._no_detection_noticed.get(camera_entity_id)
+        if last is not None and now - last < NO_DETECTION_NOTICE_INTERVAL:
+            return
+        self._no_detection_noticed[camera_entity_id] = now
+        state = self._hass.states.get(camera_entity_id)
+        name = state.name if state is not None else camera_entity_id
+        if (self._hass.config.language or "").startswith("fi"):
+            title = "Kameraposti: hälytykseen ei lähtenyt kuvaa"
+            message = (
+                f"Kameraposti pyysi kuvaa kamerasta {name}, mutta Frigate ei ollut tunnistanut siinä mitään "
+                "juuri ennen pyyntöä, joten kuvaa ja videota ei lähetetty. Frigate-kamerasta lähtee vain "
+                "Frigaten oman tunnistuksen kuva."
+            )
+        else:
+            title = "Kameraposti: no photo for an alarm"
+            message = (
+                f"Kameraposti asked for a photo from {name}, but Frigate had detected nothing on it just "
+                "before the request, so no photo or video was sent. A Frigate camera sends only the "
+                "picture of Frigate's own detection."
+            )
+        persistent_notification.async_create(
+            self._hass, message, title=title, notification_id=f"kameraposti_no_detection_{camera_entity_id}"
+        )
+
     async def _async_detection_photo(
         self, request: CaptureRequest, camera: CaptureCamera, received: datetime
     ) -> bool:
@@ -520,6 +556,7 @@ class KameraportiCaptureHandler:
                     DETECTION_BEFORE_SECONDS,
                     request.reason,
                 )
+                self._notice_no_detection(camera.entity_id, received)
                 return False
             _LOGGER.info(
                 "Kameraposti capture request_id=%s camera_id=%s: no Frigate detection on %s, "
@@ -529,6 +566,7 @@ class KameraportiCaptureHandler:
                 camera.entity_id,
                 request.reason,
             )
+            self._notice_no_detection(camera.entity_id, received)
             return False
         if self._detection_sent.get(camera.entity_id) == detection.event_id:
             _LOGGER.info(

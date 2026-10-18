@@ -146,6 +146,9 @@ class KameraportiCoordinator:
         self.connection_state: ConnectionState = ConnectionState.CONNECTING
         # steelo 2026-10-05: Kamerapostin turvajärjestelmän tila (None = ei vielä tiedossa).
         self.security_mode: str | None = None
+        # Design review TOP 9 (2026-10-18): Kameraposti has an unacknowledged alarm (security payload
+        # "triggered"); the panel shows TRIGGERED so an automation (lights, siren) can react.
+        self.security_triggered: bool = False
         self._security_pending: dict[str, asyncio.Future[dict]] = {}
         self._security_state_topic = SECURITY_STATE_TOPIC_TEMPLATE.format(customer_id=customer_id)
         self._security_result_topic = SECURITY_RESULT_TOPIC_TEMPLATE.format(customer_id=customer_id)
@@ -526,6 +529,8 @@ class KameraportiCoordinator:
             _LOGGER.debug("Ignoring invalid Kameraposti security state")
             return
         self.security_mode = mode
+        # An older Kameraposti sends no "triggered": never triggered.
+        self.security_triggered = data.get("triggered") is True
         async_dispatcher_send(self.hass, self.signal_security)
 
     @callback

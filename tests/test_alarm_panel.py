@@ -141,6 +141,34 @@ async def test_no_answer_or_no_connection_raises(hass: HomeAssistant) -> None:
     assert raised.value.translation_key == "not_connected"
 
 
+async def test_an_unacknowledged_alarm_shows_the_panel_triggered(hass: HomeAssistant) -> None:
+    """Design review TOP 9 (2026-10-18): Kameraposti's "triggered" (an unacknowledged alarm) shows the
+    panel TRIGGERED, so an automation can react; an older Kameraposti without the field never does."""
+    entry = _entry(hass)
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient", return_value=_client()):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "alarm_control_panel", DOMAIN, "kameraposti:3:security"
+    )
+
+    states = []
+    for payload in (
+        b'{"mode":"away","triggered":true}',
+        b'{"mode":"away","triggered":false}',
+        b'{"mode":"disarmed","triggered":true}',
+        b'{"mode":"home"}',
+        b'{"mode":"home","triggered":"yes"}',
+    ):
+        coordinator._handle_message("customers/3/security", payload)
+        await hass.async_block_till_done()
+        states.append(hass.states.get(entity_id).state)
+
+    assert states == ["triggered", "armed_away", "triggered", "armed_home", "armed_home"]
+
+
 async def test_the_panel_follows_the_mode_and_disarms_with_the_code(hass: HomeAssistant) -> None:
     entry = _entry(hass)
     client = _client()

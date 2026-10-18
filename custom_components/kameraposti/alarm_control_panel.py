@@ -75,7 +75,12 @@ class KameraportiSecurityPanel(AlarmControlPanelEntity):
     @property
     def alarm_state(self) -> AlarmControlPanelState | None:
         mode = self._coordinator.security_mode
-        return _STATES.get(mode) if mode is not None else None
+        if mode is None:
+            return None
+        # Design review TOP 9: an unacknowledged alarm in Kameraposti is TRIGGERED until acknowledged.
+        if self._coordinator.security_triggered:
+            return AlarmControlPanelState.TRIGGERED
+        return _STATES.get(mode)
 
     async def async_alarm_disarm(self, code: str | None = None) -> None:
         await self._coordinator.async_set_security_mode("disarmed", code)

@@ -1161,6 +1161,31 @@ async def test_without_a_detection_nothing_is_sent_not_even_a_live_still(
     assert _warnings(caplog) == []
 
 
+@respx.mock
+async def test_a_frigate_camera_without_a_detection_says_so_once_a_day(
+    make_harness: Callable[..., Any], freezer: FrozenDateTimeFactory
+) -> None:
+    """Design review TOP 9 (2026-10-18): the decline shows in Home Assistant's notifications (not only
+    in the log), one notice per camera at most once a day."""
+    h = await _detection_harness(make_harness, freezer)
+    _routes(request_id=62)
+    _routes(request_id=63)
+    _routes(request_id=64)
+
+    with patch("custom_components.kameraposti.capture.persistent_notification.async_create") as notify:
+        await h.send(_frigate_request(62, "alarm"))
+        freezer.tick(timedelta(hours=23))
+        await h.send(_frigate_request(63, "alarm"))
+        assert notify.call_count == 1
+        freezer.tick(timedelta(hours=2))
+        await h.send(_frigate_request(64, "alarm"))
+
+    assert notify.call_count == 2
+    message = notify.call_args.args[1]
+    assert "Frigate had detected nothing" in message
+    assert notify.call_args.kwargs["notification_id"] == f"kameraposti_no_detection_{FRIGATE_CAMERA}"
+
+
 @pytest.mark.parametrize(("seconds", "answered"), [(10, True), (11, False)])
 @respx.mock
 async def test_only_a_detection_just_before_the_request_is_its_own(
