@@ -51,6 +51,11 @@
       "security": {
         "name": "Security system"
       }
+    },
+    "binary_sensor": {
+      "connection": {
+        "name": "Kameraposti connection"
+      }
     }
   },
   "options": {

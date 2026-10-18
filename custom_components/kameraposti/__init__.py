@@ -20,7 +20,12 @@ from .login import entry_login
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.IMAGE, Platform.ALARM_CONTROL_PANEL]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.IMAGE,
+    Platform.ALARM_CONTROL_PANEL,
+    Platform.BINARY_SENSOR,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

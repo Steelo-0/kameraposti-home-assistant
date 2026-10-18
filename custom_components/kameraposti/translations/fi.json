@@ -51,6 +51,11 @@
       "security": {
         "name": "Turvajärjestelmä"
       }
+    },
+    "binary_sensor": {
+      "connection": {
+        "name": "Kameraposti-yhteys"
+      }
     }
   },
   "options": {
