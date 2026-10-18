@@ -12,10 +12,11 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, DOMAIN
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
@@ -167,6 +168,53 @@ async def test_an_unacknowledged_alarm_shows_the_panel_triggered(hass: HomeAssis
         states.append(hass.states.get(entity_id).state)
 
     assert states == ["triggered", "armed_away", "triggered", "armed_home", "armed_home"]
+
+
+async def test_the_exit_and_entry_delays_show_arming_and_pending(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Design review TOP 7 (steelo 2026-10-18, 30 s): ARMING during the exit delay, PENDING during a
+    running entry delay, and the panel turns armed by itself when the delay ends."""
+    freezer.move_to("2026-10-18T09:00:00+00:00")
+    entry = _entry(hass)
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient", return_value=_client()):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "alarm_control_panel", DOMAIN, "kameraposti:3:security"
+    )
+
+    coordinator._handle_message(
+        "customers/3/security",
+        b'{"mode":"away","arming_until":"2026-10-18T09:00:30+00:00","pending_until":null}',
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "arming"
+
+    freezer.tick(31)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "armed_away"
+
+    coordinator._handle_message(
+        "customers/3/security",
+        b'{"mode":"away","arming_until":null,"pending_until":"2026-10-18T09:01:01+00:00"}',
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "pending"
+
+    coordinator._handle_message(
+        "customers/3/security",
+        b'{"mode":"away","triggered":true,"pending_until":"2026-10-18T09:01:01+00:00"}',
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "triggered"
+
+    coordinator._handle_message("customers/3/security", b'{"mode":"away","pending_until":"not a time"}')
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == "armed_away"
 
 
 async def test_the_panel_follows_the_mode_and_disarms_with_the_code(hass: HomeAssistant) -> None:

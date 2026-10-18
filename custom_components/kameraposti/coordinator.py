@@ -43,6 +43,7 @@ import json
 import logging
 import re
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -53,7 +54,9 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .camera_export import KameraportiCameraExporter, camera_settings_from_options, exported_cameras
 from .capture import KameraportiCaptureHandler, capture_cameras_from_options
@@ -149,6 +152,11 @@ class KameraportiCoordinator:
         # Design review TOP 9 (2026-10-18): Kameraposti has an unacknowledged alarm (security payload
         # "triggered"); the panel shows TRIGGERED so an automation (lights, siren) can react.
         self.security_triggered: bool = False
+        # Design review TOP 7 (steelo 2026-10-18, 30 s): the exit delay (arming) and a running entry
+        # delay (pending) from Kameraposti; the panel shows ARMING / PENDING until these times.
+        self.security_arming_until: datetime | None = None
+        self.security_pending_until: datetime | None = None
+        self._security_delay_unsub: Callable[[], None] | None = None
         self._security_pending: dict[str, asyncio.Future[dict]] = {}
         self._security_state_topic = SECURITY_STATE_TOPIC_TEMPLATE.format(customer_id=customer_id)
         self._security_result_topic = SECURITY_RESULT_TOPIC_TEMPLATE.format(customer_id=customer_id)
@@ -275,6 +283,9 @@ class KameraportiCoordinator:
 
         1.6.0: then cancels the capture requests in flight (no new one can arrive).
         """
+        if self._security_delay_unsub is not None:
+            self._security_delay_unsub()
+            self._security_delay_unsub = None
         self._exporter.async_stop()
         self._camera_exporter.async_stop()
         if self._frigate_task is not None:
@@ -531,7 +542,33 @@ class KameraportiCoordinator:
         self.security_mode = mode
         # An older Kameraposti sends no "triggered": never triggered.
         self.security_triggered = data.get("triggered") is True
+        self.security_arming_until = _parse_time(data.get("arming_until"))
+        self.security_pending_until = _parse_time(data.get("pending_until"))
+        self._schedule_security_refresh()
         async_dispatcher_send(self.hass, self.signal_security)
+
+    @callback
+    def _schedule_security_refresh(self) -> None:
+        """Refresh the panel when a delay ends (ARMING -> armed, PENDING -> armed / the next state)."""
+        if self._security_delay_unsub is not None:
+            self._security_delay_unsub()
+            self._security_delay_unsub = None
+        now = dt_util.utcnow()
+        ends = [
+            at
+            for at in (self.security_arming_until, self.security_pending_until)
+            if at is not None and at > now
+        ]
+        if not ends:
+            return
+
+        @callback
+        def _ended(_now: datetime) -> None:
+            self._security_delay_unsub = None
+            self._schedule_security_refresh()
+            async_dispatcher_send(self.hass, self.signal_security)
+
+        self._security_delay_unsub = async_track_point_in_utc_time(self.hass, _ended, min(ends))
 
     @callback
     def _apply_security_result(self, payload: bytes) -> None:
@@ -622,6 +659,14 @@ class KameraportiCoordinator:
                 "timestamp": detection.timestamp.isoformat(),
             },
         )
+
+
+def _parse_time(value: object) -> datetime | None:
+    """An ISO 8601 time from Kameraposti, or None (missing, not a string, not a time)."""
+    if not isinstance(value, str):
+        return None
+    parsed = dt_util.parse_datetime(value)
+    return dt_util.as_utc(parsed) if parsed is not None else None
 
 
 def _json_object(payload: bytes) -> dict | None:

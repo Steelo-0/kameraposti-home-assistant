@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import KameraportiCoordinator
@@ -80,6 +81,14 @@ class KameraportiSecurityPanel(AlarmControlPanelEntity):
         # Design review TOP 9: an unacknowledged alarm in Kameraposti is TRIGGERED until acknowledged.
         if self._coordinator.security_triggered:
             return AlarmControlPanelState.TRIGGERED
+        # Design review TOP 7: a running entry delay (disarm now) and the exit delay after arming.
+        now = dt_util.utcnow()
+        pending = self._coordinator.security_pending_until
+        if pending is not None and pending > now:
+            return AlarmControlPanelState.PENDING
+        arming = self._coordinator.security_arming_until
+        if arming is not None and arming > now and mode in ("away", "home"):
+            return AlarmControlPanelState.ARMING
         return _STATES.get(mode)
 
     async def async_alarm_disarm(self, code: str | None = None) -> None:
