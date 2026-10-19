@@ -523,3 +523,49 @@ async def test_setup_drops_its_link_to_a_left_over_device_without_its_entities(
     assert entity_registry.async_get(theirs.entity_id).device_id == shared.id
     assert device_registry.async_get(only_ours_with_theirs.id).config_entries == {entry.entry_id}
     assert entity_registry.async_get(stray.entity_id).device_id == only_ours_with_theirs.id
+
+
+async def test_setup_drops_its_link_to_another_entrys_device_once_its_entities_moved_off(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    """Fable audit L-1: a device two entries with one account number shared went to one entry in the
+    migration; the other entry's panel moved to its own device at setup, but its link stayed on the first
+    one's device for good. It goes after setup, once none of the entry's entities is on the device."""
+    test = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2, minor_version=2, unique_id="kp-3")
+    prod = MockConfigEntry(
+        domain=DOMAIN,
+        data={**ENTRY_DATA, CONF_HOST: "turva.secsrv.fi", CONF_USERNAME: "kp-3-2"},
+        version=2,
+        minor_version=2,
+        unique_id="kp-3-2",
+    )
+    test.add_to_hass(hass)
+    prod.add_to_hass(hass)
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    shared = device_registry.async_get_or_create(
+        config_entry_id=test.entry_id,
+        identifiers={(DOMAIN, f"{test.entry_id}:security")},
+        name="Kameraposti 3",
+    )
+    device_registry.async_update_device(shared.id, add_config_entry_id=prod.entry_id)
+    panels = {
+        entry.entry_id: entity_registry.async_get_or_create(
+            "alarm_control_panel",
+            DOMAIN,
+            f"kameraposti:{entry.entry_id}:security",
+            config_entry=entry,
+            device_id=shared.id,
+        )
+        for entry in (test, prod)
+    }
+    test_panel, prod_panel = panels[test.entry_id], panels[prod.entry_id]
+
+    assert await hass.config_entries.async_setup(test.entry_id)
+    await hass.async_block_till_done()
+
+    assert device_registry.async_get(shared.id).config_entries == {test.entry_id}
+    assert entity_registry.async_get(test_panel.entity_id).device_id == shared.id
+    prod_device = device_registry.async_get_device(identifiers={(DOMAIN, f"{prod.entry_id}:security")})
+    assert entity_registry.async_get(prod_panel.entity_id).device_id == prod_device.id
+    assert hass.states.get(prod_panel.entity_id) is not None

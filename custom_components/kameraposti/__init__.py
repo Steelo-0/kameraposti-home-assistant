@@ -9,7 +9,6 @@ register or depend on Home Assistant's built-in MQTT integration.
 from __future__ import annotations
 
 import logging
-import re
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
@@ -62,7 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_start()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    # 1.14.1 (bug hunt M-1): after the platforms, so this entry's entities are on its own devices.
+    # 1.14.1 (bug hunt M-1, L-1): after the platforms, so this entry's entities are on its own devices.
     _async_drop_stale_device_links(hass, entry)
 
     # 1.12.1: Home Assistant reloads after an options save or reauth by itself (config_flow.py);
@@ -106,19 +105,21 @@ async def async_remove_config_entry_device(
 
 @callback
 def _async_drop_stale_device_links(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """1.14.1 (bug hunt 2026-10-19 M-1): drop this entry's link to a Kameraposti device it no longer uses.
+    """1.14.1 (bug hunt 2026-10-19 M-1, L-1): drop the entry's link to a Kameraposti device it does not use.
 
-    Such a device has the account number in front of its identifiers ("<account>:security",
-    "<account>:<camera>"): 1.14.0 made it after a downgrade, and it stays once its "..._2" entities are
-    deleted. Only when no entity of this entry is on it -- and when this entry is its only link (dropping
-    it removes the device), only when no entity at all is on it. Never removes an entity.
+    Such a device has none of this entry's own identifiers ("<entry_id>:..."): one with the account
+    number in front ("<account>:security", "<account>:<camera>") that 1.14.0 made after a downgrade, left
+    once its "..._2" entities are deleted; or another entry's device this entry was linked to as well
+    (two entries with one account number until 1.14.0), left once this entry's entities moved to its
+    own device. Only when no entity of this entry is on it -- and when this entry is its only link
+    (dropping it removes the device), only when no entity at all is on it. Never removes an entity.
     """
-    stale = re.compile(rf"{re.escape(str(entry.data[CONF_CUSTOMER_ID]))}:(?:security|[0-9]+)")
+    own = f"{entry.entry_id}:"
     device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
     for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
         identifiers = [identifier for domain, identifier in device.identifiers if domain == DOMAIN]
-        if not identifiers or not all(stale.fullmatch(identifier) for identifier in identifiers):
+        if not identifiers or any(identifier.startswith(own) for identifier in identifiers):
             continue
         entities = er.async_entries_for_device(entity_registry, device.id, include_disabled_entities=True)
         if any(registry_entry.config_entry_id == entry.entry_id for registry_entry in entities):
