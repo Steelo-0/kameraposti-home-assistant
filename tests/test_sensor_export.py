@@ -387,7 +387,11 @@ async def test_coordinator_describes_exported_sensors_when_connected(hass: HomeA
         # 1.12.0: this Home Assistant (login + installation id), every chosen entity, after the descriptions.
         source = f"kp-3.{await instance_id.async_get(hass)}"
         assert json.loads(calls[0][1])["source"] == source
-        assert json.loads(calls[2][1]) == {"source": source, "entities": ["binary_sensor.kellari"]}
+        assert json.loads(calls[2][1]) == {
+            "source": source,
+            "selection_saved": True,
+            "entities": ["binary_sensor.kellari"],
+        }
         assert calls[2][2] is False
 
         _set(hass, "binary_sensor.kellari", "on", "moisture", "Kellarin vuoto")
@@ -1600,6 +1604,7 @@ async def test_the_selection_list_names_every_chosen_entity_after_the_descriptio
     assert retain is False
     assert json.loads(payload) == {
         "source": "kp-3-2",
+        "selection_saved": True,
         "entities": [
             "binary_sensor.kellari",
             "binary_sensor.ei_viela",
@@ -1645,7 +1650,15 @@ async def test_an_empty_selection_sends_the_empty_list_every_15_minutes(
     )
     exporter.async_start()
     exporter.publish_snapshot()
-    assert published == [("kameraposti/3/anturit/_ha/sync", '{"source": "kp-3", "entities": []}', False)]
+    # Bug hunt 2026-10-19: Kameraposti takes a list without any sensor on it only with selection_saved
+    # (Home Assistant 1.12-1.14.0 sent an empty one from a re-added entry).
+    assert published == [
+        (
+            "kameraposti/3/anturit/_ha/sync",
+            '{"source": "kp-3", "selection_saved": true, "entities": []}',
+            False,
+        )
+    ]
 
     freezer.tick(15 * 60 + 1)
     async_fire_time_changed(hass)
@@ -1703,6 +1716,11 @@ async def test_a_long_list_goes_out_in_parts_under_the_brokers_limit(hass: HomeA
     assert [(p["part"], p["parts"]) for p in parts] == [(n, len(parts)) for n in range(1, len(parts) + 1)]
     assert [name for p in parts for name in p["entities"]] == entity_ids
     assert all(p["source"] == "kp-3.abc" for p in parts)
+    # Every part says the list is a saved selection (Kameraposti reads it from the parts).
+    assert all(
+        list(p) == ["source", "selection_saved", "snapshot", "part", "parts", "entities"] for p in parts
+    )
+    assert all(p["selection_saved"] is True for p in parts)
     exporter.async_stop()
 
 
@@ -1834,5 +1852,7 @@ async def test_a_re_added_entry_drops_nothing_until_its_selection_is_saved(
         await hass.async_block_till_done()
 
     source = f"kp-3.{await instance_id.async_get(hass)}"
-    assert _lists(clients[1]) == [{"source": source, "entities": ["binary_sensor.piha_frigate"]}]
+    assert _lists(clients[1]) == [
+        {"source": source, "selection_saved": True, "entities": ["binary_sensor.piha_frigate"]}
+    ]
     assert await hass.config_entries.async_unload(entry.entry_id)

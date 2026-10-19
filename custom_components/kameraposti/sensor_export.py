@@ -44,7 +44,9 @@ parts (Kameraposti drops only once every part has come).
 1.14.1 (Fable bug hunt H-H1): the list goes out only once the selection has been saved in the options.
 A new or re-added entry has none yet, and its empty list made Kameraposti drop every sensor this Home
 Assistant had described before (the source survives removing and adding the entry). A selection saved
-empty is still sent: that is the user's choice.
+empty is still sent: that is the user's choice. Every list (every part) says so with
+``"selection_saved": true``; Kameraposti drops by a list without any sensor on it only then (it ignores
+the empty lists of 1.12-1.14.0).
 1.8.0: only the first <limit> chosen entities (in the saved order) are sent,
 the limit being the account's plan from Kameraposti's roster (sensor_limit;
 DEFAULT_SENSOR_LIMIT until it is told). The rest are left out with one warning
@@ -634,7 +636,8 @@ class KameraportiSensorExporter:
         """The list as one message, or in parts of at most SYNC_PART_MAX_BYTES under one snapshot id."""
         extra = list(self._extra_names()) if self._extra_names is not None else []
         names = list(dict.fromkeys([*(mqtt_name_for(entity_id) for entity_id in self._entity_ids), *extra]))
-        whole = json.dumps({"source": self._source, "entities": names})
+        # 1.14.1: "selection_saved" -- this list is a saved selection (module doc), also in every part.
+        whole = json.dumps({"source": self._source, "selection_saved": True, "entities": names})
         if len(whole.encode()) <= SYNC_PART_MAX_BYTES:
             return [whole]
         snapshot = secrets.token_hex(4)
@@ -643,6 +646,7 @@ class KameraportiSensorExporter:
             return json.dumps(
                 {
                     "source": self._source,
+                    "selection_saved": True,
                     "snapshot": snapshot,
                     "part": n,
                     "parts": parts,
