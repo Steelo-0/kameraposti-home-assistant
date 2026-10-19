@@ -152,7 +152,7 @@ async def test_an_unacknowledged_alarm_shows_the_panel_triggered(hass: HomeAssis
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
     coordinator._handle_state_change(ConnectionState.CONNECTED)
     entity_id = er.async_get(hass).async_get_entity_id(
-        "alarm_control_panel", DOMAIN, "kameraposti:3:security"
+        "alarm_control_panel", DOMAIN, f"kameraposti:{entry.entry_id}:security"
     )
 
     states = []
@@ -183,7 +183,7 @@ async def test_the_exit_and_entry_delays_show_arming_and_pending(
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
     coordinator._handle_state_change(ConnectionState.CONNECTED)
     entity_id = er.async_get(hass).async_get_entity_id(
-        "alarm_control_panel", DOMAIN, "kameraposti:3:security"
+        "alarm_control_panel", DOMAIN, f"kameraposti:{entry.entry_id}:security"
     )
 
     coordinator._handle_message(
@@ -227,7 +227,7 @@ async def test_the_panel_follows_the_mode_and_disarms_with_the_code(hass: HomeAs
     coordinator._handle_state_change(ConnectionState.CONNECTED)
 
     entity_id = er.async_get(hass).async_get_entity_id(
-        "alarm_control_panel", DOMAIN, "kameraposti:3:security"
+        "alarm_control_panel", DOMAIN, f"kameraposti:{entry.entry_id}:security"
     )
     assert entity_id is not None
     coordinator._handle_message("customers/3/security", b'{"mode":"away"}')
@@ -297,7 +297,7 @@ async def test_the_panel_is_unavailable_while_disconnected(hass: HomeAssistant) 
         await hass.async_block_till_done()
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
     entity_id = er.async_get(hass).async_get_entity_id(
-        "alarm_control_panel", DOMAIN, "kameraposti:3:security"
+        "alarm_control_panel", DOMAIN, f"kameraposti:{entry.entry_id}:security"
     )
 
     coordinator._handle_state_change(ConnectionState.CONNECTED)

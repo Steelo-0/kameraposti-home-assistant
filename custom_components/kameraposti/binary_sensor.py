@@ -38,10 +38,10 @@ class KameraportiConnection(BinarySensorEntity):
 
     def __init__(self, coordinator: KameraportiCoordinator) -> None:
         self._coordinator = coordinator
-        self._attr_unique_id = f"kameraposti:{coordinator.customer_id}:connection"
+        self._attr_unique_id = f"{coordinator.unique_id_prefix}:connection"
         # The same device as the security system panel (alarm_control_panel.py).
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{coordinator.customer_id}:security")},
+            identifiers={coordinator.security_device_identifier},
             manufacturer=MANUFACTURER,
             name=f"Kameraposti {coordinator.customer_id}",
         )

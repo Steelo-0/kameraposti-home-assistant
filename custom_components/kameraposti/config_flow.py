@@ -198,6 +198,9 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Kameraposti."""
 
     VERSION = 2
+    # 1.14.1 (Fable bug hunt H-M1): unique ids and device identifiers carry the entry id (__init__.py
+    # async_migrate_entry). Only the minor version, so 1.14.0 still loads a migrated entry.
+    MINOR_VERSION = 2
 
     _reauth_entry_data: dict[str, Any] | None = None
 

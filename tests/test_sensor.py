@@ -70,7 +70,7 @@ async def test_first_detection_creates_one_device_and_three_entities(
     await hass.async_block_till_done()
 
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:{CAMERA_ID}")})
+    device = device_registry.async_get_device(identifiers={coordinator.camera_device_identifier(CAMERA_ID)})
     assert device is not None
     assert device.manufacturer == "Kameraposti"
     assert device.model == "Kamera"
@@ -79,9 +79,9 @@ async def test_first_detection_creates_one_device_and_three_entities(
     entity_registry = er.async_get(hass)
     unique_ids = {e.unique_id for e in entity_registry.entities.values() if e.device_id == device.id}
     assert unique_ids == {
-        f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:last_detection",
-        f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:confidence",
-        f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:last_detection_time",
+        f"{DOMAIN}:{setup_entry.entry_id}:{CAMERA_ID}:last_detection",
+        f"{DOMAIN}:{setup_entry.entry_id}:{CAMERA_ID}:confidence",
+        f"{DOMAIN}:{setup_entry.entry_id}:{CAMERA_ID}:last_detection_time",
         # No latest-photo entity: it is created only with the camera's first photo (1.5.0).
     }
 
@@ -135,5 +135,5 @@ async def test_two_different_cameras_get_two_separate_devices(
     await hass.async_block_till_done()
 
     device_registry = dr.async_get(hass)
-    assert device_registry.async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:16")}) is not None
-    assert device_registry.async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:17")}) is not None
+    assert device_registry.async_get_device(identifiers={(DOMAIN, f"{setup_entry.entry_id}:16")}) is not None
+    assert device_registry.async_get_device(identifiers={(DOMAIN, f"{setup_entry.entry_id}:17")}) is not None

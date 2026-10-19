@@ -53,9 +53,9 @@ class KameraportiSecurityPanel(AlarmControlPanelEntity):
 
     def __init__(self, coordinator: KameraportiCoordinator) -> None:
         self._coordinator = coordinator
-        self._attr_unique_id = f"kameraposti:{coordinator.customer_id}:security"
+        self._attr_unique_id = f"{coordinator.unique_id_prefix}:security"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{coordinator.customer_id}:security")},
+            identifiers={coordinator.security_device_identifier},
             manufacturer=MANUFACTURER,
             name=f"Kameraposti {coordinator.customer_id}",
         )

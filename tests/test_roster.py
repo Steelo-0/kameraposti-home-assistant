@@ -89,12 +89,18 @@ def _coordinator(hass: HomeAssistant, entry: MockConfigEntry) -> KameraportiCoor
     return hass.data[DOMAIN][entry.entry_id]
 
 
+def _entry_id(hass: HomeAssistant) -> str:
+    """1.14.1 (H-M1): the ids carry the entry id ("<entry_id>:<camera_id>", "kameraposti:<entry_id>:...")."""
+    [entry] = hass.config_entries.async_entries(DOMAIN)
+    return entry.entry_id
+
+
 def _camera_device(hass: HomeAssistant, camera_id: int) -> dr.DeviceEntry | None:
-    return dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:{camera_id}")})
+    return dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"{_entry_id(hass)}:{camera_id}")})
 
 
 def _camera_entity_ids(hass: HomeAssistant, camera_id: int) -> set[str]:
-    prefix = f"{DOMAIN}:{CUSTOMER_ID}:{camera_id}:"
+    prefix = f"{DOMAIN}:{_entry_id(hass)}:{camera_id}:"
     return {
         e.entity_id for e in er.async_get(hass).entities.values() if (e.unique_id or "").startswith(prefix)
     }
@@ -145,7 +151,7 @@ async def test_roster_renames_a_device_left_from_an_earlier_run_and_keeps_the_us
     device_registry = dr.async_get(hass)
     old = device_registry.async_get_or_create(
         config_entry_id=setup_entry.entry_id,
-        identifiers={(DOMAIN, f"{CUSTOMER_ID}:12")},
+        identifiers={(DOMAIN, f"{setup_entry.entry_id}:12")},
         name="Riistakamera 12",
     )
     device_registry.async_update_device(old.id, name_by_user="Oma nimi")
@@ -195,35 +201,42 @@ async def test_camera_that_leaves_the_roster_loses_its_device_and_entities(
     assert _camera_entity_ids(hass, 12)
 
 
+@pytest.mark.parametrize("owner", ["entry_id", "customer_id"])
 async def test_stale_device_from_an_earlier_run_is_removed_but_the_security_device_stays(
-    hass: HomeAssistant, setup_entry: MockConfigEntry
+    hass: HomeAssistant, setup_entry: MockConfigEntry, owner: str
 ) -> None:
-    """The coordinator starts empty after a restart; the registry still holds the old cameras."""
+    """The coordinator starts empty after a restart; the registry still holds the old cameras. 1.14.1: also
+    a device with the account number in front that the migration did not move (made by 1.14.0 after a
+    downgrade) is this entry's camera."""
     device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
+    prefix = setup_entry.entry_id if owner == "entry_id" else str(CUSTOMER_ID)
     stale = device_registry.async_get_or_create(
         config_entry_id=setup_entry.entry_id,
-        identifiers={(DOMAIN, f"{CUSTOMER_ID}:99")},
+        identifiers={(DOMAIN, f"{prefix}:99")},
         name="Riistakamera 99",
     )
-    entity_registry.async_get_or_create(
+    stale_entity = entity_registry.async_get_or_create(
         "sensor",
         DOMAIN,
-        f"{DOMAIN}:{CUSTOMER_ID}:99:last_detection",
+        f"{DOMAIN}:{prefix}:99:last_detection",
         config_entry=setup_entry,
         device_id=stale.id,
     )
-    security = device_registry.async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:security")})
+    security = device_registry.async_get_device(identifiers={(DOMAIN, f"{setup_entry.entry_id}:security")})
     assert security is not None
 
     _coordinator(hass, setup_entry)._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera")))
     await hass.async_block_till_done()
 
-    assert _camera_device(hass, 99) is None
-    assert _camera_entity_ids(hass, 99) == set()
-    assert device_registry.async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:security")}) is not None
+    assert device_registry.async_get(stale.id) is None
+    assert entity_registry.async_get(stale_entity.entity_id) is None
+    assert (
+        device_registry.async_get_device(identifiers={(DOMAIN, f"{setup_entry.entry_id}:security")})
+        is not None
+    )
     security_entity_id = er.async_get(hass).async_get_entity_id(
-        "alarm_control_panel", DOMAIN, f"{DOMAIN}:{CUSTOMER_ID}:security"
+        "alarm_control_panel", DOMAIN, f"{DOMAIN}:{setup_entry.entry_id}:security"
     )
     assert security_entity_id is not None
     assert hass.states.get(security_entity_id) is not None

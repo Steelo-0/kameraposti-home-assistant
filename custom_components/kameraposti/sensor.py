@@ -3,9 +3,10 @@
 Cameras are discovered dynamically (contract section 15) -- camera_id is
 not known at config-flow time, only once the account's camera roster
 (1.5.0) or the first detection for it arrives. Unique IDs are fully
-deterministic (``kameraposti:{customer_id}:{camera_id}:{kind}``), so a
-Home Assistant reload never creates duplicate entities for a camera_id
-already seen in an earlier run of this same config entry.
+deterministic (``kameraposti:{entry_id}:{camera_id}:{kind}``; until 1.14.0
+the account number instead of the entry id), so a Home Assistant reload
+never creates duplicate entities for a camera_id already seen in an earlier
+run of this same config entry.
 
 V1 is deliberately generic (contract section 14): one "last detection"
 label sensor, one confidence sensor, one last-detection-time sensor.
@@ -88,7 +89,7 @@ class KameraportiLastDetectionSensor(_KameraportiCameraSensorBase):
 
     def __init__(self, coordinator: KameraportiCoordinator, camera_id: int) -> None:
         super().__init__(coordinator, camera_id)
-        self._attr_unique_id = f"{DOMAIN}:{coordinator.customer_id}:{camera_id}:last_detection"
+        self._attr_unique_id = f"{coordinator.unique_id_prefix}:{camera_id}:last_detection"
 
     @property
     def native_value(self) -> str | None:
@@ -103,7 +104,7 @@ class KameraportiConfidenceSensor(_KameraportiCameraSensorBase):
 
     def __init__(self, coordinator: KameraportiCoordinator, camera_id: int) -> None:
         super().__init__(coordinator, camera_id)
-        self._attr_unique_id = f"{DOMAIN}:{coordinator.customer_id}:{camera_id}:confidence"
+        self._attr_unique_id = f"{coordinator.unique_id_prefix}:{camera_id}:confidence"
 
     @property
     def native_value(self) -> float | None:
@@ -119,7 +120,7 @@ class KameraportiLastDetectionTimeSensor(_KameraportiCameraSensorBase):
 
     def __init__(self, coordinator: KameraportiCoordinator, camera_id: int) -> None:
         super().__init__(coordinator, camera_id)
-        self._attr_unique_id = f"{DOMAIN}:{coordinator.customer_id}:{camera_id}:last_detection_time"
+        self._attr_unique_id = f"{coordinator.unique_id_prefix}:{camera_id}:last_detection_time"
 
     @property
     def native_value(self):

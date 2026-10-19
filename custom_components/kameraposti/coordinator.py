@@ -107,9 +107,9 @@ _LOGGER = logging.getLogger(__name__)
 # How long arming/disarming waits for Kameraposti's answer.
 SECURITY_RESULT_TIMEOUT_SECONDS = 10
 
-# Camera device identifier "<customer_id>:<camera_id>" (the security system's
-# device is "<customer_id>:security" and never matches).
-_CAMERA_IDENTIFIER = re.compile(r"(?P<customer_id>[0-9]+):(?P<camera_id>[0-9]+)")
+# Camera device identifier "<entry_id>:<camera_id>" (1.14.1; until 1.14.0 "<customer_id>:<camera_id>").
+# The security system's device is "<entry_id>:security" and never matches.
+_CAMERA_IDENTIFIER = re.compile(r"(?P<owner>[^:]+):(?P<camera_id>[0-9]+)")
 
 
 def roster_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, str]]:
@@ -255,9 +255,27 @@ class KameraportiCoordinator:
         """
         return f"{SIGNAL_CAMERA_PHOTO}_{self.entry.entry_id}"
 
+    @property
+    def unique_id_prefix(self) -> str:
+        """Every entity's unique id starts with this: "kameraposti:<entry_id>".
+
+        1.14.1 (Fable bug hunt H-M1): until 1.14.0 the ids (and the device identifiers) carried the
+        account number, so two entries with the same number -- the test and the production service, or
+        two logins of one account -- took each other's ids, and Home Assistant silently left out the
+        second entry's entities. The entry id is the entry's own and never changes, not even when the
+        entry moves to another service (a host in the id would); async_migrate_entry moved the earlier
+        ids over.
+        """
+        return f"{DOMAIN}:{self.entry.entry_id}"
+
     def camera_device_identifier(self, camera_id: int) -> tuple[str, str]:
         """The camera device's identifier, shared by all of the camera's entities."""
-        return (DOMAIN, f"{self.customer_id}:{camera_id}")
+        return (DOMAIN, f"{self.entry.entry_id}:{camera_id}")
+
+    @property
+    def security_device_identifier(self) -> tuple[str, str]:
+        """The security system's device (the panel and the connection sensor)."""
+        return (DOMAIN, f"{self.entry.entry_id}:security")
 
     def camera_name(self, camera_id: int) -> str:
         """The roster's name for the camera, else "Riistakamera <id>"."""
@@ -543,12 +561,16 @@ class KameraportiCoordinator:
             device_registry.async_update_device(device.id, name=name)
 
     def _camera_id_of_device(self, device: dr.DeviceEntry) -> int | None:
-        """camera_id of one of this account's camera devices; None for any other device."""
+        """camera_id of one of this entry's camera devices; None for any other device.
+
+        Also a device with the account number in front (before 1.14.1) that the migration did not move,
+        e.g. one 1.14.0 made after a downgrade: it is still this entry's camera, removed with the roster.
+        """
         for domain, identifier in device.identifiers:
             if domain != DOMAIN:
                 continue
             match = _CAMERA_IDENTIFIER.fullmatch(identifier)
-            if match is not None and int(match.group("customer_id")) == self.customer_id:
+            if match is not None and match.group("owner") in (self.entry.entry_id, str(self.customer_id)):
                 return int(match.group("camera_id"))
         return None
 

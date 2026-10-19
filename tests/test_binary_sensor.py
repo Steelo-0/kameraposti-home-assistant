@@ -32,7 +32,9 @@ async def test_the_connection_sensor_follows_the_mqtt_connection(hass: HomeAssis
     coordinator: KameraportiCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id("binary_sensor", DOMAIN, "kameraposti:3:connection")
+    entity_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"kameraposti:{entry.entry_id}:connection"
+    )
     assert entity_id is not None
     assert registry.async_get(entity_id).entity_category is EntityCategory.DIAGNOSTIC
     state = hass.states.get(entity_id)

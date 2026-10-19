@@ -77,7 +77,7 @@ async def async_setup_entry(
             return True
         # Created in an earlier run: once created it stays (unavailable without a
         # photo) instead of a restored "no longer provided" registry orphan.
-        unique_id = latest_photo_unique_id(coordinator.customer_id, camera_id)
+        unique_id = latest_photo_unique_id(coordinator, camera_id)
         return entity_registry.async_get_entity_id(Platform.IMAGE, DOMAIN, unique_id) is not None
 
     async_setup_camera_entities(
@@ -90,8 +90,8 @@ async def async_setup_entry(
     )
 
 
-def latest_photo_unique_id(customer_id: int, camera_id: int) -> str:
-    return f"{DOMAIN}:{customer_id}:{camera_id}:latest_photo"
+def latest_photo_unique_id(coordinator: KameraportiCoordinator, camera_id: int) -> str:
+    return f"{coordinator.unique_id_prefix}:{camera_id}:latest_photo"
 
 
 def retry_cooldown(consecutive_failures: int) -> timedelta:
@@ -113,7 +113,7 @@ class KameraportiLatestPhotoImage(ImageEntity):
         super().__init__(hass, verify_ssl=True)
         self._coordinator = coordinator
         self._camera_id = camera_id
-        self._attr_unique_id = latest_photo_unique_id(coordinator.customer_id, camera_id)
+        self._attr_unique_id = latest_photo_unique_id(coordinator, camera_id)
         self._attr_device_info = coordinator.camera_device_info(camera_id)
         # None, not UNDEFINED: this entity always serves a URL, never image().
         self._attr_image_url = None

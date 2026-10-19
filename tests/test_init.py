@@ -9,6 +9,7 @@ running.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
@@ -18,9 +19,13 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, DOMAIN
+from custom_components.kameraposti import async_migrate_entry
+from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
 
 DATA = {CONF_CUSTOMER_ID: 3, CONF_USERNAME: "rk-3-abc", CONF_PASSWORD: "secret"}
 
@@ -276,3 +281,154 @@ async def test_a_newer_duplicate_that_already_has_the_login_keeps_it(
 
     assert older.unique_id == "kp-3"
     assert older.state is ConfigEntryState.LOADED
+
+
+# 1.14.1 (Fable bug hunt H-M1): the unique ids were "kameraposti:<account>:..." and the device identifiers
+# "<account>:...", so two entries with the same account number (the test and the production service, or
+# two logins of one account) collided. They now carry the entry id; config entry version 2.2 moves the ids
+# of an existing installation.
+
+ROSTER = json.dumps(
+    {
+        "schema_version": 1,
+        "generated_at": "2026-10-19T04:00:00+00:00",
+        "cameras": [{"camera_id": 12, "name": "Pihakamera"}],
+    }
+).encode()
+
+
+async def _set_up_with_roster(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.data[DOMAIN][entry.entry_id]._handle_message("customers/3/cameras", ROSTER)
+    await hass.async_block_till_done()
+
+
+async def test_an_existing_installation_keeps_its_entity_ids_names_areas_and_devices(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    """Every registry entry keeps its entity id (and so its history), the name the user gave it, and its
+    device; the devices keep their area and name. Home Assistant creates no second entity for any of them."""
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2, minor_version=1, unique_id="kp-3")
+    entry.add_to_hass(hass)
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    area = ar.async_get(hass).async_create("Piha")
+    camera = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "3:12")}, name="Pihakamera"
+    )
+    device_registry.async_update_device(camera.id, name_by_user="Oma kamera", area_id=area.id)
+    security = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "3:security")}, name="Kameraposti 3"
+    )
+    entity_ids: dict[str, str] = {}
+    for domain, suffix, device in (
+        ("sensor", "12:last_detection", camera),
+        ("sensor", "12:confidence", camera),
+        ("sensor", "12:last_detection_time", camera),
+        ("image", "12:latest_photo", camera),
+        ("alarm_control_panel", "security", security),
+        ("binary_sensor", "connection", security),
+    ):
+        registered = entity_registry.async_get_or_create(
+            domain, DOMAIN, f"kameraposti:3:{suffix}", config_entry=entry, device_id=device.id
+        )
+        entity_ids[suffix] = registered.entity_id
+    entity_ids["12:last_detection"] = entity_registry.async_update_entity(
+        entity_ids["12:last_detection"], new_entity_id="sensor.pihan_havainto", name="Pihan havainto"
+    ).entity_id
+
+    await _set_up_with_roster(hass, entry)
+
+    assert (entry.version, entry.minor_version) == (2, 2)
+    assert {
+        registry_entry.unique_id: registry_entry.entity_id
+        for registry_entry in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    } == {f"kameraposti:{entry.entry_id}:{suffix}": entity_id for suffix, entity_id in entity_ids.items()}
+    assert all(hass.states.get(entity_id) is not None for entity_id in entity_ids.values())
+    assert entity_registry.async_get("sensor.pihan_havainto").name == "Pihan havainto"
+    assert entity_registry.async_get("sensor.pihan_havainto").device_id == camera.id
+    camera = device_registry.async_get(camera.id)
+    assert camera.identifiers == {(DOMAIN, f"{entry.entry_id}:12")}
+    assert (camera.name_by_user, camera.area_id) == ("Oma kamera", area.id)
+    assert device_registry.async_get(security.id).identifiers == {(DOMAIN, f"{entry.entry_id}:security")}
+    assert len(dr.async_entries_for_config_entry(device_registry, entry.entry_id)) == 2
+
+
+async def test_two_entries_with_one_account_number_get_their_own_entities_and_devices(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    """kp-3 on the test service and kp-3-2 on production: the second entry's security panel, connection
+    sensor and camera entities were left out ("ID ... already exists - ignoring"), and one device was
+    shared by both."""
+    test = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2, minor_version=2, unique_id="kp-3")
+    prod = MockConfigEntry(
+        domain=DOMAIN,
+        data={**ENTRY_DATA, CONF_HOST: "turva.secsrv.fi", CONF_USERNAME: "kp-3-2"},
+        version=2,
+        minor_version=2,
+        unique_id="kp-3-2",
+    )
+    for entry in (test, prod):
+        entry.add_to_hass(hass)
+        await _set_up_with_roster(hass, entry)
+
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    suffixes = ("security", "connection", "12:last_detection", "12:confidence", "12:last_detection_time")
+    for entry in (test, prod):
+        entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+        assert {e.unique_id for e in entities} == {f"kameraposti:{entry.entry_id}:{s}" for s in suffixes}
+        assert all(hass.states.get(e.entity_id) is not None for e in entities)
+        devices = dr.async_entries_for_config_entry(device_registry, entry.entry_id)
+        assert {identifier for device in devices for identifier in device.identifiers} == {
+            (DOMAIN, f"{entry.entry_id}:12"),
+            (DOMAIN, f"{entry.entry_id}:security"),
+        }
+        assert all(device.config_entries == {entry.entry_id} for device in devices)
+
+
+@pytest.mark.parametrize("prod_first", [False, True])
+async def test_a_device_both_entries_shared_stays_with_the_entry_whose_entities_are_on_it(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock], prod_first: bool
+) -> None:
+    """As 1.14.0 left two entries with one account number: both linked to the security device, the panel
+    the first entry's. That entry keeps the device and the panel; the other one only loses its link
+    (removing nothing) and gets its own device and panel -- whichever entry is migrated first."""
+    test = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2, minor_version=1, unique_id="kp-3")
+    prod = MockConfigEntry(
+        domain=DOMAIN,
+        data={**ENTRY_DATA, CONF_HOST: "turva.secsrv.fi", CONF_USERNAME: "kp-3-2"},
+        version=2,
+        minor_version=1,
+        unique_id="kp-3-2",
+    )
+    test.add_to_hass(hass)
+    prod.add_to_hass(hass)
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    shared = device_registry.async_get_or_create(
+        config_entry_id=test.entry_id, identifiers={(DOMAIN, "3:security")}, name="Kameraposti 3"
+    )
+    device_registry.async_update_device(shared.id, add_config_entry_id=prod.entry_id)
+    panel = entity_registry.async_get_or_create(
+        "alarm_control_panel", DOMAIN, "kameraposti:3:security", config_entry=test, device_id=shared.id
+    )
+
+    for entry in (prod, test) if prod_first else (test, prod):
+        assert await async_migrate_entry(hass, entry)
+    assert await hass.config_entries.async_setup(test.entry_id)
+    await hass.async_block_till_done()
+
+    shared = device_registry.async_get(shared.id)
+    assert shared.identifiers == {(DOMAIN, f"{test.entry_id}:security")}
+    assert shared.config_entries == {test.entry_id}
+    panel = entity_registry.async_get(panel.entity_id)
+    assert (panel.unique_id, panel.device_id) == (f"kameraposti:{test.entry_id}:security", shared.id)
+    prod_device = device_registry.async_get_device(identifiers={(DOMAIN, f"{prod.entry_id}:security")})
+    assert prod_device is not None and prod_device.config_entries == {prod.entry_id}
+    prod_panel = entity_registry.async_get_entity_id(
+        "alarm_control_panel", DOMAIN, f"kameraposti:{prod.entry_id}:security"
+    )
+    assert entity_registry.async_get(prod_panel).device_id == prod_device.id
+    assert hass.states.get(prod_panel) is not None

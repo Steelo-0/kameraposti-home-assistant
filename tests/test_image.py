@@ -46,7 +46,6 @@ JPEG_1 = b"\xff\xd8\xff\xe0photo-5501"
 JPEG_2 = b"\xff\xd8\xff\xe0photo-5502"
 ROSTER_TOPIC = f"customers/{CUSTOMER_ID}/cameras"
 LATEST_TOPIC = f"customers/{CUSTOMER_ID}/cameras/{CAMERA_ID}/latest"
-UNIQUE_ID = f"{DOMAIN}:{CUSTOMER_ID}:{CAMERA_ID}:latest_photo"
 
 
 def _latest(**overrides: object) -> bytes:
@@ -126,8 +125,14 @@ async def _send(hass: HomeAssistant, coordinator: KameraportiCoordinator, topic:
     await hass.async_block_till_done()
 
 
+def _unique_id(hass: HomeAssistant, camera_id: int = CAMERA_ID) -> str:
+    """1.14.1 (H-M1): "kameraposti:<entry_id>:<camera_id>:latest_photo"."""
+    [entry] = hass.config_entries.async_entries(DOMAIN)
+    return f"{DOMAIN}:{entry.entry_id}:{camera_id}:latest_photo"
+
+
 def _entity_id(hass: HomeAssistant) -> str | None:
-    return er.async_get(hass).async_get_entity_id("image", DOMAIN, UNIQUE_ID)
+    return er.async_get(hass).async_get_entity_id("image", DOMAIN, _unique_id(hass))
 
 
 async def test_latest_photo_entity_joins_the_camera_device_with_url_time_and_attributes(
@@ -139,7 +144,9 @@ async def test_latest_photo_entity_joins_the_camera_device_with_url_time_and_att
     entity_id = _entity_id(hass)
     assert entity_id == "image.pihakamera_latest_photo"
     registry_entry = er.async_get(hass).async_get(entity_id)
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:{CAMERA_ID}")})
+    device = dr.async_get(hass).async_get_device(
+        identifiers={coordinator.camera_device_identifier(CAMERA_ID)}
+    )
     assert device is not None
     assert registry_entry.device_id == device.id
     sensor_entry = er.async_get(hass).async_get("sensor.pihakamera_last_detection")
@@ -189,7 +196,7 @@ async def test_only_cameras_that_had_a_photo_get_the_entity_and_it_comes_back_af
     camera that never had a photo has no entity (or registry entry) at all."""
     await _send(hass, coordinator, ROSTER_TOPIC, _roster((CAMERA_ID, "Pihakamera"), (7, "Navetta")))
     await _send(hass, coordinator, LATEST_TOPIC, _latest())
-    navetta_unique_id = f"{DOMAIN}:{CUSTOMER_ID}:7:latest_photo"
+    navetta_unique_id = _unique_id(hass, 7)
     assert er.async_get(hass).async_get_entity_id("image", DOMAIN, navetta_unique_id) is None
 
     entry = coordinator.entry
@@ -402,7 +409,9 @@ async def test_latest_photo_creates_the_camera_when_there_is_no_roster(
 ) -> None:
     await _send(hass, coordinator, LATEST_TOPIC, _latest())
 
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:{CAMERA_ID}")})
+    device = dr.async_get(hass).async_get_device(
+        identifiers={coordinator.camera_device_identifier(CAMERA_ID)}
+    )
     assert device is not None
     assert device.name == f"Kamera {CAMERA_ID}"
     assert (
@@ -417,7 +426,10 @@ async def test_empty_latest_photo_for_an_unknown_camera_creates_nothing(
     await _send(hass, coordinator, LATEST_TOPIC, b"")
 
     assert coordinator.cameras == {}
-    assert dr.async_get(hass).async_get_device(identifiers={(DOMAIN, f"{CUSTOMER_ID}:{CAMERA_ID}")}) is None
+    assert (
+        dr.async_get(hass).async_get_device(identifiers={coordinator.camera_device_identifier(CAMERA_ID)})
+        is None
+    )
 
 
 async def test_photo_of_a_camera_not_on_the_roster_waits_for_the_roster(
