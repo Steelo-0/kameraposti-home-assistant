@@ -22,7 +22,9 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.kameraposti import async_migrate_entry
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
@@ -432,3 +434,92 @@ async def test_a_device_both_entries_shared_stays_with_the_entry_whose_entities_
     )
     assert entity_registry.async_get(prod_panel).device_id == prod_device.id
     assert hass.states.get(prod_panel) is not None
+
+
+# 1.14.1 (bug hunt 2026-10-19 M-1): after 1.14.1 -> 1.14.0 -> 1.14.1 the devices 1.14.0 made with the account
+# number in front ("<account>:security", "<account>:<camera>") stayed for good: the integration let the UI
+# delete no device, and nothing dropped one left empty.
+
+
+async def test_the_ui_deletes_a_left_over_device_but_not_one_in_use(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock], hass_ws_client: WebSocketGenerator
+) -> None:
+    assert await async_setup_component(hass, "config", {})
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2, minor_version=2, unique_id="kp-3")
+    entry.add_to_hass(hass)
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    left_over = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "3:security")}, name="Kameraposti 3"
+    )
+    duplicate = entity_registry.async_get_or_create(
+        "alarm_control_panel", DOMAIN, "kameraposti:3:security", config_entry=entry, device_id=left_over.id
+    )
+    await _set_up_with_roster(hass, entry)
+    security = device_registry.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}:security")})
+    camera = device_registry.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}:12")})
+    client = await hass_ws_client(hass)
+
+    async def remove(device: dr.DeviceEntry) -> dict:
+        await client.send_json_auto_id(
+            {
+                "type": "config/device_registry/remove_config_entry",
+                "config_entry_id": entry.entry_id,
+                "device_id": device.id,
+            }
+        )
+        return await client.receive_json()
+
+    for in_use in (security, camera):
+        assert not (await remove(in_use))["success"]
+        assert device_registry.async_get(in_use.id) is not None
+    assert (await remove(left_over))["success"]
+    assert device_registry.async_get(left_over.id) is None
+    assert entity_registry.async_get(duplicate.entity_id) is None  # 1.14.0's duplicate went with it
+
+
+async def test_setup_drops_its_link_to_a_left_over_device_without_its_entities(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    """A device with the account number in front loses this entry's link once no entity of the entry is on
+    it -- and goes, when it was only this entry's and no entity is on it. A device with an entity of this
+    entry, or one that dropping the link would remove while another entry's entity is on it, stays."""
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2, minor_version=2, unique_id="kp-3")
+    other = MockConfigEntry(domain="muu")
+    entry.add_to_hass(hass)
+    other.add_to_hass(hass)
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    def left_over(identifier: str, *, shared: bool = False) -> dr.DeviceEntry:
+        device = device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={(DOMAIN, identifier)}, name=identifier
+        )
+        if shared:
+            device = device_registry.async_update_device(device.id, add_config_entry_id=other.entry_id)
+        return device
+
+    empty = left_over("3:12")
+    with_ours = left_over("3:security")
+    ours = entity_registry.async_get_or_create(
+        "alarm_control_panel", DOMAIN, "kameraposti:3:security", config_entry=entry, device_id=with_ours.id
+    )
+    shared = left_over("3:7", shared=True)
+    theirs = entity_registry.async_get_or_create(
+        "sensor", "muu", "a", config_entry=other, device_id=shared.id
+    )
+    only_ours_with_theirs = left_over("3:8")
+    stray = entity_registry.async_get_or_create(
+        "sensor", "muu", "b", config_entry=other, device_id=only_ours_with_theirs.id
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert device_registry.async_get(empty.id) is None
+    assert device_registry.async_get(with_ours.id).config_entries == {entry.entry_id}
+    assert entity_registry.async_get(ours.entity_id).device_id == with_ours.id
+    assert device_registry.async_get(shared.id).config_entries == {other.entry_id}
+    assert entity_registry.async_get(theirs.entity_id).device_id == shared.id
+    assert device_registry.async_get(only_ours_with_theirs.id).config_entries == {entry.entry_id}
+    assert entity_registry.async_get(stray.entity_id).device_id == only_ours_with_theirs.id

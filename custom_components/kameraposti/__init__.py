@@ -9,6 +9,7 @@ register or depend on Home Assistant's built-in MQTT integration.
 from __future__ import annotations
 
 import logging
+import re
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
@@ -61,6 +62,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_start()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # 1.14.1 (bug hunt M-1): after the platforms, so this entry's entities are on its own devices.
+    _async_drop_stale_device_links(hass, entry)
 
     # 1.12.1: Home Assistant reloads after an options save or reauth by itself (config_flow.py);
     # only Home Assistant without OptionsFlowWithReload still needs the listener.
@@ -79,6 +82,51 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_stop()
 
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """1.14.1 (bug hunt 2026-10-19 M-1): the UI may delete a device the entry no longer uses.
+
+    E.g. one 1.14.0 made after a downgrade ("<account>:security", "<account>:<camera>", with its "..._2"
+    entities), which nothing else ever removes. Not, while the entry runs, the security system's device
+    or a camera Kameraposti lists: they would come back at the next start and their entities would be
+    missing until then.
+    """
+    coordinator: KameraportiCoordinator | None = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+    if coordinator is None:
+        return True
+    in_use = {
+        coordinator.security_device_identifier,
+        *(coordinator.camera_device_identifier(camera_id) for camera_id in coordinator.cameras),
+    }
+    return not device_entry.identifiers & in_use
+
+
+@callback
+def _async_drop_stale_device_links(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """1.14.1 (bug hunt 2026-10-19 M-1): drop this entry's link to a Kameraposti device it no longer uses.
+
+    Such a device has the account number in front of its identifiers ("<account>:security",
+    "<account>:<camera>"): 1.14.0 made it after a downgrade, and it stays once its "..._2" entities are
+    deleted. Only when no entity of this entry is on it -- and when this entry is its only link (dropping
+    it removes the device), only when no entity at all is on it. Never removes an entity.
+    """
+    stale = re.compile(rf"{re.escape(str(entry.data[CONF_CUSTOMER_ID]))}:(?:security|[0-9]+)")
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+        identifiers = [identifier for domain, identifier in device.identifiers if domain == DOMAIN]
+        if not identifiers or not all(stale.fullmatch(identifier) for identifier in identifiers):
+            continue
+        entities = er.async_entries_for_device(entity_registry, device.id, include_disabled_entities=True)
+        if any(registry_entry.config_entry_id == entry.entry_id for registry_entry in entities):
+            continue
+        if entities and device.config_entries == {entry.entry_id}:
+            continue
+        _LOGGER.debug("Kameraposti entry '%s' lets go of the unused device %s", entry.title, identifiers)
+        device_registry.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
