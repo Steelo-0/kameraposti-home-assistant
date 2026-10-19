@@ -675,6 +675,48 @@ async def test_a_refusal_handled_on_the_loop_after_stop_starts_no_reauth(
     assert client._reconnect_handle is None
 
 
+async def test_a_refused_connack_is_reported_once_and_its_disconnect_is_no_drop(
+    hass: HomeAssistant, mock_paho_client: MagicMock
+) -> None:
+    """Fable bug hunt H-M3: paho 2.x also calls on_disconnect for a refused CONNACK. That reported
+    RECONNECTING right after AUTH_FAILURE on every attempt (two log lines every <= 31 s while the
+    password is wrong) and ran the drop handling for a connection that never existed. The refusal is the
+    one report; once a connection is up again, its drop is a drop."""
+    events: list[object] = []
+    client = KameraportiMqttClient(
+        hass,
+        host="cam.steels.me",
+        customer_id=CUSTOMER_ID,
+        username="kp-3",
+        password="secret",
+        on_message=lambda topic, payload: None,
+        on_state_change=events.append,
+        on_publishes_lost=lambda topics: events.append(list(topics)),
+    )
+    await client.async_start()
+    await hass.async_block_till_done()
+    events.clear()
+
+    refused = mqtt.convert_connack_rc_to_reason_code(5)
+    dropped = mqtt.convert_disconnect_error_code_to_reason_code(mqtt.MQTT_ERR_CONN_REFUSED)
+    for _ in range(2):
+        mock_paho_client.on_connect(mock_paho_client, None, MagicMock(), refused, None)
+        mock_paho_client.on_disconnect(mock_paho_client, None, MagicMock(), dropped, None)
+        await hass.async_block_till_done()
+        handle = client._reconnect_handle
+        assert handle is not None
+        handle.cancel()
+        client._start_reconnect_task()
+        await hass.async_block_till_done()
+    assert events == [ConnectionState.AUTH_FAILURE, ConnectionState.AUTH_FAILURE]
+
+    await _connack(hass, mock_paho_client)
+    mock_paho_client.on_disconnect(mock_paho_client, None, MagicMock(), None, None)
+    await hass.async_block_till_done()
+    assert events[2:] == [ConnectionState.CONNECTED, ConnectionState.RECONNECTING]
+    await client.async_stop()
+
+
 async def test_no_message_reaches_the_consumer_once_stopping(
     hass: HomeAssistant, mock_paho_client: MagicMock
 ) -> None:

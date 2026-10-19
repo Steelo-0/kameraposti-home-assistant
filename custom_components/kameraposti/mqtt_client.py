@@ -190,6 +190,9 @@ class KameraportiMqttClient:
         # Serialises _disconnect_client: async_stop and _abandon_client can disconnect the same
         # paho client on two executor threads at once.
         self._disconnect_lock = threading.Lock()
+        # 1.14.1 (Fable bug hunt H-M3): the paho client whose CONNACK was refused (paho's network thread
+        # only). paho calls on_disconnect for it too; that connection never existed (_handle_disconnect).
+        self._refused_client: mqtt.Client | None = None
 
     @property
     def topic(self) -> str:
@@ -366,6 +369,7 @@ class KameraportiMqttClient:
             return
         rc = _reason_code_value(reason_code)
         if rc == 0:
+            self._refused_client = None
             self._suback_pending = {}
             self._suback_refused = []
             for topic in self.topics:
@@ -378,6 +382,7 @@ class KameraportiMqttClient:
 
         auth = rc in _AUTH_FAILURE_REASON_CODES
         state = ConnectionState.AUTH_FAILURE if auth else ConnectionState.RECONNECTING
+        self._refused_client = client
         self._hass.loop.call_soon_threadsafe(self._on_connect_failed, state)
 
     def _handle_connect_fail(self, client: mqtt.Client, userdata: Any) -> None:
@@ -396,6 +401,12 @@ class KameraportiMqttClient:
         properties: Any = None,
     ) -> None:
         if self._closing:
+            return
+        if client is self._refused_client:
+            # 1.14.1 (Fable bug hunt H-M3): paho 2.x calls on_disconnect right after a refused CONNACK.
+            # _handle_connect has reported the refusal and the retry is scheduled; reporting RECONNECTING
+            # on top logged two lines per attempt (every <= 31 s while the password is wrong) and left
+            # the state off auth_failure. There was no connection to lose, nothing to hand back.
             return
         self._hass.loop.call_soon_threadsafe(self._on_disconnected)
 

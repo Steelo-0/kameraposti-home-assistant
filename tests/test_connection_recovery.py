@@ -17,6 +17,7 @@ was not acknowledged when the connection dropped must be sent again by the expor
 from __future__ import annotations
 
 import itertools
+import logging
 import socket
 import ssl
 import threading
@@ -258,4 +259,29 @@ async def test_a_description_lost_in_a_drop_is_sent_again_before_the_state(
 
     # The list follows with the next full snapshot (a minute after the first).
     assert broker.sent_since(before_drop) == broker.sent_since(0)[:2]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_wrong_password_is_logged_once_and_the_state_stays_auth_failure(
+    hass: HomeAssistant, paho: MagicMock, freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fable bug hunt H-M3: every refused attempt logged "connecting/auth_failure -> reconnecting" and
+    "reconnecting -> auth_failure" (paho also calls on_disconnect for a refused CONNACK), every <= 31 s
+    for as long as the password stays wrong. Now one line, and the connection sensor shows auth_failure."""
+    entry = await _setup_entry(hass)
+    refused = mqtt.convert_connack_rc_to_reason_code(5)
+    dropped = mqtt.convert_disconnect_error_code_to_reason_code(mqtt.MQTT_ERR_CONN_REFUSED)
+    with caplog.at_level(logging.INFO, logger="custom_components.kameraposti"):
+        for _ in range(3):
+            paho.on_connect(paho, None, MagicMock(), refused, None)
+            paho.on_disconnect(paho, None, MagicMock(), dropped, None)
+            await hass.async_block_till_done()
+            await _run_due_reconnect(hass, freezer)
+
+    assert [r.getMessage() for r in caplog.records if "MQTT connection state" in r.getMessage()] == [
+        "Kameraposti MQTT connection state: connecting -> auth_failure"
+    ]
+    assert _coordinator(hass, entry).connection_state is ConnectionState.AUTH_FAILURE
+    assert paho.connect.call_count == 4
+    assert len(hass.config_entries.flow.async_progress_by_handler(DOMAIN)) == 1  # the reauth
     assert await hass.config_entries.async_unload(entry.entry_id)
