@@ -16,6 +16,14 @@
         "data": {
           "password": "Password"
         }
+      },
+      "reconfigure": {
+        "title": "Change the service or password",
+        "description": "Choose the service and enter the password of login {login} there, as the Home Assistant section on the Turva page shows them. The login, the chosen sensors and the entities stay.",
+        "data": {
+          "host": "Service",
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -27,7 +35,8 @@
     },
     "abort": {
       "already_configured": "This Kameraposti login is already configured. Another Home Assistant on the same account needs its own login: Turva page → Home Assistant → Add another Home Assistant.",
-      "reauth_successful": "Connection restored with the new password."
+      "reauth_successful": "Connection restored with the new password.",
+      "reconfigure_successful": "Saved. Home Assistant connects to Kameraposti with the new settings."
     }
   },
   "entity": {

@@ -19,6 +19,9 @@ nothing is linked by hand (1.6.0 linked one Kameraposti camera at a time).
 cameras step only hides cameras from it (and keeps the one video setting). 1.8.1:
 the hidden list starts empty for everyone, never pre-filled from older options.
 1.10.0: no cameras step at all -- the options are the sensors. Saving reloads the entry.
+
+1.14.1 (Fable bug hunt H-L2): Reconfigure changes an entry's service and password; the login, the
+options and the entities stay (moving to turva.secsrv.fi needed removing and re-adding it).
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ from .const import (
     SETUP_DEFAULT_HOST,
     USERNAME_TEMPLATE,
 )
+from .coordinator import roster_store
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
 from .sensor_export import (
@@ -95,6 +99,18 @@ STEP_REAUTH_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
     }
 )
+
+
+def _reconfigure_schema(host: str) -> vol.Schema:
+    """1.14.1: the service (the entry's own preselected) and the password there."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_HOST, default=host): SelectSelector(
+                SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
+            ),
+            vol.Required(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+        }
+    )
 
 
 KIND_LABELS_FI: dict[str, str] = {
@@ -286,6 +302,54 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=STEP_REAUTH_DATA_SCHEMA,
             errors=errors,
+        )
+
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """1.14.1 (Fable bug hunt H-L2): another service and its password for an existing entry.
+
+        The login (the entry's unique id), the options and every entity stay. Until 1.14.1 the service
+        could only be changed by removing and re-adding the integration, which reset the chosen sensors
+        and -- before the H-H1 fix -- made Kameraposti drop them. Tested for real before it is saved,
+        like the setup.
+        """
+        entry = self._get_reconfigure_entry()
+        host = entry.data.get(CONF_HOST, DEFAULT_HOST)
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            candidate = {
+                **entry.data,
+                CONF_HOST: user_input[CONF_HOST],
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+            }
+            if candidate[CONF_HOST] not in BROKER_HOSTS:
+                errors["base"] = "cannot_connect"
+            else:
+                try:
+                    await _async_validate(self.hass, candidate)
+                except InvalidAuth:
+                    errors["base"] = "invalid_auth"
+                except CannotConnect:
+                    errors["base"] = "cannot_connect"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Unexpected error validating Kameraposti reconfigure")
+                    errors["base"] = "unknown"
+                else:
+                    if candidate[CONF_HOST] != host:
+                        # The stored camera-list time is the old service's: the new service's list
+                        # (maybe older) must apply, and its cameras replace the old service's.
+                        await roster_store(self.hass, entry.entry_id).async_remove()
+                    return self.async_update_reload_and_abort(
+                        entry, data=candidate, reason="reconfigure_successful"
+                    )
+                # The form comes back with the service just tried.
+                host = candidate[CONF_HOST]
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_reconfigure_schema(host),
+            errors=errors,
+            description_placeholders={"login": entry_login(entry.data) or ""},
         )
 
 

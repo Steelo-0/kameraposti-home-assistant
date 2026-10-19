@@ -16,6 +16,14 @@
         "data": {
           "password": "Salasana"
         }
+      },
+      "reconfigure": {
+        "title": "Vaihda palvelu tai salasana",
+        "description": "Valitse palvelu ja syötä tunnuksen {login} salasana siinä palvelussa, kuten Turva-sivun Home Assistant -kohta ne näyttää. Tunnus, valitut anturit ja entiteetit säilyvät.",
+        "data": {
+          "host": "Palvelu",
+          "password": "Salasana"
+        }
       }
     },
     "error": {
@@ -27,7 +35,8 @@
     },
     "abort": {
       "already_configured": "Tämä Kamerapostin tunnus on jo käytössä. Toinen Home Assistant samalla tilillä tarvitsee oman tunnuksen: Turva-sivu → Home Assistant → Lisää toinen Home Assistant.",
-      "reauth_successful": "Yhteys palautettu uudella salasanalla."
+      "reauth_successful": "Yhteys palautettu uudella salasanalla.",
+      "reconfigure_successful": "Tallennettu. Home Assistant yhdistää Kamerapostiin uusilla asetuksilla."
     }
   },
   "entity": {

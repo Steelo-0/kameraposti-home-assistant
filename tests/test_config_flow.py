@@ -4,15 +4,19 @@ proper error mapping, no entry saved on failure, reauth path.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, DOMAIN
+from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
 from custom_components.kameraposti.mqtt_client import CannotConnect, InvalidAuth
 
 # Version 2 (2026-10-05): service + account number + password; the login is always kp-<id>.
@@ -311,3 +315,146 @@ async def test_an_entry_from_before_1_5_1_blocks_the_same_login(hass: HomeAssist
     assert result["reason"] == "already_configured"
     mock_test.assert_not_awaited()
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+# 1.14.1 (Fable bug hunt H-L2): the service of an existing entry could not be changed. Removing and adding
+# the integration again reset the chosen sensors -- and made Kameraposti drop them (H-H1).
+
+
+def _existing_entry(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        options={CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"]},
+        unique_id="kp-3",
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+@pytest.fixture
+def mock_mqtt_client() -> Generator[None]:
+    """The entry is reloaded (set up) after a reconfigure."""
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        yield
+
+
+async def test_reconfigure_moves_the_entry_to_another_service_and_keeps_the_login_and_options(
+    hass: HomeAssistant, mock_mqtt_client: None
+) -> None:
+    entry = _existing_entry(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+    assert result["description_placeholders"] == {"login": "kp-3"}
+    host = next(key for key in result["data_schema"].schema if key == CONF_HOST)
+    assert host.default() == "cam.steels.me"
+    assert result["data_schema"].schema[host].config["options"] == [
+        "turva.secsrv.fi",
+        "cam.steels.me",
+        "kameraposti.fi",
+    ]
+
+    with patch(
+        "custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock
+    ) as mock_test:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PASSWORD: "uusi-salasana"}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["type"] is FlowResultType.ABORT
+    assert result2["reason"] == "reconfigure_successful"
+    assert mock_test.await_args.kwargs == {
+        "host": "turva.secsrv.fi",
+        "customer_id": 3,
+        "username": "kp-3",
+        "password": "uusi-salasana",
+    }
+    assert entry.data == {**ENTRY_DATA, CONF_HOST: "turva.secsrv.fi", CONF_PASSWORD: "uusi-salasana"}
+    assert entry.unique_id == "kp-3"
+    assert entry.options == {CONF_EXPORTED_ENTITIES: ["binary_sensor.kellari"]}
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"), [(InvalidAuth, "invalid_auth"), (CannotConnect, "cannot_connect")]
+)
+async def test_a_failed_reconfigure_changes_nothing_and_shows_why(
+    hass: HomeAssistant, error: type[Exception], reason: str
+) -> None:
+    entry = _existing_entry(hass)
+    result = await entry.start_reconfigure_flow(hass)
+
+    with patch(
+        "custom_components.kameraposti.config_flow.async_test_connection",
+        new_callable=AsyncMock,
+        side_effect=error,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PASSWORD: "vaara"}
+        )
+
+    assert result2["type"] is FlowResultType.FORM
+    assert result2["errors"] == {"base": reason}
+    host = next(key for key in result2["data_schema"].schema if key == CONF_HOST)
+    assert host.default() == "turva.secsrv.fi"  # the service just tried
+    assert entry.data == ENTRY_DATA
+
+
+def _roster(generated_at: str, camera_id: int, name: str) -> bytes:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "generated_at": generated_at,
+            "cameras": [{"camera_id": camera_id, "name": name}],
+        }
+    ).encode()
+
+
+async def test_after_a_new_service_its_camera_list_applies_even_when_it_is_older(
+    hass: HomeAssistant, mock_mqtt_client: None
+) -> None:
+    """The entry keeps the time of the newest camera list it applied, and an older list changes nothing.
+    That time was the old service's: the new service's list, made on another server, was older, so its
+    cameras never came and the old service's stayed."""
+    entry = _existing_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.data[DOMAIN][entry.entry_id]._handle_message(
+        "customers/3/cameras", _roster("2026-10-19T10:00:00+00:00", 12, "Vanha palvelu")
+    )
+    await hass.async_block_till_done()
+
+    result = await entry.start_reconfigure_flow(hass)
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PASSWORD: "uusi"}
+        )
+        await hass.async_block_till_done()
+    hass.data[DOMAIN][entry.entry_id]._handle_message(
+        "customers/3/cameras", _roster("2026-10-18T08:00:00+00:00", 5, "Uusi palvelu")
+    )
+    await hass.async_block_till_done()
+
+    devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+    assert "Uusi palvelu" in {device.name for device in devices}
+    assert "Vanha palvelu" not in {device.name for device in devices}
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def test_the_reconfigure_step_has_its_texts() -> None:
+    from pathlib import Path
+
+    folder = Path(__file__).parent.parent / "custom_components" / "kameraposti" / "translations"
+    for language in ("en", "fi"):
+        config = json.loads((folder / f"{language}.json").read_text(encoding="utf-8"))["config"]
+        step = config["step"]["reconfigure"]
+        assert {"title", "description"} <= step.keys(), language
+        assert "{login}" in step["description"], language
+        assert step["data"].keys() == {CONF_HOST, CONF_PASSWORD}, language
+        assert "reconfigure_successful" in config["abort"], language

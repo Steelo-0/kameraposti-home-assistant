@@ -75,6 +75,13 @@ If Kameraposti rotates your MQTT password, Home Assistant will prompt you
 to re-authenticate; enter the new password and the integration reconnects
 automatically.
 
+Since 1.14.1 **Settings → Devices & services → Kameraposti → ⋮ →
+Reconfigure** changes an entry's service (e.g. from `cam.steels.me` to
+`turva.secsrv.fi`) and its password there, tested before it is saved. The
+login, the chosen sensors and the entities stay, so there is no need to
+remove the integration and add it again; the new service's camera list
+replaces the old service's cameras.
+
 Upgrading from 1.0.x: the old broker address no longer exists. The entry is
 migrated automatically and Home Assistant asks for the new MQTT password
 (re-authenticate) — create it on Kameraposti's sensor page.
