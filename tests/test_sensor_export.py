@@ -28,6 +28,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 from custom_components.kameraposti.config_flow import exportable_entity_options
 from custom_components.kameraposti.const import (
     CONF_CUSTOMER_ID,
+    CONF_ENTITY_KINDS,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
     DEFAULT_SENSOR_LIMIT,
@@ -897,14 +898,11 @@ async def test_zwave_problem_class_leak_is_exported_as_leak(hass: HomeAssistant)
     assert event_for("leak", "off") == "dry"
 
 
-async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssistant) -> None:
-    _set(
-        hass,
-        "binary_sensor.keitttio_vuoto_event_water_leak",
-        "off",
-        "problem",
-        "Keitttio-Vuoto_event_water_leak",
-    )
+async def test_options_flow_asks_the_kind_of_a_sensor_whose_kind_cannot_be_read(hass: HomeAssistant) -> None:
+    """1.13.0 (steelo 2026-10-19 "muuta niin että näkyy kaikki"): the general purpose sensor is offered
+    and its kind is asked on the next page (1.3.2-1.12.x refused it as "unknown_kind")."""
+    leak = "binary_sensor.keitttio_vuoto_event_water_leak"
+    _set(hass, leak, "off", "problem", "Keitttio-Vuoto_event_water_leak")
     _set(
         hass,
         "binary_sensor.keitttio_vuoto_event_general_purpose",
@@ -912,12 +910,54 @@ async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssis
         "problem",
         "Keitttio-Vuoto_event_general_purpose",
     )
-    # 1.4.1: the list only offers sensors that can be sent; a sensor chosen earlier (here the general
-    # purpose one) stays in the list and is named if its kind can no longer be told.
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
-        options={CONF_EXPORTED_ENTITIES: ["binary_sensor.keitttio_vuoto_event_general_purpose"]},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        result = await _open_sensor_options(hass, entry)
+        selector = result["data_schema"].schema[CONF_EXPORTED_ENTITIES]
+        offered = {option["value"] for option in selector.config["options"]}
+        assert "binary_sensor.keitttio_vuoto_event_general_purpose" in offered
+        kinds = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_EXPORTED_ENTITIES: [
+                    "binary_sensor.keitttio_vuoto_event_water_leak",
+                    "binary_sensor.keitttio_vuoto_event_general_purpose",
+                ]
+            },
+        )
+        assert kinds["type"] is FlowResultType.FORM
+        assert kinds["step_id"] == "kinds"
+        # Only the one whose kind cannot be read is asked.
+        asked = [str(key) for key in kinds["data_schema"].schema]
+        assert asked == ["binary_sensor.keitttio_vuoto_event_general_purpose"]
+        saved = await hass.config_entries.options.async_configure(
+            kinds["flow_id"], {"binary_sensor.keitttio_vuoto_event_general_purpose": "leak"}
+        )
+        await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == [
+        "binary_sensor.keitttio_vuoto_event_water_leak",
+        "binary_sensor.keitttio_vuoto_event_general_purpose",
+    ]
+    assert entry.options[CONF_ENTITY_KINDS] == {"binary_sensor.keitttio_vuoto_event_general_purpose": "leak"}
+
+
+async def test_options_flow_still_names_a_chosen_entity_that_cannot_be_sent(hass: HomeAssistant) -> None:
+    """A text sensor chosen before (no kind can be read or chosen) is named instead of dropped silently."""
+    _set(hass, "sensor.ovi_teksti", "Window/door is open", None, "Ovi teksti")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        options={CONF_EXPORTED_ENTITIES: ["sensor.ovi_teksti"]},
         version=2,
     )
     entry.add_to_hass(hass)
@@ -927,30 +967,63 @@ async def test_options_flow_names_a_sensor_whose_kind_is_unknown(hass: HomeAssis
         mock_cls.return_value.async_stop = AsyncMock()
         result = await _open_sensor_options(hass, entry)
         refused = await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            {
-                CONF_EXPORTED_ENTITIES: [
-                    "binary_sensor.keitttio_vuoto_event_water_leak",
-                    "binary_sensor.keitttio_vuoto_event_general_purpose",
-                ]
-            },
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: ["sensor.ovi_teksti"]}
         )
-        assert refused["type"] is FlowResultType.FORM
-        assert refused["errors"] == {CONF_EXPORTED_ENTITIES: "unknown_kind"}
-        assert (
-            refused["description_placeholders"]["entities"]
-            == "binary_sensor.keitttio_vuoto_event_general_purpose"
-        )
-        assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.keitttio_vuoto_event_general_purpose"]
 
-        saved = await hass.config_entries.options.async_configure(
-            refused["flow_id"], {CONF_EXPORTED_ENTITIES: ["binary_sensor.keitttio_vuoto_event_water_leak"]}
-        )
-        await hass.async_block_till_done()
+    assert refused["errors"] == {CONF_EXPORTED_ENTITIES: "unknown_kind"}
+    assert refused["description_placeholders"]["entities"] == "sensor.ovi_teksti"
 
-    assert saved["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_EXPORTED_ENTITIES] == ["binary_sensor.keitttio_vuoto_event_water_leak"]
 
+async def test_every_binary_and_numeric_sensor_is_offered_but_not_the_integrations_own(
+    hass: HomeAssistant,
+) -> None:
+    _set(hass, "binary_sensor.takaovi_any", "off", None, "Takaovi Any")
+    _set(hass, "sensor.kasvihuone", "18.5", None, "Kasvihuone", unit="°C")
+    _set(hass, "sensor.ovi_teksti", "Window/door is open", None, "Ovi teksti")
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    er.async_get(hass).async_get_or_create(
+        "binary_sensor", DOMAIN, "yhteys", suggested_object_id="kameraposti_yhteys"
+    )
+    _set(hass, "binary_sensor.kameraposti_yhteys", "on", "connectivity", "Kameraposti yhteys")
+
+    options = {option["value"]: option["label"] for option in exportable_entity_options(hass, [])}
+
+    assert options["binary_sensor.takaovi_any"] == "Takaovi Any · kind chosen next"
+    assert options["sensor.kasvihuone"] == "Kasvihuone · kind chosen next"
+    assert options["binary_sensor.kellari"] == "Kellarin vuoto · Leak"
+    assert "sensor.ovi_teksti" not in options
+    assert "binary_sensor.kameraposti_yhteys" not in options
+    # A chosen kind shows in the label.
+    chosen = exportable_entity_options(hass, [], {"binary_sensor.takaovi_any": "door"})
+    assert {o["value"]: o["label"] for o in chosen}["binary_sensor.takaovi_any"] == "Takaovi Any · Door"
+
+
+async def test_a_chosen_kind_is_described_and_sent_like_a_read_one(hass: HomeAssistant) -> None:
+    _set(hass, "binary_sensor.takaovi_any", "on", None, "Takaovi")
+    _set(hass, "sensor.kasvihuone", "18.5", None, "Kasvihuone", unit="°C")
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=["binary_sensor.takaovi_any", "sensor.kasvihuone"],
+        publish=publish,
+        kinds={"binary_sensor.takaovi_any": "door", "sensor.kasvihuone": "temperature"},
+    )
+    exporter.async_start()
+
+    exporter.publish_snapshot()
+
+    configs = {
+        topic: json.loads(payload)["kind"] for topic, payload, _ in published if topic.endswith("/config")
+    }
+    assert configs == {
+        "kameraposti/3/anturit/binary_sensor.takaovi_any/config": "door",
+        "kameraposti/3/anturit/sensor.kasvihuone/config": "temperature",
+    }
+    states = [(topic, payload) for topic, payload, _ in published if not topic.endswith("/config")]
+    assert ("kameraposti/3/anturit/binary_sensor.takaovi_any", "open") in states
+    assert ("kameraposti/3/anturit/sensor.kasvihuone", "18.5") in states
+    exporter.async_stop()
 
 async def test_gas_and_carbon_monoxide_detectors_are_gas_sensors(hass: HomeAssistant) -> None:
     """1.4.0 (steelo 2026-10-06): a gas detector is its own kind, alarming like smoke; a carbon
@@ -1034,10 +1107,10 @@ async def test_gas_alarm_is_described_and_sent_without_throttling(
     exporter.async_stop()
 
 
-async def test_export_list_offers_exactly_what_can_be_sent(hass: HomeAssistant) -> None:
-    """1.4.1: the list is built from kind_for(), so a Z-Wave gas level without a device class
-    (steelo 2026-10-06: "sensor_gas_carbon_monoxide" was missing) is offered, and an entity that
-    cannot be sent is not."""
+async def test_export_list_offers_everything_that_can_be_sent(hass: HomeAssistant) -> None:
+    """1.4.1: a Z-Wave gas level without a device class (steelo 2026-10-06: "sensor_gas_carbon_monoxide" was
+    missing) is offered with its kind. 1.13.0: every other binary and numeric sensor too (its kind is chosen
+    next); an entity that cannot be sent at all (text sensor, switch) is not."""
     _set(hass, "binary_sensor.keittio_kaasu", "off", "gas", "Keittiön kaasu")
     _set(hass, "binary_sensor.eteinen_hakavaroitin", "off", "carbon_monoxide", "Eteisen häkävaroitin")
     _set(hass, "sensor.olohuone_co2", "612", "carbon_dioxide", "Olohuone CO2", unit="ppm")
@@ -1072,6 +1145,9 @@ async def test_export_list_offers_exactly_what_can_be_sent(hass: HomeAssistant) 
         "sensor.nodeid_27_gas_carbon_monoxide",
         "sensor.nodeid_28_gas_carbon_dioxide",
         "binary_sensor.keitttio_vuoto_event_water_leak",
+        # 1.13.0: offered, kind chosen next.
+        "binary_sensor.keitttio_vuoto_event_general_purpose",
+        "sensor.olohuone_kosteus",
         # Already chosen but gone right now: stays so saving the form keeps it.
         "binary_sensor.poistettu",
     }
@@ -1392,9 +1468,10 @@ async def test_device_name_does_not_decide_and_tamper_is_no_door(hass: HomeAssis
     for (entity_id, device_class, name), kind in cases.items():
         _set(hass, entity_id, "off", device_class, name)
         assert kind_for(hass.states.get(entity_id)) == kind, entity_id
-    offered = {option["value"] for option in exportable_entity_options(hass, [])}
-    assert "binary_sensor.eteinen_smoke_eteinen_smoke_alarm_status" not in offered
-    assert "binary_sensor.nodeid_11_nodeid_11_cover_status" not in offered
+    # 1.13.0: listed (every binary sensor is), but never as smoke or door by itself: the kind is chosen next.
+    labels = {option["value"]: option["label"] for option in exportable_entity_options(hass, [])}
+    assert labels["binary_sensor.eteinen_smoke_eteinen_smoke_alarm_status"].endswith("· kind chosen next")
+    assert labels["binary_sensor.nodeid_11_nodeid_11_cover_status"].endswith("· kind chosen next")
 
 
 # -- 1.11.1: Frigate's own binary sensors are never sent ----------------------------------------

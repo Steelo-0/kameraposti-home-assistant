@@ -62,10 +62,14 @@
     "step": {
       "sensors": {
         "title": "Sensors to Kameraposti",
-        "description": "Choose the Home Assistant sensors that appear in Kameraposti and alarm through Kameraposti notifications: leak, smoke, gas (also carbon monoxide detectors and CO meters: alarm from 50 ppm, clear below 35 ppm), door, window, motion, temperature and CO₂ (carbon dioxide, ppm). {limit_note} Kameraposti creates them automatically. A sensor removed in Kameraposti does not come back (Restore on its Turva page brings it back). Cameras are chosen in Kameraposti: Home Assistant tells it all its cameras, and an alarm brings a photo and a short video. A Z-Wave leak sensor is usually \"…_water_leak\" and a gas sensor has gas or carbon_monoxide in its name (shown as OK / Problem). If a sensor is missing from the list, open it in Home Assistant and choose its type under Show as (e.g. Door, Window, Moisture or Motion). Only a sensor shown as Window arrives in Kameraposti as a window.",
+        "description": "Choose the Home Assistant sensors that appear in Kameraposti and alarm through Kameraposti notifications: leak, smoke, gas (also carbon monoxide detectors and CO meters: alarm from 50 ppm, clear below 35 ppm), door, window, motion, temperature and CO₂ (carbon dioxide, ppm). {limit_note} Kameraposti creates them automatically. A sensor removed in Kameraposti does not come back (Restore on its Turva page brings it back). Cameras are chosen in Kameraposti: Home Assistant tells it all its cameras, and an alarm brings a photo and a short video. A Z-Wave leak sensor is usually \"…_water_leak\" and a gas sensor has gas or carbon_monoxide in its name (shown as OK / Problem). The list has every binary sensor and every numeric sensor. If a sensor's kind cannot be read (marked \"kind chosen next\"), you choose it on the next page.",
         "data": {
           "exported_entities": "Exported sensors"
         }
+      },
+      "kinds": {
+        "title": "Sensor kinds",
+        "description": "Home Assistant does not tell the kind of these sensors. Choose one for each: a binary sensor that is on = alarm / open / motion, a numeric sensor sends its reading.\n{entities}"
       }
     },
     "error": {

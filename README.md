@@ -195,7 +195,7 @@ you remove it (Settings → Devices & services → Generic Camera).
 **Settings → Devices & services → Kameraposti → Configure → Sensors to
 Kameraposti** lets you pick Home Assistant entities to send to Kameraposti, as
 many as your Kameraposti plan takes (see [How many sensors](#how-many-sensors-since-180)).
-Since 1.4.1 the list shows exactly the entities the integration can send:
+Since 1.4.1 the list shows the entities the integration can send, with their kind:
 
 | Home Assistant entity | Kameraposti sensor | Sent |
 |---|---|---|
@@ -217,6 +217,15 @@ For a `problem` sensor the kind comes from the value part of its name, which
 follows the device name: if the name has several of these words (a combined
 smoke and gas detector, say), the last one decides. A carbon monoxide
 detector is a gas sensor in Kameraposti.
+
+Since 1.13.0 the list also shows every other binary sensor and every numeric
+sensor (a number, a unit or a state class), marked *kind chosen next*: when
+you choose one, the next page asks its kind — door, window, motion, smoke,
+leak or gas for a binary sensor (on = open / motion / alarm), temperature,
+CO₂ or gas (CO ppm) for a numeric one. The choice is kept in the options
+(`entity_kinds`) and forgotten when the entity is left out. Text sensors and
+switches are never offered; nor are Frigate's own binary sensors or this
+integration's own entities.
 
 Kameraposti creates each sensor automatically, named after its device
 (since 1.4.2; the entity's friendly name when you have named the entity yourself, when it has no

@@ -84,6 +84,8 @@ EVENT_DETECTION: Final = "kameraposti_detection"
 CONF_CUSTOMER_ID: Final = "customer_id"
 CONF_HOST: Final = "host"
 CONF_EXPORTED_ENTITIES: Final = "exported_entities"
+# 1.13.0: the kind the user chose for an exported entity whose kind cannot be read (entity_id -> kind).
+CONF_ENTITY_KINDS: Final = "entity_kinds"
 # 1.6.0: Kameraposti cameras linked to Home Assistant cameras for Turva's capture requests:
 # {"<camera_id>": {"entity_id": "camera.x", "video": bool, "video_seconds": int}}.
 CONF_CAPTURE_CAMERAS: Final = "capture_cameras"

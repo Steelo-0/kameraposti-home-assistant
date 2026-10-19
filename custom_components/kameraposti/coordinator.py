@@ -63,6 +63,7 @@ from .camera_export import KameraportiCameraExporter, camera_settings_from_optio
 from .capture import KameraportiCaptureHandler, capture_cameras_from_options
 from .const import (
     CAPTURE_TOPIC_PATTERN,
+    CONF_ENTITY_KINDS,
     CONF_EXPORTED_ENTITIES,
     DEFAULT_CAMERA_NAME_TEMPLATE,
     DOMAIN,
@@ -189,6 +190,7 @@ class KameraportiCoordinator:
             hass,
             customer_id=customer_id,
             entity_ids=list(entry.options.get(CONF_EXPORTED_ENTITIES, [])),
+            kinds=dict(entry.options.get(CONF_ENTITY_KINDS, {})),
             publish=self._client.publish,
             limit=effective_sensor_limit(None),
             extra_names=partial(frigate_detection_names, hass),

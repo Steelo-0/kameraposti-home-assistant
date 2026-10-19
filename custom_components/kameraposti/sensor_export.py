@@ -58,7 +58,7 @@ import logging
 import math
 import re
 import secrets
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
 from functools import partial
 
@@ -227,6 +227,44 @@ def _value_part(name: str) -> str:
     return name
 
 
+# 1.13.0 (steelo 2026-10-19 "muuta niin että näkyy kaikki"): every binary sensor and every numeric sensor
+# is offered. When the kind cannot be read, the user picks it (options "entity_kinds"), but only one that
+# fits what the entity reports: on / off for a binary sensor, a number for a sensor.
+CHOOSABLE_BINARY_KINDS: tuple[str, ...] = ("door", "window", "motion", "smoke", "leak", "gas")
+CHOOSABLE_NUMERIC_KINDS: tuple[str, ...] = ("temperature", "co2", "gas")
+
+
+def choosable_kinds(state: State | None) -> tuple[str, ...]:
+    """The kinds the user may choose for an entity whose kind cannot be read (empty: cannot be sent)."""
+    if state is None:
+        return ()
+    if state.domain == "binary_sensor":
+        return CHOOSABLE_BINARY_KINDS
+    if state.domain == "sensor" and (
+        state.attributes.get("state_class") is not None
+        or state.attributes.get("unit_of_measurement") is not None
+        or _is_number(state.state)
+    ):
+        return CHOOSABLE_NUMERIC_KINDS
+    return ()
+
+
+def effective_kind(state: State | None, kinds: Mapping[str, str] | None) -> str | None:
+    """kind_for(), else the kind the user chose for this entity (when it still fits)."""
+    kind = kind_for(state)
+    if kind is not None or state is None or not kinds:
+        return kind
+    chosen = kinds.get(state.entity_id)
+    return chosen if chosen in choosable_kinds(state) else None
+
+
+def _is_number(value: str) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except ValueError:
+        return False
+
+
 def _kind_from_name(state: State) -> str | None:
     """Kind from the entity id, else the friendly name (spaces and dashes read as underscores).
 
@@ -348,6 +386,9 @@ def _shares_device_and_kind(
 class KameraportiSensorExporter:
     """Publishes the chosen entities' descriptions and state changes."""
 
+    def _kind_for(self, state: State | None) -> str | None:
+        return effective_kind(state, self._kinds)
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -358,8 +399,11 @@ class KameraportiSensorExporter:
         limit: int = DEFAULT_SENSOR_LIMIT,
         source: str | None = None,
         extra_names: Callable[[], Iterable[str]] | None = None,
+        kinds: Mapping[str, str] | None = None,
     ) -> None:
         self._hass = hass
+        # 1.13.0: the kinds the user chose for entities whose kind cannot be read.
+        self._kinds = dict(kinds or {})
         self._customer_id = customer_id
         # 1.12.0: "<login>.<installation id>" (async_set_source); without it no list is sent (Kameraposti
         # could not tell two Home Assistants apart). extra_names: the Frigate detection sensors' names.
@@ -543,7 +587,7 @@ class KameraportiSensorExporter:
         sent = False
         for entity_id in self._exported:
             state = self._hass.states.get(entity_id)
-            kind = kind_for(state)
+            kind = self._kind_for(state)
             if state is None or kind is None:
                 self._unsent.discard(entity_id)
                 continue
@@ -614,7 +658,7 @@ class KameraportiSensorExporter:
         for entity_id in [entity_id for entity_id in self._exported if entity_id in self._unsent]:
             self._unsent.discard(entity_id)
             state = self._hass.states.get(entity_id)
-            kind = kind_for(state)
+            kind = self._kind_for(state)
             if state is None or kind is None:
                 continue
             if self._described.get(entity_id) != (self._name_for(state), kind):
@@ -632,7 +676,7 @@ class KameraportiSensorExporter:
     def _handle_state_event(self, event: Event[EventStateChangedData]) -> None:
         new_state = event.data["new_state"]
         old_state = event.data["old_state"]
-        kind = kind_for(new_state)
+        kind = self._kind_for(new_state)
         if new_state is None or kind is None or new_state.entity_id not in self._exported:
             return
         if self._described.get(new_state.entity_id) != (self._name_for(new_state), kind):
@@ -694,7 +738,7 @@ class KameraportiSensorExporter:
         """Trailing send: the entity's value at the end of the interval."""
         self._reading_pending.pop(entity_id, None)
         state = self._hass.states.get(entity_id)
-        kind = kind_for(state)
+        kind = self._kind_for(state)
         if state is not None and kind in READING_KINDS:
             # The interval has passed; a timer firing a hair early must not re-arm.
             self._publish_state(state, kind, throttle=False)

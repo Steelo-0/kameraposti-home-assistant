@@ -30,6 +30,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     SelectOptionDict,
     SelectSelector,
@@ -43,6 +44,7 @@ from homeassistant.helpers.selector import (
 from .const import (
     BROKER_HOSTS,
     CONF_CUSTOMER_ID,
+    CONF_ENTITY_KINDS,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
     DEFAULT_HOST,
@@ -54,6 +56,8 @@ from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
 from .sensor_export import (
     MAX_EXPORTED_SENSORS,
+    choosable_kinds,
+    effective_kind,
     effective_sensor_limit,
     frigate_own_sensor,
     kameraposti_name,
@@ -103,6 +107,8 @@ KIND_LABELS_FI: dict[str, str] = {
     "temperature": "Lämpötila",
     "co2": "CO₂",
 }
+# 1.13.0: an entity whose kind cannot be read is listed too; its kind is asked on the next page.
+CHOOSE_KIND_LABEL = {"fi": "laji valitaan seuraavaksi", "en": "kind chosen next"}
 KIND_LABELS_EN: dict[str, str] = {
     "leak": "Leak",
     "smoke": "Smoke",
@@ -133,29 +139,36 @@ def _limit_note(known: int | None, finnish: bool) -> str:
     )
 
 
-def exportable_entity_options(hass: HomeAssistant, current: list[str]) -> list[SelectOptionDict]:
-    """1.4.1: the export list offers exactly the entities this integration can send.
+def exportable_entity_options(
+    hass: HomeAssistant, current: list[str], kinds: dict[str, str] | None = None
+) -> list[SelectOptionDict]:
+    """The export list: 1.13.0 (steelo 2026-10-19 "muuta niin että näkyy kaikki") every binary sensor and
+    every numeric sensor, not only those whose kind can be read (1.4.1-1.12.x).
 
-    Built from kind_for() instead of an entity filter, because a filter only sees device classes and
-    Z-Wave JS UI publishes gas levels (CO, CO2 ppm) without one. Chosen entities stay listed even if
-    they are unavailable right now, so saving the form does not drop them.
+    An entity whose kind cannot be read gets "kind chosen next": the options ask it on their next page
+    (choosable_kinds). Chosen entities stay listed even if they are unavailable right now, so saving the
+    form does not drop them. Never offered: Frigate's own binary sensors (1.11.1) and this integration's
+    own entities (they would loop back to Kameraposti).
     """
     # 1.4.2 (steelo 2026-10-07 "liian pitkät nimet"): "<name in Kameraposti> · <kind>", not
     # "<friendly name> (<entity_id>)"; the entity id is added only when two rows would read the same.
-    kind_labels = KIND_LABELS_FI if (hass.config.language or "").startswith("fi") else KIND_LABELS_EN
-    # 1.11.1: Frigate's own binary sensors are never sent (sensor_export.frigate_own_sensor), so not offered.
+    finnish = (hass.config.language or "").startswith("fi")
+    kind_labels = KIND_LABELS_FI if finnish else KIND_LABELS_EN
+    choose = CHOOSE_KIND_LABEL["fi" if finnish else "en"]
+    registry = er.async_get(hass)
     candidates = [
         state
         for state in hass.states.async_all(("binary_sensor", "sensor"))
-        if kind_for(state) is not None and not frigate_own_sensor(hass, state.entity_id)
+        if (kind_for(state) is not None or choosable_kinds(state))
+        and not frigate_own_sensor(hass, state.entity_id)
+        and getattr(registry.async_get(state.entity_id), "platform", None) != DOMAIN
     ]
     candidate_ids = [state.entity_id for state in candidates]
     labels: dict[str, str] = {}
     for state in candidates:
-        kind = kind_for(state)
-        labels[state.entity_id] = (
-            f"{kameraposti_name(hass, state, candidate_ids)} · {kind_labels.get(kind, kind)}"
-        )
+        kind = effective_kind(state, kinds)
+        kind_label = kind_labels.get(kind, kind) if kind else choose
+        labels[state.entity_id] = f"{kameraposti_name(hass, state, candidate_ids)} · {kind_label}"
     seen: dict[str, int] = {}
     for label in labels.values():
         seen[label] = seen.get(label, 0) + 1
@@ -307,12 +320,14 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
 
         if user_input is not None:
             selected = list(dict.fromkeys(user_input.get(CONF_EXPORTED_ENTITIES, [])))
-            # 1.3.2: a "problem" sensor whose kind cannot be read from its name (e.g. general
-            # purpose) would be dropped silently -- say which one instead.
+            # 1.3.2: an entity that cannot be sent at all (no kind can be read or chosen, e.g. a text
+            # sensor chosen before) would be dropped silently -- say which one instead.
             unknown = [
                 entity_id
                 for entity_id in selected
-                if (state := self.hass.states.get(entity_id)) is not None and kind_for(state) is None
+                if (state := self.hass.states.get(entity_id)) is not None
+                and kind_for(state) is None
+                and not choosable_kinds(state)
             ]
             if len(selected) > limit:
                 # Fable audit L6: before the plan's limit is known, the error names only the hard maximum.
@@ -324,8 +339,11 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
                 current = selected
                 placeholders["entities"] = ", ".join(unknown)
             else:
-                options = {**self.config_entry.options, CONF_EXPORTED_ENTITIES: selected}
-                return self.async_create_entry(data=options)
+                self._selected = selected
+                # 1.13.0: the kind of every chosen entity whose kind cannot be read is asked next.
+                if self._kinds_needed():
+                    return await self.async_step_kinds()
+                return self._save({})
 
         return self.async_show_form(
             step_id="sensors",
@@ -333,7 +351,9 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
                 {
                     vol.Optional(CONF_EXPORTED_ENTITIES, default=current): SelectSelector(
                         SelectSelectorConfig(
-                            options=exportable_entity_options(self.hass, current),
+                            options=exportable_entity_options(
+                                self.hass, current, self.config_entry.options.get(CONF_ENTITY_KINDS, {})
+                            ),
                             multiple=True,
                             mode=SelectSelectorMode.DROPDOWN,
                         )
@@ -342,4 +362,62 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
             ),
             errors=errors,
             description_placeholders=placeholders,
+        )
+
+    _selected: list[str]
+
+    def _kinds_needed(self) -> list[str]:
+        """Chosen entities whose kind cannot be read but can be chosen (choosable_kinds)."""
+        return [
+            entity_id
+            for entity_id in self._selected
+            if (state := self.hass.states.get(entity_id)) is not None
+            and kind_for(state) is None
+            and choosable_kinds(state)
+        ]
+
+    def _save(self, kinds: dict[str, str]) -> ConfigFlowResult:
+        """Keep the kinds of chosen entities only; an entity left out forgets its chosen kind."""
+        earlier = self.config_entry.options.get(CONF_ENTITY_KINDS, {})
+        kept = {entity_id: kind for entity_id, kind in earlier.items() if entity_id in self._selected}
+        options = {**self.config_entry.options, CONF_EXPORTED_ENTITIES: self._selected}
+        options.pop(CONF_ENTITY_KINDS, None)
+        if chosen := {**kept, **kinds}:
+            options[CONF_ENTITY_KINDS] = chosen
+        return self.async_create_entry(data=options)
+
+    async def async_step_kinds(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """1.13.0: the kind of each chosen entity whose kind cannot be read (door, window, motion ...)."""
+        needed = self._kinds_needed()
+        earlier = self.config_entry.options.get(CONF_ENTITY_KINDS, {})
+        if user_input is not None:
+            kinds = {
+                entity_id: user_input[entity_id]
+                for entity_id in needed
+                if user_input.get(entity_id) in choosable_kinds(self.hass.states.get(entity_id))
+            }
+            return self._save(kinds)
+
+        finnish = (self.hass.config.language or "").startswith("fi")
+        kind_labels = KIND_LABELS_FI if finnish else KIND_LABELS_EN
+        schema: dict[Any, Any] = {}
+        names: list[str] = []
+        for entity_id in needed:
+            state = self.hass.states.get(entity_id)
+            choices = choosable_kinds(state)
+            default = earlier.get(entity_id) if earlier.get(entity_id) in choices else choices[0]
+            schema[vol.Required(entity_id, default=default)] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(value=kind, label=kind_labels.get(kind, kind)) for kind in choices
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+            friendly = state.attributes.get("friendly_name") if state is not None else None
+            names.append(f"{entity_id} = {friendly or entity_id}")
+        return self.async_show_form(
+            step_id="kinds",
+            data_schema=vol.Schema(schema),
+            description_placeholders={"entities": "\n".join(names)},
         )
