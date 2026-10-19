@@ -1590,6 +1590,7 @@ async def test_the_selection_list_names_every_chosen_entity_after_the_descriptio
         publish=publish,
         limit=2,
         source="kp-3-2",
+        selection_saved=True,
     )
     exporter.async_start()
     exporter.publish_snapshot()
@@ -1620,7 +1621,12 @@ async def test_no_list_goes_out_when_a_description_could_not_be_sent(hass: HomeA
         return False
 
     exporter = KameraportiSensorExporter(
-        hass, customer_id=CUSTOMER_ID, entity_ids=["binary_sensor.kellari"], publish=publish, source="kp-3"
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=["binary_sensor.kellari"],
+        publish=publish,
+        source="kp-3",
+        selection_saved=True,
     )
     exporter.async_start()
     exporter.publish_snapshot()
@@ -1635,7 +1641,7 @@ async def test_an_empty_selection_sends_the_empty_list_every_15_minutes(
     since Kameraposti's listener may be reconnecting when one goes out."""
     published, publish = _recorder()
     exporter = KameraportiSensorExporter(
-        hass, customer_id=CUSTOMER_ID, entity_ids=[], publish=publish, source="kp-3"
+        hass, customer_id=CUSTOMER_ID, entity_ids=[], publish=publish, source="kp-3", selection_saved=True
     )
     exporter.async_start()
     exporter.publish_snapshot()
@@ -1657,7 +1663,11 @@ async def test_without_a_login_no_list_is_sent(hass: HomeAssistant) -> None:
     _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
     published, publish = _recorder()
     exporter = KameraportiSensorExporter(
-        hass, customer_id=CUSTOMER_ID, entity_ids=["binary_sensor.kellari"], publish=publish
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=["binary_sensor.kellari"],
+        publish=publish,
+        selection_saved=True,
     )
     exporter.async_start()
     exporter.publish_snapshot()
@@ -1675,7 +1685,12 @@ async def test_a_long_list_goes_out_in_parts_under_the_brokers_limit(hass: HomeA
     entity_ids = [f"binary_sensor.pitka_anturin_nimi_{n:03d}_x" for n in range(200)]
     published, publish = _recorder()
     exporter = KameraportiSensorExporter(
-        hass, customer_id=CUSTOMER_ID, entity_ids=entity_ids, publish=publish, source="kp-3.abc"
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=entity_ids,
+        publish=publish,
+        source="kp-3.abc",
+        selection_saved=True,
     )
     exporter.async_start()
     exporter.publish_snapshot()
@@ -1708,6 +1723,7 @@ async def test_the_frigate_cameras_detection_sensors_are_on_the_list(hass: HomeA
         publish=publish,
         source="kp-3.abc",
         extra_names=partial(frigate_detection_names, hass),
+        selection_saved=True,
     )
     exporter.async_start()
     exporter.publish_snapshot()
@@ -1734,3 +1750,89 @@ async def test_an_unreadable_installation_id_sends_no_list_and_setup_goes_on(has
     ]
     assert "source" not in json.loads(calls[0][1])
     await coordinator.async_stop()
+
+
+# 1.14.1 (Fable bug hunt H-H1): a new or re-added entry has no saved selection. Its first snapshot sent an
+# empty list (only the Frigate detection sensors' names on it), and Kameraposti dropped every sensor this
+# Home Assistant had described before: the source (login + installation id) survives removing and adding
+# the entry.
+
+
+def _frigate_camera(hass: HomeAssistant) -> None:
+    er.async_get(hass).async_get_or_create(
+        "camera", "frigate", "frigate:camera:piha", suggested_object_id="piha"
+    )
+
+
+async def test_no_list_goes_out_before_a_selection_has_been_saved(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Not on connect, not with the 15-minute resend -- also not with a Frigate camera's detection sensor
+    as the only name on it."""
+    _frigate_camera(hass)
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=[],
+        publish=publish,
+        source="kp-3.abc",
+        extra_names=partial(frigate_detection_names, hass),
+    )
+    exporter.async_start()
+    exporter.publish_snapshot()
+    freezer.tick(15 * 60 + 1)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    assert published == []
+    exporter.async_stop()
+
+
+async def test_a_re_added_entry_drops_nothing_until_its_selection_is_saved(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """steelo 2026-10-19 removed the CAM entry and added it again. Now the new entry sends no list -- on
+    connect, on the resend -- until the options are saved; saving them (here deliberately with nothing
+    chosen) sends it."""
+    _frigate_camera(hass)
+    clients: list[MagicMock] = []
+
+    def _client(*args: object, **kwargs: object) -> MagicMock:
+        client = MagicMock()
+        client.async_start = AsyncMock()
+        client.async_stop = AsyncMock()
+        client.publish.return_value = True
+        clients.append(client)
+        return client
+
+    def _lists(client: MagicMock) -> list[dict]:
+        return [
+            json.loads(c.args[1]) for c in client.publish.call_args_list if c.args[0].endswith("/_ha/sync")
+        ]
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient", side_effect=_client):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        hass.data[DOMAIN][entry.entry_id]._handle_state_change(ConnectionState.CONNECTED)
+        freezer.tick(15 * 60 + 1)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert _lists(clients[0]) == []
+
+        result = await _open_sensor_options(hass, entry)
+        await hass.config_entries.options.async_configure(result["flow_id"], {CONF_EXPORTED_ENTITIES: []})
+        await hass.async_block_till_done()
+        assert len(clients) == 2  # saving reloaded the entry
+        hass.data[DOMAIN][entry.entry_id]._handle_state_change(ConnectionState.CONNECTED)
+        await hass.async_block_till_done()
+
+    source = f"kp-3.{await instance_id.async_get(hass)}"
+    assert _lists(clients[1]) == [{"source": source, "entities": ["binary_sensor.piha_frigate"]}]
+    assert await hass.config_entries.async_unload(entry.entry_id)

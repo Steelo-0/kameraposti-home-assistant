@@ -41,6 +41,10 @@ drop, nor the sensors another Home Assistant on the account described, however l
 list is not cut by the plan's limit, so a lower plan never drops a sensor; it is not sent when a
 description of the same snapshot could not be, and over the broker's 4096 bytes it goes out in
 parts (Kameraposti drops only once every part has come).
+1.14.1 (Fable bug hunt H-H1): the list goes out only once the selection has been saved in the options.
+A new or re-added entry has none yet, and its empty list made Kameraposti drop every sensor this Home
+Assistant had described before (the source survives removing and adding the entry). A selection saved
+empty is still sent: that is the user's choice.
 1.8.0: only the first <limit> chosen entities (in the saved order) are sent,
 the limit being the account's plan from Kameraposti's roster (sensor_limit;
 DEFAULT_SENSOR_LIMIT until it is told). The rest are left out with one warning
@@ -400,6 +404,7 @@ class KameraportiSensorExporter:
         source: str | None = None,
         extra_names: Callable[[], Iterable[str]] | None = None,
         kinds: Mapping[str, str] | None = None,
+        selection_saved: bool = False,
     ) -> None:
         self._hass = hass
         # 1.13.0: the kinds the user chose for entities whose kind cannot be read.
@@ -409,6 +414,8 @@ class KameraportiSensorExporter:
         # could not tell two Home Assistants apart). extra_names: the Frigate detection sensors' names.
         self._source = source
         self._extra_names = extra_names
+        # 1.14.1 (H-H1): whether the options hold a saved selection; without one no list is sent.
+        self._selection_saved = selection_saved
         # 1.11.1: Frigate's own binary sensors chosen before are left out (the form no longer offers them).
         frigate_own = [entity_id for entity_id in entity_ids if frigate_own_sensor(hass, entity_id)]
         if frigate_own:
@@ -461,7 +468,8 @@ class KameraportiSensorExporter:
             self._unsub = async_track_state_change_event(
                 self._hass, self._entity_ids, self._handle_state_event
             )
-        # 1.12.0: also with nothing chosen -- the empty list is what drops the sensors left behind.
+        # 1.12.0: also with nothing chosen -- the empty list is what drops the sensors left behind
+        # (1.14.1: once the selection has been saved).
         if self._unsub_resync is None:
             self._unsub_resync = async_track_time_interval(
                 self._hass, self._handle_resync, RESYNC_INTERVAL, cancel_on_shutdown=True
@@ -612,8 +620,12 @@ class KameraportiSensorExporter:
         self._source = source
 
     def _publish_selection(self) -> bool:
-        """1.12.0: every chosen entity's topic name, after the snapshot's descriptions (module doc)."""
-        if self._source is None:
+        """1.12.0: every chosen entity's topic name, after the snapshot's descriptions (module doc).
+
+        1.14.1 (H-H1): nothing before a selection has been saved -- also not the Frigate detection
+        sensors' names alone, which would drop every sensor chosen in an earlier entry.
+        """
+        if self._source is None or not self._selection_saved:
             return False
         topic = SYNC_TOPIC_TEMPLATE.format(customer_id=self._customer_id)
         return all(self._publish(topic, payload, False) for payload in self._selection_payloads())

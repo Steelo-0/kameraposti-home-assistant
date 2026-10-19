@@ -194,6 +194,10 @@ class KameraportiCoordinator:
             publish=self._client.publish,
             limit=effective_sensor_limit(None),
             extra_names=partial(frigate_detection_names, hass),
+            # 1.14.1 (Fable bug hunt H-H1): the selection list only once one has been saved (a saved
+            # empty one too). A new or re-added entry has none, and its empty list dropped in Kameraposti
+            # every sensor this Home Assistant had described.
+            selection_saved=CONF_EXPORTED_ENTITIES in entry.options,
         )
         self._username = username
         # 1.7.0: the Home Assistant cameras described to Kameraposti and used for its photos (1.8.0:
