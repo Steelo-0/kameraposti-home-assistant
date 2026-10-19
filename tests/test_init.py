@@ -17,9 +17,10 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.kameraposti.const import CONF_CUSTOMER_ID, DOMAIN
+from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, DOMAIN
 
 DATA = {CONF_CUSTOMER_ID: 3, CONF_USERNAME: "rk-3-abc", CONF_PASSWORD: "secret"}
 
@@ -95,22 +96,61 @@ async def test_reload_leaves_exactly_one_active_client(
     assert second_client.async_stop.await_count == 0
 
 
-async def test_updating_entry_data_triggers_a_reload_via_update_listener(
+async def test_saving_the_options_reloads_the_entry_exactly_once(
     hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
 ) -> None:
-    """Reauth flow updates entry.data and relies on this listener to reconnect
-    with the new password -- exercise that wiring directly."""
-    entry = MockConfigEntry(domain=DOMAIN, data=DATA)
+    """1.12.1 (2026-10-19): an options save reloaded the entry twice -- Home Assistant's own reload
+    plus the integration's update listener. Each reload is one new MQTT client."""
+    entry = MockConfigEntry(domain=DOMAIN, data=DATA, version=2)
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert len(mqtt_client_instances) == 1
+
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    saved = await hass.config_entries.options.async_configure(form["flow_id"], {CONF_EXPORTED_ENTITIES: []})
+    await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert len(mqtt_client_instances) == 2
+    assert mqtt_client_instances[0].async_stop.await_count == 1
+    assert mqtt_client_instances[1].async_start.await_count == 1
+
+
+async def test_reauth_reconnects_with_the_new_password_exactly_once(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    """Reauth stores the password and Home Assistant reloads once (no second reload by a listener)."""
+    entry = MockConfigEntry(domain=DOMAIN, data=DATA, version=2)
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    hass.config_entries.async_update_entry(entry, data={**DATA, CONF_PASSWORD: "rotated"})
+    result = await entry.start_reauth_flow(hass)
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+        done = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "rotated"})
+        await hass.async_block_till_done()
+
+    assert done["reason"] == "reauth_successful"
+    assert entry.data[CONF_PASSWORD] == "rotated"
+    assert len(mqtt_client_instances) == 2
+    assert mqtt_client_instances[1].async_start.await_count == 1
+
+
+async def test_entry_updates_during_setup_do_not_reload_it(
+    hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
+) -> None:
+    """Setup itself sets the login as unique id and drops the dead camera options: neither reloads."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=DATA, version=2, unique_id="3", options={"hidden_cameras": [1]}
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert len(mqtt_client_instances) == 2
-    assert mqtt_client_instances[0].async_stop.await_count == 1
-    assert mqtt_client_instances[1].async_start.await_count == 1
+    assert entry.unique_id != "3"
+    assert "hidden_cameras" not in entry.options
+    assert len(mqtt_client_instances) == 1
 
 
 async def test_version_1_entry_migrates_to_the_own_broker_and_kp_login(

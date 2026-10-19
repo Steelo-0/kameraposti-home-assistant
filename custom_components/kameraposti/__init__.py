@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, callback
 
+from .config_flow import OPTIONS_FLOW_RELOADS
 from .const import CONF_CUSTOMER_ID, CONF_HOST, DEAD_CAMERA_OPTIONS, DEFAULT_HOST, DOMAIN, USERNAME_TEMPLATE
 from .coordinator import KameraportiCoordinator, roster_store
 from .login import entry_login
@@ -59,7 +60,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    # 1.12.1: Home Assistant reloads after an options save or reauth by itself (config_flow.py);
+    # only Home Assistant without OptionsFlowWithReload still needs the listener.
+    if not OPTIONS_FLOW_RELOADS:
+        entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     return True
 
@@ -145,5 +149,5 @@ def _async_set_login_unique_id(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when its data changes (e.g. a password updated via reauth)."""
+    """Reload the entry when it changes -- only on Home Assistant without OptionsFlowWithReload."""
     await hass.config_entries.async_reload(entry.entry_id)

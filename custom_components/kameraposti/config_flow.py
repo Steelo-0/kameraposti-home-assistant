@@ -60,6 +60,19 @@ from .sensor_export import (
     kind_for,
 )
 
+# 1.12.1 (2026-10-19: one options save reloaded the entry twice in steelo's log): Home Assistant reloads the
+# entry itself after an options save (OptionsFlowWithReload) and after reauth
+# (async_update_reload_and_abort). An update listener on top of that reloaded a second time -- and
+# newer Home Assistant refuses update listeners together with either. Older Home Assistant without
+# OptionsFlowWithReload keeps the update listener (__init__.py), as before.
+try:
+    from homeassistant.config_entries import OptionsFlowWithReload as _OptionsFlowBase
+
+    OPTIONS_FLOW_RELOADS = True
+except ImportError:  # pragma: no cover -- Home Assistant without OptionsFlowWithReload
+    _OptionsFlowBase = OptionsFlow
+    OPTIONS_FLOW_RELOADS = False
+
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -260,7 +273,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-class KameraportiOptionsFlow(OptionsFlow):
+class KameraportiOptionsFlow(_OptionsFlowBase):
     """The entities exported to Kameraposti as sensors.
 
     1.10.0 (steelo 2026-10-16 "tee sitä nyt jo yksinkertaisempi"): the only setting. The cameras are
