@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Valitse palvelu ja syötä tunnus ja salasana. Turva-sivun Home Assistant -kohta näyttää ne täsmälleen tässä muodossa (esim. palvelu cam.steels.me, tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
+        "description": "Valitse palvelu ja syötä tunnus ja salasana. Turva-sivun Home Assistant -kohta näyttää ne täsmälleen tässä muodossa (esim. palvelu turva.secsrv.fi, tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
         "data": {
           "host": "Palvelu",
           "customer_id": "Tunnus (esim. kp-2) tai tilin numero",

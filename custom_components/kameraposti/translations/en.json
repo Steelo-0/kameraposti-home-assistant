@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to Kameraposti",
-        "description": "Choose the service and enter the login and password. The Home Assistant section on the Turva page shows them exactly in this form (e.g. service cam.steels.me, login kp-2, or kp-2-3 for another Home Assistant). Each Home Assistant needs its own login: the same login in two places disconnects both.",
+        "description": "Choose the service and enter the login and password. The Home Assistant section on the Turva page shows them exactly in this form (e.g. service turva.secsrv.fi, login kp-2, or kp-2-3 for another Home Assistant). Each Home Assistant needs its own login: the same login in two places disconnects both.",
         "data": {
           "host": "Service",
           "customer_id": "Login (e.g. kp-2) or account number",

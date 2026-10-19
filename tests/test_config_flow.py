@@ -45,12 +45,31 @@ async def test_successful_setup_creates_entry(hass: HomeAssistant) -> None:
 
 async def test_a_new_setup_offers_kameraposti_turva_first(hass: HomeAssistant) -> None:
     """Design review TOP 8 (steelo 2026-10-18): kameraposti.fi has no sensor broker, so a new setup
-    defaults to cam.steels.me; both services stay selectable."""
+    defaults to Kameraposti Turva. 2026-10-19 (steelo "srv3 palveluksi"): production Turva is
+    turva.secsrv.fi, cam.steels.me stays as the test service; all three stay selectable."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
 
     host = next(key for key in result["data_schema"].schema if key == CONF_HOST)
-    assert host.default() == "cam.steels.me"
-    assert result["data_schema"].schema[host].config["options"] == ["kameraposti.fi", "cam.steels.me"]
+    assert host.default() == "turva.secsrv.fi"
+    options = result["data_schema"].schema[host].config["options"]
+    assert options == ["turva.secsrv.fi", "cam.steels.me", "kameraposti.fi"]
+
+
+async def test_a_setup_on_the_production_turva_service_connects_there(hass: HomeAssistant) -> None:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+
+    with patch(
+        "custom_components.kameraposti.config_flow.async_test_connection",
+        new_callable=AsyncMock,
+    ) as mock_test:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {**USER_INPUT, CONF_HOST: "turva.secsrv.fi"}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["type"] is FlowResultType.CREATE_ENTRY, result2
+    assert result2["data"][CONF_HOST] == "turva.secsrv.fi"
+    assert mock_test.await_args.kwargs["host"] == "turva.secsrv.fi"
 
 
 async def test_invalid_auth_shows_error_and_does_not_create_entry(hass: HomeAssistant) -> None:

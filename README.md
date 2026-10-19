@@ -20,7 +20,7 @@ outbound-only, over WSS/TLS).
 - Home Assistant 2024.12.0 or newer
 - A Kameraposti account with sensors enabled, and the **service**, **MQTT
   login** and **MQTT password** shown in the **Home Assistant** section of the
-  Sensors page (e.g. `cam.steels.me`, `kp-2`). The setup form asks for exactly
+  Sensors page (e.g. `turva.secsrv.fi`, `kp-2`). The setup form asks for exactly
   these three. This integration does not use your regular Kameraposti login.
 
 Each MQTT login has one connection at a time: the broker accepts a login only
@@ -383,7 +383,7 @@ How the photo and the video are taken:
   `configuration.yaml`): the `httpx` library itself then logs every request
   address, these links included.
 - The links must point at the Kameraposti service the integration is set up
-  with (`kameraposti.fi` or `cam.steels.me`, default port, no user name); a
+  with (`turva.secsrv.fi`, `cam.steels.me` or `kameraposti.fi`, default port, no user name); a
   request with any other address is ignored, so nobody who could publish a
   request can make Home Assistant send camera images elsewhere.
 - A recording that does not finish in time (the video length + 30 seconds,

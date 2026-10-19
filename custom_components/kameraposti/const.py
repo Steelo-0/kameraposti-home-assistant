@@ -15,15 +15,16 @@ from typing import Final
 DOMAIN: Final = "kameraposti"
 
 # Kameraposti's own broker (2026-10-05: the old tailscale2.steels.me endpoint
-# was removed). The user picks the service, never a free-form host: the
-# production service or the CAM test server. Port/path/transport are fixed:
+# was removed). The user picks the service, never a free-form host. Port/path/transport are fixed:
 # MQTT over WSS behind the service's HTTPS proxy.
+# 2026-10-19 (steelo "srv3 palveluksi"): production Kameraposti Turva runs at turva.secsrv.fi; cam.steels.me
+# stays as the test service.
 DEFAULT_HOST: Final = "kameraposti.fi"
-BROKER_HOSTS: Final = ("kameraposti.fi", "cam.steels.me")
+BROKER_HOSTS: Final = ("turva.secsrv.fi", "cam.steels.me", "kameraposti.fi")
 # Design review TOP 8 (steelo 2026-10-18): a new setup offers Kameraposti Turva's service first --
 # kameraposti.fi has no sensor broker. DEFAULT_HOST stays the fallback for entries stored without a
 # host (version 1 migration), so an existing installation never changes service.
-SETUP_DEFAULT_HOST: Final = "cam.steels.me"
+SETUP_DEFAULT_HOST: Final = "turva.secsrv.fi"
 MQTT_PORT: Final = 443
 MQTT_WS_PATH: Final = "/mqtt"
 MQTT_TRANSPORT: Final = "websockets"
