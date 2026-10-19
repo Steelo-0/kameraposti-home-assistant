@@ -458,3 +458,38 @@ def test_the_reconfigure_step_has_its_texts() -> None:
         assert "{login}" in step["description"], language
         assert step["data"].keys() == {CONF_HOST, CONF_PASSWORD}, language
         assert "reconfigure_successful" in config["abort"], language
+
+
+async def test_a_camera_list_time_stored_by_1_14_0_does_not_hold_back_the_new_services_list(
+    hass: HomeAssistant, mock_mqtt_client: None, hass_storage: dict
+) -> None:
+    """Fable audit L-3: Reconfigure no longer removes the stored time (the old setup could save it again
+    before the reload); the time carries its service, and 1.14.0's, stored without one, gets the old service
+    here. The new setup then ignores it, so the new service's older list applies."""
+    entry = _existing_entry(hass)
+    key = f"{DOMAIN}.roster.{entry.entry_id}"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {"generated_at": "2026-10-19T10:00:00+00:00"},
+    }
+
+    result = await entry.start_reconfigure_flow(hass)
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PASSWORD: "uusi"}
+        )
+        await hass.async_block_till_done()
+    hass.data[DOMAIN][entry.entry_id]._handle_message(
+        "customers/3/cameras", _roster("2026-10-18T08:00:00+00:00", 5, "Uusi palvelu")
+    )
+    await hass.async_block_till_done()
+
+    devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+    assert "Uusi palvelu" in {device.name for device in devices}
+    assert hass_storage[key]["data"] == {
+        "generated_at": "2026-10-18T08:00:00+00:00",
+        "host": "turva.secsrv.fi",
+    }
+    assert await hass.config_entries.async_unload(entry.entry_id)

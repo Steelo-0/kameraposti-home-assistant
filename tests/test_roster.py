@@ -26,7 +26,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.kameraposti.const import CONF_CUSTOMER_ID, DOMAIN, EVENT_DETECTION
+from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, DOMAIN, EVENT_DETECTION
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
 
 CUSTOMER_ID = 3
@@ -344,8 +344,11 @@ async def test_same_retained_roster_after_a_restart_keeps_a_detection_created_ca
     coordinator._handle_message(*_detection(40))
     await hass.async_block_till_done()
     assert _camera_device(hass, 40) is not None
-    # The applied roster time is stored per config entry.
-    assert hass_storage[f"{DOMAIN}.roster.{setup_entry.entry_id}"]["data"] == {"generated_at": T1}
+    # The applied roster time is stored per config entry, with its service (1.14.1, audit L-3).
+    assert hass_storage[f"{DOMAIN}.roster.{setup_entry.entry_id}"]["data"] == {
+        "generated_at": T1,
+        "host": "kameraposti.fi",
+    }
 
     assert await hass.config_entries.async_reload(setup_entry.entry_id)
     await hass.async_block_till_done()
@@ -409,3 +412,39 @@ async def test_removing_the_entry_removes_its_stored_roster_time(
     await hass.async_block_till_done()
 
     assert key not in hass_storage
+
+
+@pytest.mark.parametrize(
+    ("stored_host", "applies"), [("cam.steels.me", True), ("kameraposti.fi", False), (None, False)]
+)
+async def test_a_stored_roster_time_counts_only_for_its_own_service(
+    hass: HomeAssistant, mock_mqtt_client: None, hass_storage: dict, stored_host: str | None, applies: bool
+) -> None:
+    """Fable audit L-3: after a move to another service (Reconfigure) the stored time is the old server's --
+    also one the old setup saved while the move was being made. It is ignored (and forgotten), so the new
+    service's first list applies even when it is older. A time stored for this service, or by 1.14.0 (no
+    service; it had no Reconfigure), still keeps an older list from changing anything."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_HOST: "kameraposti.fi",
+            CONF_CUSTOMER_ID: CUSTOMER_ID,
+            CONF_USERNAME: "kp-3",
+            CONF_PASSWORD: "x",
+        },
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    key = f"{DOMAIN}.roster.{entry.entry_id}"
+    stored = {"generated_at": T2} | ({"host": stored_host} if stored_host is not None else {})
+    hass_storage[key] = {"version": 1, "minor_version": 1, "key": key, "data": stored}
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    _coordinator(hass, entry)._handle_message(ROSTER_TOPIC, _roster((12, "Pihakamera"), generated_at=T1))
+    await hass.async_block_till_done()
+
+    assert (_camera_device(hass, 12) is not None) is applies
+    expected = {"generated_at": T1, "host": "kameraposti.fi"} if applies else stored
+    assert hass_storage[key]["data"] == expected

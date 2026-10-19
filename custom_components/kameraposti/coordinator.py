@@ -147,6 +147,8 @@ class KameraportiCoordinator:
         self.hass = hass
         self.entry = entry
         self.customer_id = customer_id
+        # 1.14.1 (audit L-3): the service, stored with the roster time (_async_load_roster_applied_at).
+        self._host = host
         self.cameras: dict[int, CameraState] = {}
         self.connection_state: ConnectionState = ConnectionState.CONNECTING
         # steelo 2026-10-05: Kamerapostin turvajärjestelmän tila (None = ei vielä tiedossa).
@@ -373,7 +375,18 @@ class KameraportiCoordinator:
         self._exporter.async_on_publishes_lost(topics)
 
     async def _async_load_roster_applied_at(self) -> datetime | None:
+        """The stored roster time, if it is this service's.
+
+        1.14.1 (Fable audit L-3): stored with its service. One stored for another service (the entry moved
+        with Reconfigure, which gives a time stored by 1.14.0 the old service) is that server's time: it is
+        forgotten, so this service's first roster applies even when it is older. One without a service
+        (1.14.0, which could not move an entry) is this service's.
+        """
         data = await self._roster_store.async_load()
+        if isinstance(data, dict) and data.get("host", self._host) != self._host:
+            _LOGGER.debug("Kameraposti forgets the camera list time of the service %s", data.get("host"))
+            await self._roster_store.async_remove()
+            return None
         raw = data.get("generated_at") if isinstance(data, dict) else None
         if not isinstance(raw, str):
             return None
@@ -476,7 +489,9 @@ class KameraportiCoordinator:
             self._remove_unlisted_cameras(device_registry, listed)
             self._roster_applied_at = roster.generated_at
             self.hass.async_create_task(
-                self._roster_store.async_save({"generated_at": roster.generated_at.isoformat()}),
+                self._roster_store.async_save(
+                    {"generated_at": roster.generated_at.isoformat(), "host": self._host}
+                ),
                 name="kameraposti save roster generated_at",
             )
 

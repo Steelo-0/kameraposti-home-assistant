@@ -336,9 +336,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors["base"] = "unknown"
                 else:
                     if candidate[CONF_HOST] != host:
-                        # The stored camera-list time is the old service's: the new service's list
-                        # (maybe older) must apply, and its cameras replace the old service's.
-                        await roster_store(self.hass, entry.entry_id).async_remove()
+                        await _async_mark_roster_time_of(self.hass, entry, host)
                     return self.async_update_reload_and_abort(
                         entry, data=candidate, reason="reconfigure_successful"
                     )
@@ -351,6 +349,19 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={"login": entry_login(entry.data) or ""},
         )
+
+
+async def _async_mark_roster_time_of(hass: HomeAssistant, entry: ConfigEntry, host: str) -> None:
+    """The stored camera-list time is the old service's: the new setup ignores it (coordinator), so the new
+    service's list -- maybe older, from another server -- applies and its cameras replace the old ones.
+
+    1.14.1 (Fable audit L-3): not removed here -- the running setup could store it again before the
+    reload. Since 1.14.1 it carries its service; one stored by 1.14.0 has none and gets the old one.
+    """
+    store = roster_store(hass, entry.entry_id)
+    stored = await store.async_load()
+    if isinstance(stored, dict) and "host" not in stored:
+        await store.async_save({**stored, "host": host})
 
 
 class KameraportiOptionsFlow(_OptionsFlowBase):
