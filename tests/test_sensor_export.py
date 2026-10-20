@@ -978,6 +978,80 @@ async def test_options_flow_still_names_a_chosen_entity_that_cannot_be_sent(hass
     assert refused["description_placeholders"]["entities"] == "sensor.ovi_teksti"
 
 
+@pytest.mark.parametrize("state", ["unavailable", "unknown"])
+async def test_a_chosen_sensor_without_a_value_right_now_keeps_its_kind_and_does_not_block_saving(
+    hass: HomeAssistant, state: str
+) -> None:
+    """1.14.2 (bug hunt 19.10 H-L1): a number sensor without a unit or state class, its kind chosen, has no
+    value when the options are saved. Whether it reports a number cannot be told then; it was refused as
+    "unknown_kind" and the whole selection with it. Its kind is asked again, the chosen one preselected."""
+    _set(hass, "sensor.kasvihuone", state, None, "Kasvihuone")
+    _set(hass, "binary_sensor.kellari", "off", "moisture", "Kellarin vuoto")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        options={
+            CONF_EXPORTED_ENTITIES: ["sensor.kasvihuone"],
+            CONF_ENTITY_KINDS: {"sensor.kasvihuone": "temperature"},
+        },
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        result = await _open_sensor_options(hass, entry)
+        kinds = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: ["sensor.kasvihuone", "binary_sensor.kellari"]}
+        )
+        assert kinds.get("errors") in (None, {})
+        assert kinds["step_id"] == "kinds"
+        assert {str(key): key.default() for key in kinds["data_schema"].schema} == {
+            "sensor.kasvihuone": "temperature"
+        }
+        saved = await hass.config_entries.options.async_configure(
+            kinds["flow_id"], {"sensor.kasvihuone": "temperature"}
+        )
+        await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == ["sensor.kasvihuone", "binary_sensor.kellari"]
+    assert entry.options[CONF_ENTITY_KINDS] == {"sensor.kasvihuone": "temperature"}
+
+
+async def test_the_kind_page_keeps_a_kind_chosen_while_its_sensor_went_unavailable(
+    hass: HomeAssistant,
+) -> None:
+    """1.14.2 (bug hunt 19.10 H-L1): the kinds page is answered for the entities it asked. One that went
+    unavailable while the page was open kept no kind: chosen, never sent, and nothing said so."""
+    _set(hass, "sensor.kasvihuone", "18.5", None, "Kasvihuone")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        result = await _open_sensor_options(hass, entry)
+        kinds = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: ["sensor.kasvihuone"]}
+        )
+        assert kinds["step_id"] == "kinds"
+        _set(hass, "sensor.kasvihuone", "unavailable", None, "Kasvihuone")
+        saved = await hass.config_entries.options.async_configure(
+            kinds["flow_id"], {"sensor.kasvihuone": "temperature"}
+        )
+        await hass.async_block_till_done()
+
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_EXPORTED_ENTITIES] == ["sensor.kasvihuone"]
+    assert entry.options[CONF_ENTITY_KINDS] == {"sensor.kasvihuone": "temperature"}
+
+
 async def test_every_binary_and_numeric_sensor_is_offered_but_not_the_integrations_own(
     hass: HomeAssistant,
 ) -> None:

@@ -232,7 +232,9 @@ leak or gas for a binary sensor (on = open / motion / alarm), temperature,
 CO₂ or gas (CO ppm) for a numeric one. The choice is kept in the options
 (`entity_kinds`) and forgotten when the entity is left out. Text sensors and
 switches are never offered; nor are Frigate's own binary sensors or this
-integration's own entities.
+integration's own entities. Since 1.14.2 a chosen numeric sensor that is
+unavailable when you save keeps its kind (the next page asks it again, the
+earlier choice preselected) instead of blocking the save.
 
 Kameraposti creates each sensor automatically, named after its device
 (since 1.4.2; the entity's friendly name when you have named the entity yourself, when it has no

@@ -31,8 +31,8 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -59,6 +59,7 @@ from .coordinator import roster_store
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
 from .sensor_export import (
+    CHOOSABLE_NUMERIC_KINDS,
     MAX_EXPORTED_SENSORS,
     choosable_kinds,
     effective_kind,
@@ -153,6 +154,19 @@ def _limit_note(known: int | None, finnish: bool) -> str:
         "Your plan's sensor limit has not arrived from Kameraposti yet; "
         "if you choose more than it takes, the rest are left out."
     )
+
+
+def _choosable_kinds_now(state: State | None) -> tuple[str, ...]:
+    """choosable_kinds(), and the number kinds for a sensor that has no value right now.
+
+    1.14.2 (bug hunt 19.10 H-L1): an unavailable or unknown sensor without a unit or state class cannot tell
+    whether it reports a number; it was refused as "unknown_kind" and the whole selection with it. It is
+    listed only when chosen before (exportable_entity_options), so its kind is asked like any other's.
+    """
+    kinds = choosable_kinds(state)
+    if kinds or state is None or state.domain != "sensor":
+        return kinds
+    return CHOOSABLE_NUMERIC_KINDS if state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN) else ()
 
 
 def exportable_entity_options(
@@ -405,7 +419,7 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
                 for entity_id in selected
                 if (state := self.hass.states.get(entity_id)) is not None
                 and kind_for(state) is None
-                and not choosable_kinds(state)
+                and not _choosable_kinds_now(state)
             ]
             if len(selected) > limit:
                 # Fable audit L6: before the plan's limit is known, the error names only the hard maximum.
@@ -419,7 +433,10 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
             else:
                 self._selected = selected
                 # 1.13.0: the kind of every chosen entity whose kind cannot be read is asked next.
-                if self._kinds_needed():
+                # 1.14.2 (H-L1): with the kinds it may take now -- the page is answered for what it asked,
+                # also when an entity's state changes while it is open.
+                self._needed = self._kinds_needed()
+                if self._needed:
                     return await self.async_step_kinds()
                 return self._save({})
 
@@ -443,16 +460,16 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
         )
 
     _selected: list[str]
+    _needed: dict[str, tuple[str, ...]]
 
-    def _kinds_needed(self) -> list[str]:
-        """Chosen entities whose kind cannot be read but can be chosen (choosable_kinds)."""
-        return [
-            entity_id
-            for entity_id in self._selected
-            if (state := self.hass.states.get(entity_id)) is not None
-            and kind_for(state) is None
-            and choosable_kinds(state)
-        ]
+    def _kinds_needed(self) -> dict[str, tuple[str, ...]]:
+        """Chosen entities whose kind cannot be read but can be chosen, with the kinds they may take."""
+        needed: dict[str, tuple[str, ...]] = {}
+        for entity_id in self._selected:
+            state = self.hass.states.get(entity_id)
+            if state is not None and kind_for(state) is None and (choices := _choosable_kinds_now(state)):
+                needed[entity_id] = choices
+        return needed
 
     def _save(self, kinds: dict[str, str]) -> ConfigFlowResult:
         """Keep the kinds of chosen entities only; an entity left out forgets its chosen kind."""
@@ -466,13 +483,13 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
 
     async def async_step_kinds(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """1.13.0: the kind of each chosen entity whose kind cannot be read (door, window, motion ...)."""
-        needed = self._kinds_needed()
+        needed = self._needed
         earlier = self.config_entry.options.get(CONF_ENTITY_KINDS, {})
         if user_input is not None:
             kinds = {
                 entity_id: user_input[entity_id]
-                for entity_id in needed
-                if user_input.get(entity_id) in choosable_kinds(self.hass.states.get(entity_id))
+                for entity_id, choices in needed.items()
+                if user_input.get(entity_id) in choices
             }
             return self._save(kinds)
 
@@ -480,9 +497,8 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
         kind_labels = KIND_LABELS_FI if finnish else KIND_LABELS_EN
         schema: dict[Any, Any] = {}
         names: list[str] = []
-        for entity_id in needed:
+        for entity_id, choices in needed.items():
             state = self.hass.states.get(entity_id)
-            choices = choosable_kinds(state)
             default = earlier.get(entity_id) if earlier.get(entity_id) in choices else choices[0]
             schema[vol.Required(entity_id, default=default)] = SelectSelector(
                 SelectSelectorConfig(
