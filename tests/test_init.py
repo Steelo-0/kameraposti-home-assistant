@@ -144,6 +144,51 @@ async def test_reauth_reconnects_with_the_new_password_exactly_once(
     assert mqtt_client_instances[1].async_start.await_count == 1
 
 
+@pytest.mark.parametrize(
+    ("source", "user_input", "reason"),
+    [
+        ("reauth", {CONF_PASSWORD: "rotated"}, "reauth_successful"),
+        # The same password again: nothing changes, the entry is still reloaded (it reconnects now).
+        ("reauth", {CONF_PASSWORD: "secret"}, "reauth_successful"),
+        ("reconfigure", {CONF_HOST: "turva.secsrv.fi", CONF_PASSWORD: "rotated"}, "reconfigure_successful"),
+    ],
+)
+async def test_reauth_and_reconfigure_reload_once_on_home_assistant_without_options_flow_with_reload(
+    hass: HomeAssistant,
+    mqtt_client_instances: list[AsyncMock],
+    source: str,
+    user_input: dict[str, str],
+    reason: str,
+) -> None:
+    """1.14.2 (bug hunt 19.10 H-L3): Home Assistant before OptionsFlowWithReload (2025.8; hacs.json allows
+    2024.12) keeps the update listener. async_update_reload_and_abort fired it and reloaded the entry itself
+    too: two reloads, two connections in a row."""
+    with (
+        patch("custom_components.kameraposti.OPTIONS_FLOW_RELOADS", False),
+        patch("custom_components.kameraposti.config_flow.OPTIONS_FLOW_RELOADS", False),
+    ):
+        entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, unique_id="kp-3", version=2, minor_version=2)
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.update_listeners  # the old Home Assistant's way
+
+        if source == "reauth":
+            result = await entry.start_reauth_flow(hass)
+        else:
+            result = await entry.start_reconfigure_flow(hass)
+        with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+            done = await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+            await hass.async_block_till_done()
+
+    assert done["reason"] == reason
+    assert entry.data[CONF_PASSWORD] == user_input[CONF_PASSWORD]
+    assert len(mqtt_client_instances) == 2
+    assert mqtt_client_instances[0].async_stop.await_count == 1
+    assert mqtt_client_instances[1].async_start.await_count == 1
+    assert mqtt_client_instances[1].async_stop.await_count == 0
+
+
 async def test_entry_updates_during_setup_do_not_reload_it(
     hass: HomeAssistant, mqtt_client_instances: list[AsyncMock]
 ) -> None:

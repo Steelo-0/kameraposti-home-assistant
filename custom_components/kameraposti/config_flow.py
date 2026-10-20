@@ -309,8 +309,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error validating Kameraposti reauth")
                 errors["base"] = "unknown"
             else:
-                reauth_entry = self._get_reauth_entry()
-                return self.async_update_reload_and_abort(reauth_entry, data=candidate)
+                return self._update_reload_and_abort(self._get_reauth_entry(), candidate, "reauth_successful")
 
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -351,9 +350,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     if candidate[CONF_HOST] != host:
                         await _async_mark_roster_time_of(self.hass, entry, host)
-                    return self.async_update_reload_and_abort(
-                        entry, data=candidate, reason="reconfigure_successful"
-                    )
+                    return self._update_reload_and_abort(entry, candidate, "reconfigure_successful")
                 # The form comes back with the service just tried.
                 host = candidate[CONF_HOST]
 
@@ -363,6 +360,21 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={"login": entry_login(entry.data) or ""},
         )
+
+    def _update_reload_and_abort(
+        self, entry: ConfigEntry, data: dict[str, Any], reason: str
+    ) -> ConfigFlowResult:
+        """Store the entry's new data and reload it once.
+
+        1.14.2 (bug hunt 19.10 H-L3): on Home Assistant without OptionsFlowWithReload the update listener
+        (__init__.py) reloads a changed entry; async_update_reload_and_abort reloaded it a second time. There
+        the listener reloads, and an unchanged entry (the same password again) is reloaded here.
+        """
+        if OPTIONS_FLOW_RELOADS:
+            return self.async_update_reload_and_abort(entry, data=data, reason=reason)
+        if not self.hass.config_entries.async_update_entry(entry, data=data):
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        return self.async_abort(reason=reason)
 
 
 async def _async_mark_roster_time_of(hass: HomeAssistant, entry: ConfigEntry, host: str) -> None:
