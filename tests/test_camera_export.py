@@ -22,6 +22,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
+from custom_components.kameraposti.budget import SnapshotBudget
 from custom_components.kameraposti.camera_export import (
     CameraSettings,
     KameraportiCameraExporter,
@@ -45,6 +46,8 @@ from custom_components.kameraposti.const import (
     CONF_REMOVED_CAMERAS,
     DOMAIN,
     MAX_EXPORTED_CAMERAS,
+    SNAPSHOT_BUDGET_MESSAGES,
+    SNAPSHOT_BUDGET_SECONDS,
 )
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
 from custom_components.kameraposti.mqtt_client import ConnectionState
@@ -375,6 +378,42 @@ async def test_a_failed_publish_stops_the_round_and_the_next_connection_resends(
     assert sent == ["camera.vanha"]
     exporter.async_on_connected()
     assert sent == ["camera.vanha", "camera.vanha", "camera.eka", "camera.toka"]
+
+
+async def test_cameras_wait_for_room_in_the_accounts_snapshot_budget(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """1.14.2 (bug hunt 19.10 H-L4): the cameras share the account's snapshot budget with its sensors; what
+    does not fit follows as it frees, and a new round replaces a waiting one."""
+    for name in ("eka", "kolmas", "toka"):
+        hass.states.async_set(f"camera.{name}", "idle", {})
+    budget = SnapshotBudget()
+    budget.record(SNAPSHOT_BUDGET_MESSAGES - 1)  # the sensors' snapshot
+    published, publish = _recorder()
+    exporter = KameraportiCameraExporter(
+        hass, customer_id=CUSTOMER_ID, settings=_settings(), publish=publish, budget=budget
+    )
+
+    exporter.publish_all()
+    assert [payload["entity_id"] for _, payload, _ in published] == ["camera.eka"]
+
+    freezer.tick(SNAPSHOT_BUDGET_SECONDS)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert [payload["entity_id"] for _, payload, _ in published] == [
+        "camera.eka",
+        "camera.kolmas",
+        "camera.toka",
+    ]
+
+    # A waiting round dies with the exporter.
+    budget.record(SNAPSHOT_BUDGET_MESSAGES)
+    exporter.publish_all()
+    exporter.async_stop()
+    freezer.tick(SNAPSHOT_BUDGET_SECONDS)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(published) == 3
 
 
 async def test_nothing_to_send_without_cameras(hass: HomeAssistant) -> None:

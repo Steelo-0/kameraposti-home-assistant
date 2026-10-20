@@ -183,6 +183,13 @@ SHORT_CONNECTION_DROPS_WINDOW_SECONDS: Final = 120
 # it (120 when this was written; Turva V62 raises the default to 300), so a reconnect storm must not
 # use the budget that leak/smoke/door alarms need.
 SNAPSHOT_MIN_INTERVAL_SECONDS: Final = 60
+# 1.14.2 (bug hunt 19.10 H-L4): the snapshots' messages (descriptions, their states, the selection list, the
+# cameras) of one account on one service go out at most this many in any SNAPSHOT_BUDGET_SECONDS (budget.py):
+# half of the 300 a minute Kameraposti allows an account. A plan's 30 sensors and 50 cameras (about 111
+# messages) still go out at once; an unlimited account's 200 sensors and 50 cameras (about 455) take about
+# three minutes. A few seconds over Kameraposti's minute, so two batches never meet in one of its minutes.
+SNAPSHOT_BUDGET_MESSAGES: Final = 150
+SNAPSHOT_BUDGET_SECONDS: Final = 65
 
 # How long the config flow's connection test waits for CONNACK+SUBACK
 # before declaring the broker unreachable.

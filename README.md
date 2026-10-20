@@ -257,6 +257,14 @@ alarms. A sensor whose message could not be sent during the break is still
 sent as soon as the connection is back; the full resend follows when the
 minute is up.
 
+Since 1.14.2 the resends of one account on one service (every entry of it in
+this Home Assistant, also across reloads) send at most 150 messages in 65
+seconds — half of the 300 a minute Kameraposti allows an account; the rest
+follows as the budget frees. A plan's 30 sensors and 50 cameras still go at
+once; on an account without sensor limits 200 sensors and 50 cameras take
+about three minutes. A state change, and a message that could not be sent
+during a break, never wait for it.
+
 ### How many sensors (since 1.8.0)
 
 Your Kameraposti plan decides how many sensors Home Assistant sends:

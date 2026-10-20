@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,6 +27,7 @@ from homeassistant.helpers import instance_id
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
+from custom_components.kameraposti.budget import SnapshotBudget
 from custom_components.kameraposti.config_flow import exportable_entity_options
 from custom_components.kameraposti.const import (
     CONF_CUSTOMER_ID,
@@ -34,6 +37,9 @@ from custom_components.kameraposti.const import (
     DEFAULT_SENSOR_LIMIT,
     DOMAIN,
     MAX_EXPORTED_SENSORS,
+    SNAPSHOT_BUDGET_MESSAGES,
+    SNAPSHOT_BUDGET_SECONDS,
+    SNAPSHOT_MIN_INTERVAL_SECONDS,
 )
 from custom_components.kameraposti.coordinator import KameraportiCoordinator
 from custom_components.kameraposti.frigate_events import frigate_detection_names
@@ -401,11 +407,15 @@ async def test_coordinator_describes_exported_sensors_when_connected(hass: HomeA
 
 
 async def _connected_coordinator(
-    hass: HomeAssistant, entity_ids: list[str]
+    hass: HomeAssistant,
+    entity_ids: list[str],
+    *,
+    publish: Callable[[str, str, bool], bool] | None = None,
+    host: str = "cam.steels.me",
 ) -> tuple[KameraportiCoordinator, MagicMock]:
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
+        data={CONF_HOST: host, CONF_CUSTOMER_ID: CUSTOMER_ID, "username": "kp-3", "password": "x"},
         options={CONF_EXPORTED_ENTITIES: entity_ids},
         version=2,
     )
@@ -414,9 +424,11 @@ async def _connected_coordinator(
     client.async_start = AsyncMock()
     client.async_stop = AsyncMock()
     client.publish.return_value = True
+    if publish is not None:
+        client.publish.side_effect = publish
     with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient", return_value=client):
         coordinator = KameraportiCoordinator(
-            hass, entry, host="cam.steels.me", customer_id=CUSTOMER_ID, username="kp-3", password="x"
+            hass, entry, host=host, customer_id=CUSTOMER_ID, username="kp-3", password="x"
         )
     await coordinator.async_start()
     coordinator._handle_state_change(ConnectionState.CONNECTED)
@@ -1930,3 +1942,170 @@ async def test_a_re_added_entry_drops_nothing_until_its_selection_is_saved(
         {"source": source, "selection_saved": True, "entities": ["binary_sensor.piha_frigate"]}
     ]
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# -- 1.14.2 (bug hunt 19.10 H-L4): the snapshots within Kameraposti's message budget ------------------------
+
+# Kameraposti counts every message of an account -- every Home Assistant and device on it -- against 300 a
+# minute (1000 on an account without sensor limits) before reading it, and drops the rest unread: a
+# description, the selection list, an alarm. The snapshots take at most half of the smaller one.
+SNAPSHOT_MESSAGES_PER_MINUTE = 150
+
+
+def _most_in_a_minute(sent: list[tuple[datetime, str, str]]) -> int:
+    """The most messages sent within any 60 seconds."""
+    times = [at for at, _, _ in sent]
+    return max(
+        (sum(1 for other in times if at <= other < at + timedelta(seconds=60)) for at in times), default=0
+    )
+
+
+def _timed_recorder() -> tuple[list[tuple[datetime, str, str]], Callable[[str, str, bool], bool]]:
+    sent: list[tuple[datetime, str, str]] = []
+
+    def publish(topic: str, payload: str, retain: bool) -> bool:
+        sent.append((dt_util.utcnow(), topic, payload))
+        return True
+
+    return sent, publish
+
+
+async def test_an_unlimited_accounts_snapshot_stays_within_kameraposti_message_budget(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """An account without sensor limits, 200 sensors and 50 cameras: at start the first 20 sensors and the
+    cameras went out, and the roster's limit (200) sent the other 180 at once -- about 450 messages within a
+    second, and a reconnect, a reload or the 15-minute resend could add another snapshot within seconds.
+    Now at most 150 a minute; the rest follows, the selection list after every description."""
+    entity_ids = _doors(hass, 200)
+    cameras = [f"camera.c{i:02d}" for i in range(50)]
+    for camera in cameras:
+        hass.states.async_set(camera, "idle", {"friendly_name": camera})
+    sent, publish = _timed_recorder()
+
+    coordinator, _client = await _connected_coordinator(hass, entity_ids, publish=publish)
+    coordinator._handle_message(f"customers/{CUSTOMER_ID}/cameras", _limit_roster(200, second=1))
+    await hass.async_block_till_done()
+    for _ in range(10):
+        freezer.tick(30)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+
+    assert _most_in_a_minute(sent) <= SNAPSHOT_MESSAGES_PER_MINUTE
+    topics = [topic for _, topic, _ in sent]
+    for entity_id in entity_ids:
+        assert topics.count(f"kameraposti/3/anturit/{entity_id}/config") >= 1
+        assert topics.count(f"kameraposti/3/anturit/{entity_id}") >= 1
+    for camera in cameras:
+        assert f"kameraposti/3/anturit/{camera}/config" in topics
+    # The list of the first snapshot after its 20 descriptions.
+    first_list = topics.index("kameraposti/3/anturit/_ha/sync")
+    assert all(topics.index(f"kameraposti/3/anturit/{e}/config") < first_list for e in entity_ids[:20])
+    # Every message within the broker's message_size_limit (4096 bytes).
+    assert all(len(payload.encode()) <= 4096 for _, _, payload in sent)
+    await coordinator.async_stop()
+
+
+async def test_an_alarm_goes_out_at_once_while_the_snapshot_waits_for_the_budget(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    entity_ids = _doors(hass, 100)
+    published, publish = _recorder()
+    exporter = KameraportiSensorExporter(
+        hass,
+        customer_id=CUSTOMER_ID,
+        entity_ids=entity_ids,
+        publish=publish,
+        limit=100,
+        source="kp-3.abc",
+        selection_saved=True,
+    )
+    exporter.async_start()
+
+    exporter.publish_snapshot()
+    assert len(published) == SNAPSHOT_MESSAGES_PER_MINUTE  # 75 sensors; the rest waits
+    assert _sent_entities(published) == entity_ids[:75]
+
+    published.clear()
+    _set(hass, entity_ids[99], "on", "door", "Ovi 99")
+    await hass.async_block_till_done()
+    assert [(topic, payload) for topic, payload, _ in published][-1] == (
+        "kameraposti/3/anturit/binary_sensor.ovi_99",
+        "open",
+    )
+
+    published.clear()
+    freezer.tick(65)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _sent_entities(published) == entity_ids[75:]
+    assert published[-1][0] == "kameraposti/3/anturit/_ha/sync"
+    exporter.async_stop()
+
+
+async def test_what_a_break_left_unsent_goes_first_and_at_once_when_the_budget_is_used(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A door opened during a break goes out as soon as the connection is back, also when the account's
+    budget is used up (here by another entry); the rest of the snapshot waits for room."""
+    entity_ids = _doors(hass, 3)
+    budget = SnapshotBudget()
+    published: list[tuple[str, str, bool]] = []
+    connected = [True]
+
+    def publish(topic: str, payload: str, retain: bool) -> bool:
+        if connected[0]:
+            published.append((topic, payload, retain))
+        return connected[0]
+
+    exporter = KameraportiSensorExporter(
+        hass, customer_id=CUSTOMER_ID, entity_ids=entity_ids, publish=publish, budget=budget
+    )
+    exporter.async_start()
+    exporter.async_on_connected()
+    connected[0] = False
+    _set(hass, entity_ids[2], "on", "door", "Ovi 2")
+    await hass.async_block_till_done()
+
+    budget.record(SNAPSHOT_BUDGET_MESSAGES)
+    freezer.tick(SNAPSHOT_MIN_INTERVAL_SECONDS + 1)
+    connected[0] = True
+    published.clear()
+    exporter.async_on_connected()  # a full snapshot is due
+    assert [(topic, payload) for topic, payload, _ in published][-1:] == [
+        ("kameraposti/3/anturit/binary_sensor.ovi_02", "open")
+    ]
+    assert _sent_entities(published) == [entity_ids[2]]
+
+    freezer.tick(SNAPSHOT_BUDGET_SECONDS)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _sent_entities(published) == [entity_ids[2], entity_ids[0], entity_ids[1]]
+    exporter.async_stop()
+
+
+async def test_a_reload_or_another_entry_of_the_account_shares_its_budget(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The budget is the account's on its service: a reload (options saved twice in a minute) or a second
+    entry of the account does not start a new one. Another service has its own."""
+    entity_ids = _doors(hass, 100)
+    sent, publish = _timed_recorder()
+    first, _client = await _connected_coordinator(hass, entity_ids, publish=publish)
+    first._handle_message(f"customers/{CUSTOMER_ID}/cameras", _limit_roster(100, second=1))
+    await hass.async_block_till_done()
+    assert len(sent) == 149  # 20 sensors and the list, then 54 of the 80 the limit let in
+    await first.async_stop()
+
+    freezer.tick(5)
+    _second, client = await _connected_coordinator(hass, entity_ids)
+    assert _published_topics(client) == []
+    _other_service, other = await _connected_coordinator(hass, entity_ids, host="turva.secsrv.fi")
+    assert len(_published_topics(other)) == 41  # 20 sensors (the default limit) and the list
+
+    freezer.tick(61)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(_published_topics(client)) == 41
+    await _second.async_stop()
+    await _other_service.async_stop()

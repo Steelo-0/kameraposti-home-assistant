@@ -29,6 +29,8 @@ sensor prefix:
 the entity_id in the payload. Descriptions and removals go out on every (re)connect, at most once
 a minute (a reconnect storm must not use the account's message budget), and every 15 minutes:
 Kameraposti's listener reconnects hourly, and a message published in that gap would be lost.
+1.14.2 (bug hunt 19.10 H-L4): within the account's snapshot budget, shared with the sensors (budget.py);
+the rest follows as it frees.
 
 A camera a 1.6.0 option linked to a Kameraposti camera carries that camera's id along, whichever
 way it is reported, so an upgrade keeps using the same Kameraposti camera.
@@ -50,6 +52,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
+from .budget import SnapshotBudget
 from .capture import capture_cameras_from_options
 from .const import (
     CAMERA_ENTITY_PATTERN,
@@ -190,7 +193,13 @@ class KameraportiCameraExporter:
     """Describes the reported cameras (and those no longer reported as removed) to Kameraposti."""
 
     def __init__(
-        self, hass: HomeAssistant, *, customer_id: int, settings: CameraSettings, publish: PublishFn
+        self,
+        hass: HomeAssistant,
+        *,
+        customer_id: int,
+        settings: CameraSettings,
+        publish: PublishFn,
+        budget: SnapshotBudget | None = None,
     ) -> None:
         self._hass = hass
         self._customer_id = customer_id
@@ -199,6 +208,11 @@ class KameraportiCameraExporter:
         self._sent_at: datetime | None = None
         self._pending: CALLBACK_TYPE | None = None
         self._unsub_resync: Callable[[], None] | None = None
+        # 1.14.2 (H-L4): the account's snapshot budget, the cameras still to describe (entity_id, removed)
+        # and the wait for room.
+        self._budget = budget if budget is not None else SnapshotBudget()
+        self._queue: list[tuple[str, bool]] = []
+        self._queue_timer: CALLBACK_TYPE | None = None
 
     def async_start(self) -> None:
         # 1.8.0: always -- a camera added to Home Assistant later is reported at the next resend.
@@ -215,6 +229,7 @@ class KameraportiCameraExporter:
         if self._pending is not None:
             self._pending()
             self._pending = None
+        self._cancel_queue()
 
     @callback
     def async_on_connected(self) -> None:
@@ -244,32 +259,58 @@ class KameraportiCameraExporter:
         """Removals first, then the reported cameras. Stops at the first message that cannot be sent.
 
         The reported cameras are worked out now, not at setup: a camera added to Home Assistant since
-        is described, and a camera that is reported is never also described as removed.
+        is described, and a camera that is reported is never also described as removed. 1.14.2 (H-L4):
+        within the snapshot budget, the rest as it frees (_send_queue).
         """
+        self._cancel_queue()
         exported = exported_cameras(self._hass, self._settings)
-        sent = False
-        for entity_id in self._settings.removed:
-            if entity_id in exported:
-                continue
-            if not self._send(entity_id, {"kind": "camera", "entity_id": entity_id, "removed": True}):
-                return
-            sent = True
+        self._queue = [(entity_id, True) for entity_id in self._settings.removed if entity_id not in exported]
         # 1.8.1: every one exists in Home Assistant (the set is built from it), so 1.7.0's warning about
         # a saved camera that no longer exists (audit L-5) has nothing left to warn about.
-        for entity_id in exported:
-            payload: dict[str, Any] = {
-                "kind": "camera",
-                "entity_id": entity_id,
-                "name": camera_name(self._hass, entity_id),
-                "mac": camera_mac(self._hass, entity_id),
-            }
-            if (camera_id := self._settings.hints.get(entity_id)) is not None:
-                payload["camera_id"] = camera_id
+        self._queue.extend((entity_id, False) for entity_id in exported)
+        self._send_queue()
+
+    @callback
+    def _send_queue(self) -> None:
+        sent = False
+        while self._queue:
+            if not self._budget.has_room(1):
+                self._queue_timer = async_call_later(
+                    self._hass,
+                    self._budget.seconds_until_room(1),
+                    HassJob(self._send_queue_later, cancel_on_shutdown=True),
+                )
+                break
+            entity_id, removed = self._queue.pop(0)
+            if removed:
+                payload: dict[str, Any] = {"kind": "camera", "entity_id": entity_id, "removed": True}
+            else:
+                payload = {
+                    "kind": "camera",
+                    "entity_id": entity_id,
+                    "name": camera_name(self._hass, entity_id),
+                    "mac": camera_mac(self._hass, entity_id),
+                }
+                if (camera_id := self._settings.hints.get(entity_id)) is not None:
+                    payload["camera_id"] = camera_id
             if not self._send(entity_id, payload):
+                self._queue.clear()
                 return
+            self._budget.record()
             sent = True
         if sent:
             self._sent_at = dt_util.utcnow()
+
+    @callback
+    def _send_queue_later(self, _now: datetime) -> None:
+        self._queue_timer = None
+        self._send_queue()
+
+    def _cancel_queue(self) -> None:
+        if self._queue_timer is not None:
+            self._queue_timer()
+            self._queue_timer = None
+        self._queue = []
 
     def _send(self, entity_id: str, payload: dict[str, Any]) -> bool:
         topic = SENSOR_TOPIC_TEMPLATE.format(customer_id=self._customer_id, name=mqtt_name_for(entity_id))

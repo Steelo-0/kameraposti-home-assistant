@@ -59,6 +59,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .budget import snapshot_budget
 from .camera_export import KameraportiCameraExporter, camera_settings_from_options, exported_cameras
 from .capture import KameraportiCaptureHandler, capture_cameras_from_options
 from .const import (
@@ -188,6 +189,9 @@ class KameraportiCoordinator:
             on_state_change=self._handle_state_change,
             on_publishes_lost=self._handle_publishes_lost,
         )
+        # 1.14.2 (bug hunt 19.10 H-L4): the snapshots of the account on this service share one message budget,
+        # also with its other entries and across reloads (budget.py).
+        budget = snapshot_budget(hass, host, customer_id)
         self._exporter = KameraportiSensorExporter(
             hass,
             customer_id=customer_id,
@@ -200,13 +204,18 @@ class KameraportiCoordinator:
             # empty one too). A new or re-added entry has none, and its empty list dropped in Kameraposti
             # every sensor this Home Assistant had described.
             selection_saved=CONF_EXPORTED_ENTITIES in entry.options,
+            budget=budget,
         )
         self._username = username
         # 1.7.0: the Home Assistant cameras described to Kameraposti and used for its photos (1.8.0:
         # every camera not hidden, worked out each time they are needed).
         camera_settings = camera_settings_from_options(entry.options)
         self._camera_exporter = KameraportiCameraExporter(
-            hass, customer_id=customer_id, settings=camera_settings, publish=self._client.publish
+            hass,
+            customer_id=customer_id,
+            settings=camera_settings,
+            publish=self._client.publish,
+            budget=budget,
         )
         # 1.11.0: each new Frigate detection is a motion of its camera in Kameraposti.
         self._frigate = KameraportiFrigateDetections(

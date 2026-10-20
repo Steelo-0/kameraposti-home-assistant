@@ -51,6 +51,10 @@ the empty lists of 1.12-1.14.0).
 the limit being the account's plan from Kameraposti's roster (sensor_limit;
 DEFAULT_SENSOR_LIMIT until it is told). The rest are left out with one warning
 naming them; a higher limit later sends them without a restart.
+1.14.2 (bug hunt 19.10 H-L4): a snapshot, and what a higher limit lets in, go out within the account's
+snapshot budget (budget.py), the rest as it frees; the list follows the last description. An unlimited
+account's start sent about 450 messages within a second. What a break left unsent goes first and at once,
+and a state change never waits.
 
 Everything here runs on the Home Assistant event loop; ``publish`` is the
 MQTT client's non-blocking publish and returns False while disconnected.
@@ -87,6 +91,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
+from .budget import SnapshotBudget
 from .const import (
     DEFAULT_SENSOR_LIMIT,
     MAX_EXPORTED_SENSORS,
@@ -407,6 +412,7 @@ class KameraportiSensorExporter:
         extra_names: Callable[[], Iterable[str]] | None = None,
         kinds: Mapping[str, str] | None = None,
         selection_saved: bool = False,
+        budget: SnapshotBudget | None = None,
     ) -> None:
         self._hass = hass
         # 1.13.0: the kinds the user chose for entities whose kind cannot be read.
@@ -457,6 +463,12 @@ class KameraportiSensorExporter:
         self._snapshot_pending: CALLBACK_TYPE | None = None
         # 1.5.1: entities whose description or state could not be sent (disconnected).
         self._unsent: set[str] = set()
+        # 1.14.2 (H-L4): the account's snapshot budget (the coordinator's is shared), the entities the
+        # snapshot (or a higher limit) still has to send, whether the list follows them, and the wait.
+        self._budget = budget if budget is not None else SnapshotBudget()
+        self._paced: list[str] = []
+        self._paced_list = False
+        self._paced_timer: CALLBACK_TYPE | None = None
 
     @callback
     def _name_for(self, state: State) -> str:
@@ -491,6 +503,7 @@ class KameraportiSensorExporter:
         if self._snapshot_pending is not None:
             self._snapshot_pending()
             self._snapshot_pending = None
+        self._cancel_paced()
         self._described.clear()
         self._co_sent.clear()
         self._unsent.clear()
@@ -518,8 +531,11 @@ class KameraportiSensorExporter:
                     self._forget(entity_id)
             added = [entity_id for entity_id in self._exported if entity_id not in previous]
             if added and self._unsub is not None:
-                self._unsent.update(added)
-                self._publish_unsent()
+                # 1.14.2 (H-L4): within the snapshot budget, after what a snapshot still has to send -- an
+                # unlimited account's roster let in 180 sensors (360 messages) at once.
+                self._paced.extend(entity_id for entity_id in added if entity_id not in self._paced)
+                if self._paced_timer is None:
+                    self._send_paced()
         dropped = tuple(self._entity_ids[limit:])
         if dropped == self._dropped_logged:
             return
@@ -592,29 +608,73 @@ class KameraportiSensorExporter:
 
     @callback
     def publish_snapshot(self) -> None:
-        """Describe every exported entity and send its current state."""
+        """Describe every exported entity and send its current state, then the list.
+
+        1.14.2 (H-L4): within the snapshot budget, the rest as it frees (_send_paced). What a break left
+        unsent goes first, and at once.
+        """
         self._described.clear()
+        self._cancel_paced()
+        self._paced = sorted(self._exported, key=lambda entity_id: entity_id not in self._unsent)
+        self._paced_list = True
+        self._send_paced()
+
+    @callback
+    def _send_paced(self) -> None:
+        """Send what the snapshot (or a higher limit) still has to, as far as the budget lets; then wait."""
+        snapshot = self._paced_list
         sent = False
-        for entity_id in self._exported:
+        while self._paced:
+            entity_id = self._paced[0]
             state = self._hass.states.get(entity_id)
             kind = self._kind_for(state)
-            if state is None or kind is None:
+            if entity_id not in self._exported or state is None or kind is None:
+                # Left out by a lower limit since, or nothing to send.
+                self._paced.pop(0)
                 self._unsent.discard(entity_id)
                 continue
-            if not self._describe(state, kind):
+            messages = 1 if kind == "motion" else 2
+            if entity_id not in self._unsent and not self._budget.has_room(messages):
+                self._wait_for_budget(messages)
+                break
+            self._paced.pop(0)
+            if not self._describe(state, kind, counted=True):
+                self._cancel_paced()
                 break
             sent = True
             if kind == "motion":
                 self._unsent.discard(entity_id)
             else:
-                self._publish_state(state, kind, throttle=False)
+                self._publish_state(state, kind, throttle=False, counted=True)
         else:
-            sent = self._publish_selection() or sent
-        if sent:
+            if self._paced_list:
+                sent = self._publish_selection() or sent
+        if sent and snapshot:
             self._snapshot_sent_at = dt_util.utcnow()
             if self._snapshot_pending is not None:
                 self._snapshot_pending()
                 self._snapshot_pending = None
+
+    def _wait_for_budget(self, messages: int) -> None:
+        if self._paced_timer is None:
+            self._paced_timer = async_call_later(
+                self._hass,
+                self._budget.seconds_until_room(messages),
+                HassJob(self._send_paced_later, cancel_on_shutdown=True),
+            )
+
+    @callback
+    def _send_paced_later(self, _now: datetime) -> None:
+        self._paced_timer = None
+        self._send_paced()
+
+    def _cancel_paced(self) -> None:
+        """Nothing more of the snapshot: a new one starts, a message could not be sent, or the entry stops."""
+        if self._paced_timer is not None:
+            self._paced_timer()
+            self._paced_timer = None
+        self._paced = []
+        self._paced_list = False
 
     @callback
     def async_set_source(self, source: str | None) -> None:
@@ -626,11 +686,24 @@ class KameraportiSensorExporter:
 
         1.14.1 (H-H1): nothing before a selection has been saved -- also not the Frigate detection
         sensors' names alone, which would drop every sensor chosen in an earlier entry.
+        1.14.2 (H-L4): every part at once, when the budget has room for them all.
         """
         if self._source is None or not self._selection_saved:
+            self._paced_list = False
             return False
+        payloads = self._selection_payloads()
+        if not self._budget.has_room(len(payloads)):
+            self._wait_for_budget(len(payloads))
+            return False
+        self._paced_list = False
         topic = SYNC_TOPIC_TEMPLATE.format(customer_id=self._customer_id)
-        return all(self._publish(topic, payload, False) for payload in self._selection_payloads())
+        sent = 0
+        for payload in payloads:
+            if not self._publish(topic, payload, False):
+                break
+            sent += 1
+        self._budget.record(sent)
+        return sent == len(payloads)
 
     def _selection_payloads(self) -> list[str]:
         """The list as one message, or in parts of at most SYNC_PART_MAX_BYTES under one snapshot id."""
@@ -670,7 +743,10 @@ class KameraportiSensorExporter:
 
     @callback
     def _publish_unsent(self) -> None:
-        """Send what could not be sent during the break: its description if needed, its state."""
+        """Send what could not be sent during the break: its description if needed, its state.
+
+        1.14.2 (H-L4): at once, never waiting for the snapshot budget, but counted in it.
+        """
         for entity_id in [entity_id for entity_id in self._exported if entity_id in self._unsent]:
             self._unsent.discard(entity_id)
             state = self._hass.states.get(entity_id)
@@ -678,10 +754,10 @@ class KameraportiSensorExporter:
             if state is None or kind is None:
                 continue
             if self._described.get(entity_id) != (self._name_for(state), kind):
-                if not self._describe(state, kind):
+                if not self._describe(state, kind, counted=True):
                     return
             if kind != "motion":
-                self._publish_state(state, kind)
+                self._publish_state(state, kind, counted=True)
 
     @callback
     def _handle_resync(self, _now: datetime) -> None:
@@ -705,7 +781,8 @@ class KameraportiSensorExporter:
     def _topic(self, entity_id: str) -> str:
         return SENSOR_TOPIC_TEMPLATE.format(customer_id=self._customer_id, name=mqtt_name_for(entity_id))
 
-    def _describe(self, state: State, kind: str) -> bool:
+    def _describe(self, state: State, kind: str, *, counted: bool = False) -> bool:
+        """``counted``: a snapshot's message, counted in the snapshot budget (1.14.2)."""
         name = self._name_for(state)
         description = {"name": name, "kind": kind, "format": "simple"}
         if self._source is not None:
@@ -714,10 +791,14 @@ class KameraportiSensorExporter:
         if not self._publish(f"{self._topic(state.entity_id)}/config", payload, False):
             self._unsent.add(state.entity_id)
             return False
+        if counted:
+            self._budget.record()
         self._described[state.entity_id] = (name, kind)
         return True
 
-    def _publish_state(self, state: State, kind: str, *, throttle: bool = True) -> None:
+    def _publish_state(
+        self, state: State, kind: str, *, throttle: bool = True, counted: bool = False
+    ) -> None:
         payload = event_for(kind, state.state, state.attributes.get("unit_of_measurement"))
         if payload is None:
             return
@@ -741,6 +822,8 @@ class KameraportiSensorExporter:
                 return
         _LOGGER.debug("Kameraposti exporting %s -> %s", entity_id, payload)
         if self._publish(self._topic(entity_id), payload, False):
+            if counted:
+                self._budget.record()
             self._unsent.discard(entity_id)
             if kind in READING_KINDS:
                 self._reading_sent_at[entity_id] = dt_util.utcnow()
