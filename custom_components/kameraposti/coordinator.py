@@ -59,6 +59,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .auto_sensors import KameraportiAutoSensors, auto_alarm_entities
 from .budget import snapshot_budget
 from .camera_export import KameraportiCameraExporter, camera_settings_from_options, exported_cameras
 from .capture import KameraportiCaptureHandler, capture_cameras_from_options
@@ -198,10 +199,24 @@ class KameraportiCoordinator:
         # 1.14.2 (bug hunt 19.10 H-L4): the snapshots of the account on this service share one message budget,
         # also with its other entries and across reloads (budget.py).
         budget = snapshot_budget(hass, host, customer_id)
+        # 1.16.0 (steelo 2026-10-21 "Hälytysanturit lähtevät itsestään"): until a selection is saved, the
+        # alarm sensors are sent by themselves (auto_sensors.py); a new one reloads the entry.
+        selection_saved = CONF_EXPORTED_ENTITIES in entry.options
+        saved = list(entry.options.get(CONF_EXPORTED_ENTITIES, []))
+        exported = saved if selection_saved else auto_alarm_entities(hass)
+        self._auto_sensors = (
+            None if selection_saved else KameraportiAutoSensors(hass, entry.entry_id, exported)
+        )
+        if self._auto_sensors is not None and exported:
+            _LOGGER.info(
+                "Kameraposti: no sensors chosen yet; sending the %d alarm sensors found "
+                "(Configure -> Sensors to Kameraposti changes it)",
+                len(exported),
+            )
         self._exporter = KameraportiSensorExporter(
             hass,
             customer_id=customer_id,
-            entity_ids=list(entry.options.get(CONF_EXPORTED_ENTITIES, [])),
+            entity_ids=exported,
             kinds=dict(entry.options.get(CONF_ENTITY_KINDS, {})),
             publish=self._client.publish,
             limit=effective_sensor_limit(None),
@@ -210,7 +225,7 @@ class KameraportiCoordinator:
             # 1.14.1 (Fable bug hunt H-H1): the selection list only once one has been saved (a saved
             # empty one too). A new or re-added entry has none, and its empty list dropped in Kameraposti
             # every sensor this Home Assistant had described.
-            selection_saved=CONF_EXPORTED_ENTITIES in entry.options,
+            selection_saved=selection_saved,
             budget=budget,
         )
         self._username = username
@@ -330,6 +345,8 @@ class KameraportiCoordinator:
         self._frigate.async_set_source(source)
         self._tuya.async_set_source(source)
         self._exporter.async_start()
+        if self._auto_sensors is not None:
+            self._auto_sensors.async_start()
         self._tuya.async_start()
         self._camera_exporter.async_start()
         await self._client.async_start()
@@ -347,6 +364,8 @@ class KameraportiCoordinator:
             self._security_delay_unsub()
             self._security_delay_unsub = None
         self._exporter.async_stop()
+        if self._auto_sensors is not None:
+            self._auto_sensors.async_stop()
         self._camera_exporter.async_stop()
         if self._frigate_task is not None:
             self._frigate_task.cancel()

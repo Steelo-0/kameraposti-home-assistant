@@ -202,6 +202,16 @@ you remove it (Settings → Devices & services → Generic Camera).
 **Settings → Devices & services → Kameraposti → Configure → Sensors to
 Kameraposti** lets you pick Home Assistant entities to send to Kameraposti, as
 many as your Kameraposti plan takes (see [How many sensors](#how-many-sensors-since-180)).
+
+**Since 1.16.0, until you save a selection there, the alarm sensors are sent by
+themselves:** every smoke, gas, leak, door, window and motion sensor, most
+important first (smoke and gas first, motion last) up to your plan's limit. The
+form opens with them chosen; temperatures, CO₂ and sensors whose kind has to be
+chosen are added by you, and saving the form ends the automatic choice. Frigate's
+own sensors, this integration's own entities and hidden, disabled or diagnostic
+entities are never chosen. A new alarm sensor is picked up within a minute of
+appearing (the integration reloads), and once Home Assistant has started.
+
 Since 1.4.1 the list shows the entities the integration can send, with their kind:
 
 | Home Assistant entity | Kameraposti sensor | Sent |

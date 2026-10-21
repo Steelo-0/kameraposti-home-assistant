@@ -44,6 +44,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from .auto_sensors import auto_alarm_entities
 from .const import (
     BROKER_HOSTS,
     CONF_CUSTOMER_ID,
@@ -416,11 +417,16 @@ class KameraportiOptionsFlow(_OptionsFlowBase):
         finnish = (self.hass.config.language or "").startswith("fi")
         placeholders = {"max": str(limit), "entities": "", "limit_note": _limit_note(known, finnish)}
         # 1.11.1: Frigate's own binary sensors chosen before drop out of the form; saving it forgets them.
-        current = [
-            entity_id
-            for entity_id in self.config_entry.options.get(CONF_EXPORTED_ENTITIES, [])
-            if not frigate_own_sensor(self.hass, entity_id)
-        ]
+        # 1.16.0: with no saved selection the form opens with the alarm sensors sent by themselves.
+        current = (
+            [
+                entity_id
+                for entity_id in self.config_entry.options.get(CONF_EXPORTED_ENTITIES, [])
+                if not frigate_own_sensor(self.hass, entity_id)
+            ]
+            if CONF_EXPORTED_ENTITIES in self.config_entry.options
+            else auto_alarm_entities(self.hass)[:limit]
+        )
 
         if user_input is not None:
             selected = list(dict.fromkeys(user_input.get(CONF_EXPORTED_ENTITIES, [])))
