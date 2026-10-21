@@ -102,8 +102,14 @@ from .models import (
 )
 from .mqtt_client import ConnectionState, KameraportiMqttClient
 from .sensor_export import KameraportiSensorExporter, effective_sensor_limit
+from .tuya_events import KameraportiTuyaAlarms, tuya_alarm_names
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _camera_alarm_names(hass: HomeAssistant) -> list[str]:
+    """The cameras' own alarm sensors (Frigate's detections, 1.15.0 Tuya's alarms) for the selection list."""
+    return [*frigate_detection_names(hass), *tuya_alarm_names(hass)]
 
 # How long arming/disarming waits for Kameraposti's answer.
 SECURITY_RESULT_TIMEOUT_SECONDS = 10
@@ -199,7 +205,8 @@ class KameraportiCoordinator:
             kinds=dict(entry.options.get(CONF_ENTITY_KINDS, {})),
             publish=self._client.publish,
             limit=effective_sensor_limit(None),
-            extra_names=partial(frigate_detection_names, hass),
+            # 1.15.0: also the Tuya cameras' alarm sensors (tuya_events.py).
+            extra_names=partial(_camera_alarm_names, hass),
             # 1.14.1 (Fable bug hunt H-H1): the selection list only once one has been saved (a saved
             # empty one too). A new or re-added entry has none, and its empty list dropped in Kameraposti
             # every sensor this Home Assistant had described.
@@ -222,6 +229,8 @@ class KameraportiCoordinator:
             hass, customer_id=customer_id, publish=self._client.publish
         )
         self._frigate_task: asyncio.Task[None] | None = None
+        # 1.15.0 (steelo 2026-10-20): each new alarm of a Tuya camera is a motion of it in Kameraposti.
+        self._tuya = KameraportiTuyaAlarms(hass, customer_id=customer_id, publish=self._client.publish)
         self._capture = KameraportiCaptureHandler(
             hass,
             entry,
@@ -319,7 +328,9 @@ class KameraportiCoordinator:
             source = None
         self._exporter.async_set_source(source)
         self._frigate.async_set_source(source)
+        self._tuya.async_set_source(source)
         self._exporter.async_start()
+        self._tuya.async_start()
         self._camera_exporter.async_start()
         await self._client.async_start()
         # In the background: Home Assistant's MQTT may still be starting.
@@ -341,6 +352,7 @@ class KameraportiCoordinator:
             self._frigate_task.cancel()
             self._frigate_task = None
         self._frigate.async_stop()
+        self._tuya.async_stop()
         await self._client.async_stop()
         await self._capture.async_stop()
 
@@ -365,6 +377,7 @@ class KameraportiCoordinator:
             self._exporter.async_on_connected()
             self._camera_exporter.async_on_connected()
             self._frigate.async_on_connected()
+            self._tuya.async_on_connected()
 
         if state == ConnectionState.AUTH_FAILURE:
             # Proactively surface Home Assistant's own reauth flow

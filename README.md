@@ -367,6 +367,21 @@ How the photo and the video are taken:
   `binary_sensor.<camera>_motion`, occupancy) are not sent at all and no
   longer offered under Configure: Frigate's pixel motion alarmed every few
   minutes while nothing happened.
+- **Tuya cameras' alarms** (since 1.15.0; Nedis SmartLife and other cameras
+  of Home Assistant's Tuya integration): Home Assistant gives a Tuya camera no
+  motion sensor, only event entities on the camera's device -- **Doorbell
+  message** (Tuya's alarm message, which a security camera sends on motion
+  too) and, on a doorbell, **Doorbell picture** (a press). Each new event of
+  them is a motion of that camera in Kameraposti, with nothing to tick:
+  Kameraposti gets a sensor `binary_sensor.<camera>_tuya` ("<camera> Tuya")
+  and links it to the camera `camera.<camera>` by its name; the motion brings
+  a live still of the camera, and an alarm when armed. A doorbell press brings
+  both events: within 5 seconds they are one motion. An event Home Assistant
+  restores at start, or when the camera comes back online, is no motion. The
+  camera's motion detection must be on in the Tuya / Nedis app (or the
+  camera's **Motion alarm** switch in Home Assistant). A Tuya camera that
+  reports motion only as a picture (some indoor cameras) has no such event
+  entity in Home Assistant, and nothing comes from it.
 - **Video**: 10 seconds, recorded after the photo with Home Assistant's
   `stream` integration, the same way as the `camera.record` action. The
   camera must support streaming (the camera's page in Home Assistant shows
