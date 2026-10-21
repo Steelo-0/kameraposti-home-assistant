@@ -13,6 +13,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, CONF_PAIRING_CODE, DOMAIN
+from custom_components.kameraposti.mqtt_client import CannotConnect
 
 PAIR_URL = "https://turva.secsrv.fi/api/v1/ha/pair"
 
@@ -116,3 +117,57 @@ async def test_the_code_field_comes_before_the_login(hass: HomeAssistant) -> Non
         CONF_CUSTOMER_ID,
         CONF_PASSWORD,
     ]
+
+
+async def test_a_failed_connection_test_after_pairing_reuses_the_login_with_the_same_code(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Fable M-2 (21.10): the code is spent once paired; a retry with it must not ask again (a new code would
+    leave an unused login behind on the Turva page each time)."""
+    aioclient_mock.post(PAIR_URL, json={"username": "kp-3-4", "password": "paritettu-salasana"})
+    form = await _start(hass)
+    test = AsyncMock(side_effect=[CannotConnect("broker down"), None])
+
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", test):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PAIRING_CODE: "K7Q2-M9XD"}
+        )
+        assert result["errors"] == {"base": "cannot_connect"}
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PAIRING_CODE: "k7q2 m9xd"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_USERNAME] == "kp-3-4"
+    assert aioclient_mock.call_count == 1
+
+
+async def test_a_service_without_pairing_is_not_a_wrong_code(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Fable L-4: a 404 that is not the service's invalid_code (no endpoint there) reads as no connection."""
+    aioclient_mock.post(PAIR_URL, status=404, text="Not Found")
+    form = await _start(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        form["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PAIRING_CODE: "ABCD-EFGH"}
+    )
+
+    assert result["errors"] == {"base": "cannot_connect"}
+
+
+async def test_a_long_home_assistant_name_is_cut_for_the_login_label(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    hass.config.location_name = "Koti " * 60
+    aioclient_mock.post(PAIR_URL, json={"username": "kp-3-4", "password": "x"})
+    form = await _start(hass)
+
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+        await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PAIRING_CODE: "ABCD-EFGH"}
+        )
+
+    (_, _, body, _) = aioclient_mock.mock_calls[0]
+    assert len(body["name"]) == 40

@@ -60,7 +60,7 @@ from .const import (
 from .coordinator import roster_store
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .pairing import InvalidPairingCode, PairingLoginsFull, async_pair
+from .pairing import InvalidPairingCode, PairingLoginsFull, async_pair, normalize_code
 from .sensor_export import (
     CHOOSABLE_NUMERIC_KINDS,
     MAX_EXPORTED_SENSORS,
@@ -238,6 +238,9 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
     MINOR_VERSION = 2
 
     _reauth_entry_data: dict[str, Any] | None = None
+    # Fable M-2 (21.10): a code is spent once paired; a retry with it (e.g. after a failed connection test)
+    # reuses the login it gave instead of asking again. (service, code) -> (login, password), this flow only.
+    _paired: dict[tuple[str, str], tuple[str, str]] | None = None
 
     @staticmethod
     @callback
@@ -256,8 +259,16 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             # without one the login and password are needed as before. The code is never stored.
             code = str(user_input.get(CONF_PAIRING_CODE) or "").strip()
             if code:
+                paired = self._paired if self._paired is not None else {}
+                self._paired = paired
+                key = (user_input[CONF_HOST], normalize_code(code))
                 try:
-                    login, password = await async_pair(self.hass, user_input[CONF_HOST], code)
+                    if key in paired:
+                        login, password = paired[key]
+                    else:
+                        login, password = paired[key] = await async_pair(
+                            self.hass, user_input[CONF_HOST], code
+                        )
                 except InvalidPairingCode:
                     errors[CONF_PAIRING_CODE] = "invalid_code"
                 except PairingLoginsFull:

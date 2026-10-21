@@ -18,6 +18,9 @@ from .mqtt_client import CannotConnect
 
 PAIR_PATH: Final = "/api/v1/ha/pair"
 PAIR_TIMEOUT_SECONDS: Final = 15
+# The service keeps 40 characters of Home Assistant's name as the login's label (Fable L-4: a longer name
+# was refused).
+NAME_MAX_LENGTH: Final = 40
 
 
 class InvalidPairingCode(Exception):
@@ -35,10 +38,17 @@ async def async_pair(hass: HomeAssistant, host: str, code: str) -> tuple[str, st
         async with asyncio.timeout(PAIR_TIMEOUT_SECONDS):
             response = await session.post(
                 f"https://{host}{PAIR_PATH}",
-                json={"code": code, "name": hass.config.location_name},
+                json={"code": code, "name": (hass.config.location_name or "")[:NAME_MAX_LENGTH]},
             )
-            if response.status in (404, 422):
+            if response.status == 422:
                 raise InvalidPairingCode
+            if response.status == 404:
+                # Fable L-4: only the service's own answer is a wrong code; a 404 without it (a service or
+                # release without pairing) is no connection.
+                body = await response.json(content_type=None)
+                if isinstance(body, dict) and body.get("error") == "invalid_code":
+                    raise InvalidPairingCode
+                raise CannotConnect("pairing not found on the service")
             if response.status == 409:
                 raise PairingLoginsFull
             if response.status != 200:
@@ -51,3 +61,8 @@ async def async_pair(hass: HomeAssistant, host: str, code: str) -> tuple[str, st
     if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
         raise CannotConnect("pairing answer without a login")
     return username, password
+
+
+def normalize_code(code: str) -> str:
+    """The code as the service stores it: upper case, without spaces and dashes."""
+    return "".join(code.split()).replace("-", "").upper()
