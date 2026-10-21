@@ -51,6 +51,7 @@ from .const import (
     CONF_ENTITY_KINDS,
     CONF_EXPORTED_ENTITIES,
     CONF_HOST,
+    CONF_PAIRING_CODE,
     DEFAULT_HOST,
     DOMAIN,
     SETUP_DEFAULT_HOST,
@@ -59,6 +60,7 @@ from .const import (
 from .coordinator import roster_store
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
+from .pairing import InvalidPairingCode, PairingLoginsFull, async_pair
 from .sensor_export import (
     CHOOSABLE_NUMERIC_KINDS,
     MAX_EXPORTED_SENSORS,
@@ -90,9 +92,11 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_HOST, default=SETUP_DEFAULT_HOST): SelectSelector(
             SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
         ),
+        # 1.17.0 (steelo 2026-10-21 "Paritus suositus"): the code from the Turva page, or else the login.
+        vol.Optional(CONF_PAIRING_CODE): vol.Coerce(str),
         # 1.3.1: the login as shown on the Anturit page ("kp-2", "kp-2-2") or just the account number.
-        vol.Required(CONF_CUSTOMER_ID): vol.Coerce(str),
-        vol.Required(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+        vol.Optional(CONF_CUSTOMER_ID): vol.Coerce(str),
+        vol.Optional(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
     }
 )
 
@@ -248,6 +252,32 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             if user_input[CONF_HOST] not in BROKER_HOSTS:
                 errors["base"] = "cannot_connect"
                 return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
+            # 1.17.0: a pairing code gets this Home Assistant's own login from the service (pairing.py);
+            # without one the login and password are needed as before. The code is never stored.
+            code = str(user_input.get(CONF_PAIRING_CODE) or "").strip()
+            if code:
+                try:
+                    login, password = await async_pair(self.hass, user_input[CONF_HOST], code)
+                except InvalidPairingCode:
+                    errors[CONF_PAIRING_CODE] = "invalid_code"
+                except PairingLoginsFull:
+                    errors["base"] = "logins_full"
+                except CannotConnect:
+                    errors["base"] = "cannot_connect"
+                if errors:
+                    return self.async_show_form(
+                        step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+                    )
+                user_input = {
+                    CONF_HOST: user_input[CONF_HOST],
+                    CONF_CUSTOMER_ID: login,
+                    CONF_PASSWORD: password,
+                }
+            elif not str(user_input.get(CONF_CUSTOMER_ID) or "").strip() or not user_input.get(CONF_PASSWORD):
+                return self.async_show_form(
+                    step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors={"base": "code_or_login"}
+                )
+            user_input = {key: value for key, value in user_input.items() if key != CONF_PAIRING_CODE}
             parsed = parse_login(user_input[CONF_CUSTOMER_ID])
             if parsed is None:
                 device = is_device_login(user_input[CONF_CUSTOMER_ID])

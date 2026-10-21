@@ -83,6 +83,8 @@ CAPTURE_REASON_PATTERN: Final = re.compile(r"^[a-z_]{1,32}$")
 EVENT_DETECTION: Final = "kameraposti_detection"
 
 CONF_CUSTOMER_ID: Final = "customer_id"
+# 1.17.0: the pairing code of the setup form (never stored).
+CONF_PAIRING_CODE: Final = "pairing_code"
 CONF_HOST: Final = "host"
 CONF_EXPORTED_ENTITIES: Final = "exported_entities"
 # 1.13.0: the kind the user chose for an exported entity whose kind cannot be read (entity_id -> kind).

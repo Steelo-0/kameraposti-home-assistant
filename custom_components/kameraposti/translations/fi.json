@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Valitse palvelu ja syötä tunnus ja salasana. Turva-sivun Home Assistant -kohta näyttää ne täsmälleen tässä muodossa (esim. palvelu turva.secsrv.fi, tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
+        "description": "Valitse palvelu ja syötä parituskoodi: Turva-sivun Home Assistant -kohdan \"Näytä parituskoodi\" antaa sen (esim. K7Q2-M9XD, voimassa 15 minuuttia). Tämä Home Assistant saa silloin oman tunnuksen. Voit myös jättää koodin tyhjäksi ja syöttää tunnuksen ja salasanan (esim. tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
         "data": {
           "host": "Palvelu",
-          "customer_id": "Tunnus (esim. kp-2) tai tilin numero",
+          "pairing_code": "Parituskoodi",
+          "customer_id": "Tai tunnus (esim. kp-2) tai tilin numero",
           "password": "Salasana"
         }
       },
@@ -31,7 +32,10 @@
       "invalid_auth": "Kameraposti hylkäsi tunnukset. Tarkista tunnus ja salasana.",
       "unknown": "Odottamaton virhe. Yritä uudelleen.",
       "invalid_login": "Tuntematon tunnus. Kirjoita se kuten Turva-sivulla, esim. kp-2 tai kp-2-2 (tai pelkkä tilin numero).",
-      "device_login": "Tämä on laitteen (esim. Shellyn) oma tunnus, eikä se käy Home Assistantille. Luo Home Assistantille oma tunnus Turva-sivulla: Home Assistant → Lisää toinen Home Assistant."
+      "device_login": "Tämä on laitteen (esim. Shellyn) oma tunnus, eikä se käy Home Assistantille. Luo Home Assistantille oma tunnus Turva-sivulla: Home Assistant → Lisää toinen Home Assistant.",
+      "invalid_code": "Koodi on väärä, vanhentunut tai jo käytetty. Näytä uusi koodi Turva-sivulla.",
+      "logins_full": "Tilillä on jo enimmäismäärä Home Assistant -tunnuksia. Poista tarpeeton Turva-sivulla.",
+      "code_or_login": "Syötä parituskoodi tai tunnus ja salasana."
     },
     "abort": {
       "already_configured": "Tämä Kamerapostin tunnus on jo käytössä. Toinen Home Assistant samalla tilillä tarvitsee oman tunnuksen: Turva-sivu → Home Assistant → Lisää toinen Home Assistant.",

@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Connect to Kameraposti",
-        "description": "Choose the service and enter the login and password. The Home Assistant section on the Turva page shows them exactly in this form (e.g. service turva.secsrv.fi, login kp-2, or kp-2-3 for another Home Assistant). Each Home Assistant needs its own login: the same login in two places disconnects both.",
+        "description": "Choose the service and enter the pairing code: \"Show a pairing code\" in the Home Assistant section of the Turva page gives it (e.g. K7Q2-M9XD, valid for 15 minutes). This Home Assistant then gets its own login. You can also leave the code empty and enter the login and password (e.g. kp-2, or kp-2-3 for another Home Assistant). Each Home Assistant needs its own login: the same login in two places disconnects both.",
         "data": {
           "host": "Service",
-          "customer_id": "Login (e.g. kp-2) or account number",
+          "pairing_code": "Pairing code",
+          "customer_id": "Or login (e.g. kp-2) or account number",
           "password": "Password"
         }
       },
@@ -31,7 +32,10 @@
       "invalid_auth": "Kameraposti rejected these credentials. Check the login and the password.",
       "unknown": "Unexpected error. Please try again.",
       "invalid_login": "Unknown login. Type it as shown on the sensor page, e.g. kp-2 or kp-2-2 (or just the account number).",
-      "device_login": "This is a device’s own login (e.g. a Shelly’s) and does not work for Home Assistant. Create a login for Home Assistant on the Turva page: Home Assistant → Add another Home Assistant."
+      "device_login": "This is a device’s own login (e.g. a Shelly’s) and does not work for Home Assistant. Create a login for Home Assistant on the Turva page: Home Assistant → Add another Home Assistant.",
+      "invalid_code": "The code is wrong, expired or already used. Show a new code on the Turva page.",
+      "logins_full": "The account already has the maximum number of Home Assistant logins. Remove one you no longer need on the Turva page.",
+      "code_or_login": "Enter a pairing code, or the login and password."
     },
     "abort": {
       "already_configured": "This Kameraposti login is already configured. Another Home Assistant on the same account needs its own login: Turva page → Home Assistant → Add another Home Assistant.",

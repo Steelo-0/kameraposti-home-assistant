@@ -55,8 +55,13 @@ Copy `custom_components/kameraposti` into your Home Assistant
 
 1. Go to **Settings → Devices & services → Add integration**, search for
    **Kameraposti**.
-2. Choose the service, then enter the MQTT login (e.g. `kp-2`) and password,
-   all three as shown in the Home Assistant section of the Sensors page.
+2. Choose the service and enter the **pairing code** (since 1.17.0): **Show a
+   pairing code** in the Home Assistant section of the Turva page gives one
+   (e.g. `K7Q2-M9XD`, valid for 15 minutes, works once). The service then
+   gives this Home Assistant its own login (the first one the account's login
+   `kp-2`, others their own, e.g. `kp-2-3`); the code is not stored. Or leave
+   the code empty and enter the MQTT login (e.g. `kp-2`) and password as shown
+   in the Home Assistant section of the Turva page.
 3. The integration tests the connection (WSS/TLS + authentication +
    subscribe) before saving — if anything fails, you'll see the reason
    before the entry is created.
