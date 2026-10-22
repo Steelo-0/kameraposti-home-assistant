@@ -24,10 +24,17 @@ USER_INPUT = {CONF_HOST: "cam.steels.me", CONF_CUSTOMER_ID: 3, CONF_PASSWORD: "s
 ENTRY_DATA = {**USER_INPUT, CONF_USERNAME: "kp-3"}
 
 
-async def test_successful_setup_creates_entry(hass: HomeAssistant) -> None:
+async def _login_form(hass: HomeAssistant) -> dict:
+    """1.18.0: the first form is the pairing code alone; left empty, the login step follows."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
+    assert (result["type"], result["step_id"]) == (FlowResultType.FORM, "user")
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert (result["type"], result["step_id"]) == (FlowResultType.FORM, "login")
+    return result
+
+
+async def test_successful_setup_creates_entry(hass: HomeAssistant) -> None:
+    result = await _login_form(hass)
 
     with patch(
         "custom_components.kameraposti.config_flow.async_test_connection",
@@ -50,8 +57,9 @@ async def test_successful_setup_creates_entry(hass: HomeAssistant) -> None:
 async def test_a_new_setup_offers_kameraposti_turva_first(hass: HomeAssistant) -> None:
     """Design review TOP 8 (steelo 2026-10-18): kameraposti.fi has no sensor broker, so a new setup
     defaults to Kameraposti Turva. 2026-10-19 (steelo "srv3 palveluksi"): production Turva is
-    turva.secsrv.fi, cam.steels.me stays as the test service; all three stay selectable."""
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    turva.secsrv.fi, cam.steels.me stays as the test service; all three stay selectable (1.18.0: on the
+    login step)."""
+    result = await _login_form(hass)
 
     host = next(key for key in result["data_schema"].schema if key == CONF_HOST)
     assert host.default() == "turva.secsrv.fi"
@@ -60,7 +68,7 @@ async def test_a_new_setup_offers_kameraposti_turva_first(hass: HomeAssistant) -
 
 
 async def test_a_setup_on_the_production_turva_service_connects_there(hass: HomeAssistant) -> None:
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _login_form(hass)
 
     with patch(
         "custom_components.kameraposti.config_flow.async_test_connection",
@@ -77,7 +85,7 @@ async def test_a_setup_on_the_production_turva_service_connects_there(hass: Home
 
 
 async def test_invalid_auth_shows_error_and_does_not_create_entry(hass: HomeAssistant) -> None:
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _login_form(hass)
 
     with patch(
         "custom_components.kameraposti.config_flow.async_test_connection",
@@ -92,7 +100,7 @@ async def test_invalid_auth_shows_error_and_does_not_create_entry(hass: HomeAssi
 
 
 async def test_cannot_connect_shows_error_and_does_not_create_entry(hass: HomeAssistant) -> None:
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _login_form(hass)
 
     with patch(
         "custom_components.kameraposti.config_flow.async_test_connection",
@@ -112,7 +120,7 @@ async def test_same_customer_id_cannot_be_configured_twice(hass: HomeAssistant) 
     )
     existing.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _login_form(hass)
 
     with patch(
         "custom_components.kameraposti.config_flow.async_test_connection",
@@ -187,7 +195,7 @@ async def test_reauth_flow_with_still_wrong_password_shows_error(hass: HomeAssis
 
 async def test_the_service_must_be_one_of_the_known_hosts(hass: HomeAssistant) -> None:
     """Only the fixed services are offered -- never a free-form broker host."""
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _login_form(hass)
 
     with patch(
         "custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock
@@ -205,7 +213,7 @@ async def test_the_service_must_be_one_of_the_known_hosts(hass: HomeAssistant) -
 
 
 async def _setup_with(hass: HomeAssistant, login: object) -> tuple[dict, AsyncMock]:
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _login_form(hass)
     with patch(
         "custom_components.kameraposti.config_flow.async_test_connection",
         new_callable=AsyncMock,

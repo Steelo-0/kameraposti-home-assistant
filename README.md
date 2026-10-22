@@ -18,10 +18,11 @@ outbound-only, over WSS/TLS).
 ## Requirements
 
 - Home Assistant 2024.12.0 or newer
-- A Kameraposti account with sensors enabled, and the **service**, **MQTT
-  login** and **MQTT password** shown in the **Home Assistant** section of the
-  Sensors page (e.g. `turva.secsrv.fi`, `kp-2`). The setup form asks for exactly
-  these three. This integration does not use your regular Kameraposti login.
+- A Kameraposti account with sensors enabled: the **pairing code** shown in the
+  **Home Assistant** section of the Turva page (since 1.17.0), or the
+  **service**, **MQTT login** and **MQTT password** shown there (e.g.
+  `turva.secsrv.fi`, `kp-2`). This integration does not use your regular
+  Kameraposti login.
 
 Each MQTT login has one connection at a time: the broker accepts a login only
 with the same client id, so a second connection with the same login
@@ -55,13 +56,18 @@ Copy `custom_components/kameraposti` into your Home Assistant
 
 1. Go to **Settings → Devices & services → Add integration**, search for
    **Kameraposti**.
-2. Choose the service and enter the **pairing code** (since 1.17.0): **Show a
-   pairing code** in the Home Assistant section of the Turva page gives one
-   (e.g. `K7Q2-M9XD`, valid for 15 minutes, works once). The service then
-   gives this Home Assistant its own login (the first one the account's login
-   `kp-2`, others their own, e.g. `kp-2-3`); the code is not stored. Or leave
-   the code empty and enter the MQTT login (e.g. `kp-2`) and password as shown
-   in the Home Assistant section of the Turva page.
+2. Enter the **pairing code** shown in the Home Assistant section of the Turva
+   page (e.g. `K7Q2-M9XD`, valid for 15 minutes, works once; since 1.17.0).
+   Since 1.18.0 this first form is the code alone, for Turva's service
+   `turva.secsrv.fi`; a my.home-assistant.io link that adds the integration
+   opens it. The service then gives this Home Assistant its own login (the first
+   one the account's login `kp-2`, others their own, e.g. `kp-2-3`); the code
+   is not stored.
+
+   No code, or an account on another service (`cam.steels.me`,
+   `kameraposti.fi`)? Leave the code empty: the next form asks for the
+   service, and that service's pairing code or the MQTT login (e.g. `kp-2`)
+   and password as shown in the Home Assistant section of the Turva page.
 3. The integration tests the connection (WSS/TLS + authentication +
    subscribe) before saving — if anything fails, you'll see the reason
    before the entry is created.

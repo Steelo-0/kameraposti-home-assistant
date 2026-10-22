@@ -3,7 +3,17 @@
     "step": {
       "user": {
         "title": "Connect to Kameraposti",
-        "description": "Choose the service and enter the pairing code: \"Show a pairing code\" in the Home Assistant section of the Turva page gives it (e.g. K7Q2-M9XD, valid for 15 minutes). This Home Assistant then gets its own login. You can also leave the code empty and enter the login and password (e.g. kp-2, or kp-2-3 for another Home Assistant). Each Home Assistant needs its own login: the same login in two places disconnects both.",
+        "description": "Enter the pairing code shown on the Turva page (e.g. K7Q2-M9XD).",
+        "data": {
+          "pairing_code": "Pairing code"
+        },
+        "data_description": {
+          "pairing_code": "No code, or an account on another service (e.g. Kameraposti)? Leave this empty: on the next page you choose the service and enter its pairing code, or the login and password."
+        }
+      },
+      "login": {
+        "title": "Service, login and password",
+        "description": "Choose the service and enter the pairing code shown there, or leave the code empty and enter the login and password as the Home Assistant section of the Turva page shows them (e.g. kp-2, or kp-2-3 for another Home Assistant). With a pairing code this Home Assistant gets its own login. Each Home Assistant needs its own login: the same login in two places disconnects both.",
         "data": {
           "host": "Service",
           "pairing_code": "Pairing code",

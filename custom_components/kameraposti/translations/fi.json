@@ -3,7 +3,17 @@
     "step": {
       "user": {
         "title": "Yhdistä Kamerapostiin",
-        "description": "Valitse palvelu ja syötä parituskoodi: Turva-sivun Home Assistant -kohdan \"Näytä parituskoodi\" antaa sen (esim. K7Q2-M9XD, voimassa 15 minuuttia). Tämä Home Assistant saa silloin oman tunnuksen. Voit myös jättää koodin tyhjäksi ja syöttää tunnuksen ja salasanan (esim. tunnus kp-2 tai toisen Home Assistantin kp-2-3). Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
+        "description": "Syötä Turva-sivulla näkyvä parituskoodi (esim. K7Q2-M9XD).",
+        "data": {
+          "pairing_code": "Parituskoodi"
+        },
+        "data_description": {
+          "pairing_code": "Ei koodia, tai tili muussa palvelussa (esim. Kameraposti)? Jätä kenttä tyhjäksi: seuraavalla sivulla valitset palvelun ja syötät sen parituskoodin tai tunnuksen ja salasanan."
+        }
+      },
+      "login": {
+        "title": "Palvelu, tunnus ja salasana",
+        "description": "Valitse palvelu ja syötä sen sivulla näkyvä parituskoodi, tai jätä koodi tyhjäksi ja syötä tunnus ja salasana kuten Turva-sivun Home Assistant -kohta ne näyttää (esim. tunnus kp-2 tai toisen Home Assistantin kp-2-3). Parituskoodilla tämä Home Assistant saa oman tunnuksen. Jokainen Home Assistant tarvitsee oman tunnuksen: sama tunnus kahdessa paikassa katkaisee yhteydet.",
         "data": {
           "host": "Palvelu",
           "pairing_code": "Parituskoodi",

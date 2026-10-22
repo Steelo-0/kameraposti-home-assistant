@@ -22,6 +22,10 @@ the hidden list starts empty for everyone, never pre-filled from older options.
 
 1.14.1 (Fable bug hunt H-L2): Reconfigure changes an entry's service and password; the login, the
 options and the entities stay (moving to turva.secsrv.fi needed removing and re-adding it).
+
+1.18.0 (Turva onboarding, steelo 2026-10-22 "Käyttöliittymä ja yhdistäminen mahdollisimman yksinkertaiseksi"):
+the first form is the pairing code alone, for Turva's service. Left empty, it opens the login step: the
+service, and a code or the login and password (1.17.0's form), so every service and way still connects.
 """
 
 from __future__ import annotations
@@ -87,18 +91,26 @@ except ImportError:  # pragma: no cover -- Home Assistant without OptionsFlowWit
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_HOST, default=SETUP_DEFAULT_HOST): SelectSelector(
-            SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
-        ),
-        # 1.17.0 (steelo 2026-10-21 "Paritus suositus"): the code from the Turva page, or else the login.
-        vol.Optional(CONF_PAIRING_CODE): vol.Coerce(str),
-        # 1.3.1: the login as shown on the Anturit page ("kp-2", "kp-2-2") or just the account number.
-        vol.Optional(CONF_CUSTOMER_ID): vol.Coerce(str),
-        vol.Optional(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-    }
-)
+# 1.18.0: the code shown on the Turva page, for Turva's service (SETUP_DEFAULT_HOST). Optional: left empty,
+# the login step follows (the field's own text says so).
+STEP_USER_DATA_SCHEMA = vol.Schema({vol.Optional(CONF_PAIRING_CODE): vol.Coerce(str)})
+
+
+def _login_schema(host: str) -> vol.Schema:
+    """1.18.0: the service (Turva's preselected, after a failure the one just tried), a code or the login."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_HOST, default=host): SelectSelector(
+                SelectSelectorConfig(options=list(BROKER_HOSTS), mode=SelectSelectorMode.DROPDOWN)
+            ),
+            # 1.17.0 (steelo 2026-10-21 "Paritus suositus"): the code from the service's page, or the login.
+            vol.Optional(CONF_PAIRING_CODE): vol.Coerce(str),
+            # 1.3.1: the login as shown on the Anturit page ("kp-2", "kp-2-2") or just the account number.
+            vol.Optional(CONF_CUSTOMER_ID): vol.Coerce(str),
+            vol.Optional(CONF_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+        }
+    )
+
 
 STEP_REAUTH_DATA_SCHEMA = vol.Schema(
     {
@@ -248,87 +260,91 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         return KameraportiOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """First (and only, for V1) step: customer_id + credentials."""
+        """1.18.0: the pairing code alone, for Turva's service; an empty code opens the login step."""
+        if user_input is None:
+            return self._setup_form("user", SETUP_DEFAULT_HOST)
+        code = str(user_input.get(CONF_PAIRING_CODE) or "").strip()
+        if not code:
+            return await self.async_step_login()
+        return await self._async_set_up("user", {CONF_HOST: SETUP_DEFAULT_HOST, CONF_PAIRING_CODE: code})
+
+    async def async_step_login(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """1.18.0: the service, and its pairing code or the login and password (1.17.0's first form)."""
+        if user_input is None:
+            return self._setup_form("login", SETUP_DEFAULT_HOST)
+        return await self._async_set_up("login", user_input)
+
+    def _setup_form(self, step_id: str, host: str, errors: dict[str, str] | None = None) -> ConfigFlowResult:
+        schema = STEP_USER_DATA_SCHEMA if step_id == "user" else _login_schema(host)
+        return self.async_show_form(step_id=step_id, data_schema=schema, errors=errors or {})
+
+    async def _async_set_up(self, step_id: str, user_input: dict[str, Any]) -> ConfigFlowResult:
+        """Pair or take the typed login, then test the connection and create the entry (either step)."""
         errors: dict[str, str] = {}
-
-        if user_input is not None:
-            if user_input[CONF_HOST] not in BROKER_HOSTS:
-                errors["base"] = "cannot_connect"
-                return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
-            # 1.17.0: a pairing code gets this Home Assistant's own login from the service (pairing.py);
-            # without one the login and password are needed as before. The code is never stored.
-            code = str(user_input.get(CONF_PAIRING_CODE) or "").strip()
-            if code:
-                paired = self._paired if self._paired is not None else {}
-                self._paired = paired
-                key = (user_input[CONF_HOST], normalize_code(code))
-                try:
-                    if key in paired:
-                        login, password = paired[key]
-                    else:
-                        login, password = paired[key] = await async_pair(
-                            self.hass, user_input[CONF_HOST], code
-                        )
-                except InvalidPairingCode:
-                    errors[CONF_PAIRING_CODE] = "invalid_code"
-                except PairingLoginsFull:
-                    errors["base"] = "logins_full"
-                except CannotConnect:
-                    errors["base"] = "cannot_connect"
-                if errors:
-                    return self.async_show_form(
-                        step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
-                    )
-                user_input = {
-                    CONF_HOST: user_input[CONF_HOST],
-                    CONF_CUSTOMER_ID: login,
-                    CONF_PASSWORD: password,
-                }
-            elif not str(user_input.get(CONF_CUSTOMER_ID) or "").strip() or not user_input.get(CONF_PASSWORD):
-                return self.async_show_form(
-                    step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors={"base": "code_or_login"}
-                )
-            user_input = {key: value for key, value in user_input.items() if key != CONF_PAIRING_CODE}
-            parsed = parse_login(user_input[CONF_CUSTOMER_ID])
-            if parsed is None:
-                device = is_device_login(user_input[CONF_CUSTOMER_ID])
-                return self.async_show_form(
-                    step_id="user",
-                    data_schema=STEP_USER_DATA_SCHEMA,
-                    errors={CONF_CUSTOMER_ID: "device_login" if device else "invalid_login"},
-                )
-            customer_id, username = parsed
-            is_extra_login = username != USERNAME_TEMPLATE.format(customer_id=customer_id)
-            # 1.5.1: the unique id is the canonical login ("3", "kp-3" and " KP-3 " are one
-            # login), checked before the test connection, which would kick a running entry with
-            # the same login off the broker. Entries from before 1.5.1 that have not been set up
-            # since (so still carry the raw input as unique id) are matched by their stored login.
-            await self.async_set_unique_id(username)
-            self._abort_if_unique_id_configured()
-            if any(entry_login(entry.data) == username for entry in self._async_current_entries()):
-                return self.async_abort(reason="already_configured")
-            user_input = {**user_input, CONF_CUSTOMER_ID: customer_id, CONF_USERNAME: username}
-
+        host = user_input[CONF_HOST]
+        if host not in BROKER_HOSTS:
+            return self._setup_form(step_id, SETUP_DEFAULT_HOST, {"base": "cannot_connect"})
+        # 1.17.0: a pairing code gets this Home Assistant's own login from the service (pairing.py);
+        # without one the login and password are needed as before. The code is never stored.
+        code = str(user_input.get(CONF_PAIRING_CODE) or "").strip()
+        if code:
+            paired = self._paired if self._paired is not None else {}
+            self._paired = paired
+            key = (host, normalize_code(code))
             try:
-                await _async_validate(self.hass, user_input)
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
+                if key in paired:
+                    login, password = paired[key]
+                else:
+                    login, password = paired[key] = await async_pair(self.hass, host, code)
+            except InvalidPairingCode:
+                errors[CONF_PAIRING_CODE] = "invalid_code"
+            except PairingLoginsFull:
+                errors["base"] = "logins_full"
             except CannotConnect:
                 errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001 - never let setup crash the flow
-                _LOGGER.exception("Unexpected error validating Kameraposti connection")
-                errors["base"] = "unknown"
-            else:
-                return self.async_create_entry(
-                    title=f"Kameraposti ({username})" if is_extra_login else f"Kameraposti ({customer_id})",
-                    data=user_input,
-                )
+            if errors:
+                return self._setup_form(step_id, host, errors)
+            user_input = {CONF_HOST: host, CONF_CUSTOMER_ID: login, CONF_PASSWORD: password}
+        elif not str(user_input.get(CONF_CUSTOMER_ID) or "").strip() or not user_input.get(CONF_PASSWORD):
+            return self._setup_form(step_id, host, {"base": "code_or_login"})
+        user_input = {key: value for key, value in user_input.items() if key != CONF_PAIRING_CODE}
+        parsed = parse_login(user_input[CONF_CUSTOMER_ID])
+        if parsed is None:
+            if code:
+                # Not typed by the user (the code form has no login field): the service's answer is wrong.
+                _LOGGER.warning("Kameraposti: the service paired Home Assistant with the login %r", login)
+                return self._setup_form(step_id, host, {"base": "unknown"})
+            device = is_device_login(user_input[CONF_CUSTOMER_ID])
+            return self._setup_form(
+                step_id, host, {CONF_CUSTOMER_ID: "device_login" if device else "invalid_login"}
+            )
+        customer_id, username = parsed
+        is_extra_login = username != USERNAME_TEMPLATE.format(customer_id=customer_id)
+        # 1.5.1: the unique id is the canonical login ("3", "kp-3" and " KP-3 " are one
+        # login), checked before the test connection, which would kick a running entry with
+        # the same login off the broker. Entries from before 1.5.1 that have not been set up
+        # since (so still carry the raw input as unique id) are matched by their stored login.
+        await self.async_set_unique_id(username)
+        self._abort_if_unique_id_configured()
+        if any(entry_login(entry.data) == username for entry in self._async_current_entries()):
+            return self.async_abort(reason="already_configured")
+        user_input = {**user_input, CONF_CUSTOMER_ID: customer_id, CONF_USERNAME: username}
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
-            errors=errors,
-        )
+        try:
+            await _async_validate(self.hass, user_input)
+        except InvalidAuth:
+            errors["base"] = "invalid_auth"
+        except CannotConnect:
+            errors["base"] = "cannot_connect"
+        except Exception:  # noqa: BLE001 - never let setup crash the flow
+            _LOGGER.exception("Unexpected error validating Kameraposti connection")
+            errors["base"] = "unknown"
+        else:
+            return self.async_create_entry(
+                title=f"Kameraposti ({username})" if is_extra_login else f"Kameraposti ({customer_id})",
+                data=user_input,
+            )
+        return self._setup_form(step_id, host, errors)
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Start a reauth flow (contract section 20) when the broker reports auth failure."""
