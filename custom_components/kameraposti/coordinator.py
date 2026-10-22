@@ -423,14 +423,15 @@ class KameraportiCoordinator:
         minute. It never waits for the snapshot budget but counts in it, like what a break left unsent, so
         the snapshot right after it leaves it room.
 
-        alarm_candidates: the entities sent as sensors (the saved selection, or the alarm sensors found);
-        cameras: the Home Assistant cameras reported to Kameraposti. No location name or other text.
+        alarm_candidates: the sensors sent (the saved selection or the alarm sensors found, and the cameras'
+        own alarm sensors from Frigate and Tuya); cameras: the Home Assistant cameras reported to Kameraposti.
+        No location name or other text.
         """
         if self._version is None:
             return
         payload = {
             "version": self._version,
-            "alarm_candidates": self._exporter.entity_count,
+            "alarm_candidates": self._exporter.sensor_count,
             "cameras": len(self._exported_cameras()),
         }
         if self._client.publish(self._hello_topic, json.dumps(payload), False):

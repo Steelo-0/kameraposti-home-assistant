@@ -476,11 +476,20 @@ class KameraportiSensorExporter:
         return kameraposti_name(self._hass, state, self._entity_ids)
 
     @property
-    def entity_count(self) -> int:
-        """1.18.0 (the hello): the entities to send -- the saved selection or, without one, the alarm sensors
-        found (auto_sensors.py) -- before the plan's limit, which Kameraposti knows and which is not known yet
-        when the hello goes out. Not only those with a state now: right after a restart many have none yet."""
-        return len(self._entity_ids)
+    def sensor_count(self) -> int:
+        """1.18.0 (the hello): the sensors this Home Assistant sends -- the selection list's names: the
+        entities to send (the saved selection or, without one, the alarm sensors found, auto_sensors.py) and
+        the cameras' own alarm sensors (Frigate's detections, Tuya's alarms: motions of their camera).
+
+        Before the plan's limit, which Kameraposti knows and which is not known yet when the hello goes out;
+        not only those with a state now (right after a restart many have none yet), and a camera's alarm
+        sensor before its first motion too (it is described then)."""
+        return len(self._sensor_names())
+
+    def _sensor_names(self) -> list[str]:
+        """The chosen entities' topic names, then the cameras' own alarm sensors, each once."""
+        extra = list(self._extra_names()) if self._extra_names is not None else []
+        return list(dict.fromkeys([*(mqtt_name_for(entity_id) for entity_id in self._entity_ids), *extra]))
 
     def async_start(self) -> None:
         if self._unsub is None and self._entity_ids:
@@ -714,8 +723,7 @@ class KameraportiSensorExporter:
 
     def _selection_payloads(self) -> list[str]:
         """The list as one message, or in parts of at most SYNC_PART_MAX_BYTES under one snapshot id."""
-        extra = list(self._extra_names()) if self._extra_names is not None else []
-        names = list(dict.fromkeys([*(mqtt_name_for(entity_id) for entity_id in self._entity_ids), *extra]))
+        names = self._sensor_names()
         # 1.14.1: "selection_saved" -- this list is a saved selection (module doc), also in every part.
         whole = json.dumps({"source": self._source, "selection_saved": True, "entities": names})
         if len(whole.encode()) <= SYNC_PART_MAX_BYTES:

@@ -246,9 +246,9 @@ appearing (the integration reloads), and once Home Assistant has started.
 
 Since 1.18.0, after every connection (at start and after each reconnect) Home
 Assistant also tells the service, on `kameraposti/<id>/anturit/_ha/hello`
-(QoS 1, not retained), its integration version, how many entities it sends as
-sensors (the saved selection, or the alarm sensors found) and how many cameras
-it reports: `{"version": "1.18.0", "alarm_candidates": 2, "cameras": 1}`, no
+(QoS 1, not retained), its integration version, how many sensors it sends
+(the saved selection or the alarm sensors found, and each Frigate or Tuya
+camera's own alarm sensor) and how many cameras it reports: `{"version": "1.18.0", "alarm_candidates": 2, "cameras": 1}`, no
 names or other text. The Turva page can then show that Home Assistant is
 connected, and that it found no alarm sensor, before any sensor arrives.
 

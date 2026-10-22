@@ -18,6 +18,8 @@ import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_EXPORTED_ENTITIES, CONF_HOST, DOMAIN
@@ -144,3 +146,37 @@ async def test_no_sensor_and_no_camera_is_a_hello_of_zeros(hass: HomeAssistant) 
 
     assert hello == {"version": _version(), "alarm_candidates": 0, "cameras": 0}
     assert SERVICE_VERSION_PATTERN.fullmatch(hello["version"])
+
+
+def _frigate_and_tuya_cameras(hass: HomeAssistant) -> None:
+    """A Frigate camera and a Tuya camera: each one's detections / alarms are a motion sensor of its own."""
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "camera", "frigate", "entry1:camera:Piha etu", suggested_object_id="piha_etu"
+    )
+    tuya = MockConfigEntry(domain="tuya")
+    tuya.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=tuya.entry_id, identifiers={("tuya", "bf1234567890abcdefgh")}, name="Ulkokamera"
+    )
+    registry.async_get_or_create(
+        "camera",
+        "tuya",
+        "bf1234567890abcdefgh",
+        suggested_object_id="ulkokamera",
+        device_id=device.id,
+        config_entry=tuya,
+    )
+
+
+async def test_the_cameras_own_alarm_sensors_are_candidates_too(hass: HomeAssistant) -> None:
+    """Audit L3: a Frigate camera's detections (binary_sensor.<camera>_frigate) and a Tuya camera's alarms
+    (binary_sensor.<camera>_tuya) are motion sensors in Kameraposti, alarming when armed, and on the
+    selection list -- so they count, with or without a saved selection, also before their first motion."""
+    _set_sensors(hass)
+    _frigate_and_tuya_cameras(hass)
+
+    assert await _hello_of(hass, {}) == {"version": _version(), "alarm_candidates": 4, "cameras": 4}
+    hello = await _hello_of(hass, {CONF_EXPORTED_ENTITIES: ["sensor.lampo"]})
+    assert hello["alarm_candidates"] == 3
+    assert (await _hello_of(hass, {CONF_EXPORTED_ENTITIES: []}))["alarm_candidates"] == 2
