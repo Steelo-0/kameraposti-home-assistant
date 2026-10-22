@@ -181,9 +181,15 @@ async def test_the_options_open_with_the_alarm_sensors_chosen(hass: HomeAssistan
     assert (form["type"], form["step_id"]) == (FlowResultType.FORM, "sensors")
     key = next(key for key in form["data_schema"].schema if key == CONF_EXPORTED_ENTITIES)
     assert key.default() == ALARMS_IN_ORDER
-    # Saving it as it is keeps them, now as a saved selection.
-    saved = await hass.config_entries.options.async_configure(
-        form["flow_id"], {CONF_EXPORTED_ENTITIES: ALARMS_IN_ORDER}
-    )
+    # Saving it as it is keeps them, now as a saved selection. Saving reloads (sets up) the entry: with a
+    # mocked MQTT client, and done before the test ends.
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        saved = await hass.config_entries.options.async_configure(
+            form["flow_id"], {CONF_EXPORTED_ENTITIES: ALARMS_IN_ORDER}
+        )
+        await hass.async_block_till_done()
     assert saved["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_EXPORTED_ENTITIES] == ALARMS_IN_ORDER
+    assert await hass.config_entries.async_unload(entry.entry_id)

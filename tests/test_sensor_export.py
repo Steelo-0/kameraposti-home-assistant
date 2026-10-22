@@ -578,12 +578,19 @@ async def test_options_flow_saves_more_than_the_default_until_kameraposti_tells_
         "if you choose more than it takes, the rest are left out."
     )
     chosen = [f"binary_sensor.vuoto_{i}" for i in range(DEFAULT_SENSOR_LIMIT + 1)]
-    result2 = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_EXPORTED_ENTITIES: chosen}
-    )
+    # Saving reloads (sets up) the entry: with a mocked MQTT client, and done before the test ends -- a real
+    # one could still be starting at teardown and leave its network thread behind.
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient") as mock_cls:
+        mock_cls.return_value.async_start = AsyncMock()
+        mock_cls.return_value.async_stop = AsyncMock()
+        result2 = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_EXPORTED_ENTITIES: chosen}
+        )
+        await hass.async_block_till_done()
 
     assert result2["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_EXPORTED_ENTITIES] == chosen
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_before_the_limit_is_known_only_the_hard_maximum_is_refused(hass: HomeAssistant) -> None:
