@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Yhdistä Kamerapostiin",
+        "title": "Yhdistä Turvaan",
         "description": "Syötä Turva-sivulla näkyvä parituskoodi (esim. K7Q2-M9XD).",
         "data": {
           "pairing_code": "Parituskoodi"
@@ -22,7 +22,7 @@
         }
       },
       "reauth_confirm": {
-        "title": "Yhdistä uudelleen Kamerapostiin",
+        "title": "Yhdistä uudelleen Turvaan",
         "description": "Kameraposti hylkäsi tallennetun salasanan. Luo tai vaihda salasana Kamerapostin Turva-sivulla ja syötä se tähän.",
         "data": {
           "password": "Salasana"
@@ -84,7 +84,7 @@
   "options": {
     "step": {
       "sensors": {
-        "title": "Anturit Kamerapostiin",
+        "title": "Anturit Turvaan",
         "description": "Valitse Home Assistantin anturit, jotka näkyvät Kamerapostissa ja hälyttävät Kamerapostin ilmoituksilla: vuoto, savu, kaasu (myös häkävaroitin ja häkämittari: hälytys 50 ppm:stä, ok alle 35 ppm), ovi, ikkuna, liike, lämpötila ja hiilidioksidi (CO₂, ppm). {limit_note} Kunnes tallennat valinnan, hälytysanturit (savu, kaasu, vuoto, ovi, ikkuna, liike) lähtevät itsestään, ja ne on valittu tässä valmiiksi; lämpötilat ja muut lisäät itse. Kameraposti luo anturit automaattisesti. Kamerapostissa poistettu anturi ei palaa (Turva-sivun Palauta tuo sen takaisin). Kamerat valitaan Kamerapostissa: Home Assistant kertoo sille kaikki kameransa, ja hälytys tuo kuvan ja lyhyen videon. Z-Waven vuotoanturi on yleensä \"…_water_leak\" ja kaasuanturin nimessä on gas tai carbon_monoxide (näkyy tilana OK / Problem). Listalla ovat kaikki binäärianturit ja numeroarvoiset anturit. Jos anturin lajia ei voi päätellä (merkintä \"laji valitaan seuraavaksi\"), valitset sen seuraavalla sivulla.",
         "data": {
           "exported_entities": "Vietävät anturit"

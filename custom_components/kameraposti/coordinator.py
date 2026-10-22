@@ -213,7 +213,7 @@ class KameraportiCoordinator:
         if self._auto_sensors is not None and exported:
             _LOGGER.info(
                 "Kameraposti: no sensors chosen yet; sending the %d alarm sensors found "
-                "(Configure -> Sensors to Kameraposti changes it)",
+                "(Configure -> Sensors to Turva changes it)",
                 len(exported),
             )
         self._exporter = KameraportiSensorExporter(

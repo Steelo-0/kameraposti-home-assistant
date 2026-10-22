@@ -1,13 +1,21 @@
-# Kameraposti for Home Assistant
+# Turva for Home Assistant
 
-Home Assistant custom integration that receives Kameraposti riistakamera
-(trail camera) detection events directly from Kameraposti's own MQTT
-broker, turns them into Home Assistant sensors and an automation trigger
-event, and shows each camera's latest photo. It can also send your own Home
-Assistant sensors (leak, smoke, gas, door, window, motion, temperature,
-carbon dioxide) to Kameraposti, which then alarms through its own
-notifications, and send Kameraposti Turva a photo (and a short video) from a
-Home Assistant camera when an alarm goes off.
+Home Assistant custom integration for **Turva** (Kameraposti Turva,
+`turva.secsrv.fi`) and **Kameraposti**. It sends your own Home Assistant
+sensors (leak, smoke, gas, door, window, motion, temperature, carbon dioxide)
+to Turva, which then alarms through its own notifications, arms and disarms
+Turva's security system, and sends Turva a photo (and a short video) from a
+Home Assistant camera when an alarm goes off. It also receives Kameraposti
+riistakamera (trail camera) detection events directly from Kameraposti's own
+MQTT broker, turns them into Home Assistant sensors and an automation trigger
+event, and shows each camera's latest photo.
+
+Since 1.18.0 the integration is called **Turva** in HACS and in Home
+Assistant. Its domain stays `kameraposti` (the `custom_components/kameraposti`
+folder, the `kameraposti_detection` event, entity ids), so existing
+installations, entries and automations keep working. Kameraposti
+(`kameraposti.fi`) customers use the same integration; their entries keep the
+name **Kameraposti (…)**.
 
 It talks to Kameraposti's broker over its own dedicated MQTT connection —
 it does **not** use, share, or modify your existing Home Assistant MQTT
@@ -45,7 +53,8 @@ Assistant or a bridge.
 
 1. In HACS, go to **Integrations → ⋮ → Custom repositories**.
 2. Add this repository's URL, category **Integration**.
-3. Install **Kameraposti**, then restart Home Assistant.
+3. Install **Turva** (the repository is `kameraposti-home-assistant`), then
+   restart Home Assistant.
 
 ### Manual
 
@@ -55,7 +64,7 @@ Copy `custom_components/kameraposti` into your Home Assistant
 ## Setup
 
 1. Go to **Settings → Devices & services → Add integration**, search for
-   **Kameraposti**.
+   **Turva** (1.17.0 and older: **Kameraposti**).
 2. Enter the **pairing code** shown in the Home Assistant section of the Turva
    page (e.g. `K7Q2-M9XD`, valid for 15 minutes, works once; since 1.17.0).
    Since 1.18.0 this first form is the code alone, for Turva's service
@@ -92,7 +101,7 @@ If Kameraposti rotates your MQTT password, Home Assistant will prompt you
 to re-authenticate; enter the new password and the integration reconnects
 automatically.
 
-Since 1.14.1 **Settings → Devices & services → Kameraposti → ⋮ →
+Since 1.14.1 **Settings → Devices & services → Turva → ⋮ →
 Reconfigure** changes an entry's service (e.g. from `cam.steels.me` to
 `turva.secsrv.fi`) and its password there, tested before it is saved. The
 login, the chosen sensors and the entities stay, so there is no need to
@@ -216,8 +225,8 @@ you remove it (Settings → Devices & services → Generic Camera).
 
 ## Sensors to Kameraposti
 
-**Settings → Devices & services → Kameraposti → Configure → Sensors to
-Kameraposti** lets you pick Home Assistant entities to send to Kameraposti, as
+**Settings → Devices & services → Turva → Configure → Sensors to Turva**
+(1.17.0 and older: **Kameraposti → … → Sensors to Kameraposti**) lets you pick Home Assistant entities to send to Kameraposti, as
 many as your Kameraposti plan takes (see [How many sensors](#how-many-sensors-since-180)).
 
 **Since 1.16.0, until you save a selection there, the alarm sensors are sent by
@@ -304,7 +313,7 @@ during a break, never wait for it.
 
 Your Kameraposti plan decides how many sensors Home Assistant sends:
 Kameraposti tells the number along with your camera list, and the list under
-**Sensors to Kameraposti** takes at most that many (the form says how many).
+**Sensors to Turva** takes at most that many (the form says how many).
 Until Kameraposti has told it — for a moment after Home Assistant starts, or
 on a Kameraposti service that does not tell it yet — the number is 20, as in
 earlier versions. It is never more than 200.
