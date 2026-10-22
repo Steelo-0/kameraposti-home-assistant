@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
+import pytest
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
@@ -22,6 +23,7 @@ from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, CON
 from custom_components.kameraposti.mqtt_client import CannotConnect
 
 PAIR_URL = "https://turva.secsrv.fi/api/v1/ha/pair"
+CAM_PAIR_URL = "https://cam.steels.me/api/v1/ha/pair"
 
 
 async def _start(hass: HomeAssistant) -> dict:
@@ -66,10 +68,11 @@ async def test_a_pairing_code_sets_up_the_entry_with_the_login_turva_gives(
     assert body == {"code": "k7q2-m9xd", "name": "Mökki"}
 
 
-async def test_a_wrong_or_used_code_is_named_on_the_code_field(
+async def test_a_code_neither_turva_service_knows_is_named_on_the_code_field(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     aioclient_mock.post(PAIR_URL, status=404, json={"error": "invalid_code"})
+    aioclient_mock.post(CAM_PAIR_URL, status=404, json={"error": "invalid_code"})
     form = await _start(hass)
 
     result = await hass.config_entries.flow.async_configure(
@@ -77,7 +80,129 @@ async def test_a_wrong_or_used_code_is_named_on_the_code_field(
     )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {CONF_PAIRING_CODE: "invalid_code"}
+    assert (result["step_id"], result["errors"]) == ("user", {CONF_PAIRING_CODE: "invalid_code"})
+    assert _asked(aioclient_mock) == [PAIR_URL, CAM_PAIR_URL]
+
+
+def _asked(aioclient_mock: AiohttpClientMocker) -> list[str]:
+    return [str(url) for (_, url, _, _) in aioclient_mock.mock_calls]
+
+
+async def test_a_code_turva_knows_is_never_sent_to_cam(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    aioclient_mock.post(PAIR_URL, json={"username": "kp-3-4", "password": "pw"})
+    aioclient_mock.post(CAM_PAIR_URL, json={"username": "kp-9", "password": "cam"})
+    form = await _start(hass)
+
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_HOST] == "turva.secsrv.fi"
+    assert _asked(aioclient_mock) == [PAIR_URL]
+
+
+async def test_a_cam_code_on_the_code_form_is_paired_on_cam_once_turva_does_not_know_it(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """CAM (cam.steels.me) is a second Turva production; its web sends its customers straight to this form."""
+    hass.config.location_name = "Mökki"
+    aioclient_mock.post(PAIR_URL, status=404, json={"error": "invalid_code"})
+    aioclient_mock.post(CAM_PAIR_URL, json={"username": "kp-7-2", "password": "cam-salasana"})
+    form = await _start(hass)
+
+    with patch(
+        "custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock
+    ) as test:
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_HOST: "cam.steels.me",
+        CONF_CUSTOMER_ID: 7,
+        CONF_USERNAME: "kp-7-2",
+        CONF_PASSWORD: "cam-salasana",
+    }
+    assert result["title"] == "Turva (Mökki)"
+    assert test.await_args.kwargs["host"] == "cam.steels.me"
+    assert _asked(aioclient_mock) == [PAIR_URL, CAM_PAIR_URL]
+    (_, _, body, _) = aioclient_mock.mock_calls[1]
+    assert body == {"code": "ABCD-EFGH", "name": "Mökki"}
+
+
+@pytest.mark.parametrize(
+    ("answer", "error"),
+    [
+        ({"exc": aiohttp.ClientError()}, "cannot_connect"),
+        ({"exc": TimeoutError()}, "cannot_connect"),
+        ({"status": 503, "json": {"error": "unavailable"}}, "cannot_connect"),
+        ({"status": 429, "text": "Too Many Attempts."}, "cannot_connect"),
+        ({"status": 404, "text": "Not Found"}, "cannot_connect"),  # Fable L-4: not the service's wrong code
+        ({"status": 409, "json": {"error": "logins_full"}}, "logins_full"),
+    ],
+)
+async def test_only_a_wrong_code_from_turva_goes_on_to_cam(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, answer: dict, error: str
+) -> None:
+    """No connection, a rate limit, a server error or a full account: Turva may know the code, so not CAM."""
+    aioclient_mock.post(PAIR_URL, **answer)
+    aioclient_mock.post(CAM_PAIR_URL, json={"username": "kp-7", "password": "cam"})
+    form = await _start(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH"}
+    )
+
+    assert (result["step_id"], result["errors"]) == ("user", {"base": error})
+    assert _asked(aioclient_mock) == [PAIR_URL]
+
+
+async def test_a_cam_code_retried_after_a_failed_connection_test_reuses_its_login(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Fable M-2: the code is spent on CAM; the retry asks neither service again."""
+    aioclient_mock.post(PAIR_URL, status=404, json={"error": "invalid_code"})
+    aioclient_mock.post(CAM_PAIR_URL, json={"username": "kp-7-2", "password": "cam-salasana"})
+    form = await _start(hass)
+    test = AsyncMock(side_effect=[CannotConnect("broker down"), None])
+
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", test):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH"}
+        )
+        assert (result["step_id"], result["errors"]) == ("user", {"base": "cannot_connect"})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PAIRING_CODE: "abcd efgh"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_HOST] == "cam.steels.me"
+    assert result["data"][CONF_USERNAME] == "kp-7-2"
+    assert _asked(aioclient_mock) == [PAIR_URL, CAM_PAIR_URL]
+    assert [call.kwargs["host"] for call in test.await_args_list] == ["cam.steels.me", "cam.steels.me"]
+
+
+async def test_the_login_step_asks_only_the_chosen_service(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    aioclient_mock.post(PAIR_URL, status=404, json={"error": "invalid_code"})
+    aioclient_mock.post(CAM_PAIR_URL, json={"username": "kp-7", "password": "cam"})
+    form = await _login_step(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        form["flow_id"], {CONF_HOST: "turva.secsrv.fi", CONF_PAIRING_CODE: "ABCD-EFGH"}
+    )
+
+    assert (result["step_id"], result["errors"]) == ("login", {CONF_PAIRING_CODE: "invalid_code"})
+    assert _asked(aioclient_mock) == [PAIR_URL]
 
 
 async def test_a_full_account_and_an_unreachable_service_say_so(

@@ -24,8 +24,9 @@ the hidden list starts empty for everyone, never pre-filled from older options.
 options and the entities stay (moving to turva.secsrv.fi needed removing and re-adding it).
 
 1.18.0 (Turva onboarding, steelo 2026-10-22 "Käyttöliittymä ja yhdistäminen mahdollisimman yksinkertaiseksi"):
-the first form is the pairing code alone, for Turva's service. Left empty, it opens the login step: the
-service, and a code or the login and password (1.17.0's form), so every service and way still connects.
+the first form is the pairing code alone, for the Turva services: turva.secsrv.fi, and only when it does not
+know the code, CAM's cam.steels.me. Left empty, it opens the login step: the service, and a code or the login
+and password (1.17.0's form), so every service and way still connects.
 """
 
 from __future__ import annotations
@@ -92,9 +93,16 @@ except ImportError:  # pragma: no cover -- Home Assistant without OptionsFlowWit
 
 _LOGGER = logging.getLogger(__name__)
 
-# 1.18.0: the code shown on the Turva page, for Turva's service (SETUP_DEFAULT_HOST). Optional: left empty,
-# the login step follows (the field's own text says so).
+# 1.18.0: the code shown on the Turva page. Optional: left empty, the login step follows (the field's own text
+# says so).
 STEP_USER_DATA_SCHEMA = vol.Schema({vol.Optional(CONF_PAIRING_CODE): vol.Coerce(str)})
+# The services the code form asks, in this order: Turva's production first, then the other Turva services
+# (CAM). The code does not carry its service; only a code the one before does not know goes on to the next,
+# so a code valid on turva.secsrv.fi is never sent anywhere else.
+CODE_FORM_HOSTS: tuple[str, ...] = (
+    SETUP_DEFAULT_HOST,
+    *(host for host in TURVA_HOSTS if host != SETUP_DEFAULT_HOST),
+)
 
 
 def _login_schema(host: str) -> vol.Schema:
@@ -271,7 +279,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         return KameraportiOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """1.18.0: the pairing code alone, for Turva's service; an empty code opens the login step."""
+        """1.18.0: the pairing code alone, for the Turva services; an empty code opens the login step."""
         if user_input is None:
             return self._setup_form("user", SETUP_DEFAULT_HOST)
         code = str(user_input.get(CONF_PAIRING_CODE) or "").strip()
@@ -299,14 +307,10 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         # without one the login and password are needed as before. The code is never stored.
         code = str(user_input.get(CONF_PAIRING_CODE) or "").strip()
         if code:
-            paired = self._paired if self._paired is not None else {}
-            self._paired = paired
-            key = (host, normalize_code(code))
             try:
-                if key in paired:
-                    login, password = paired[key]
-                else:
-                    login, password = paired[key] = await async_pair(self.hass, host, code)
+                host, login, password = await self._async_redeem(
+                    CODE_FORM_HOSTS if step_id == "user" else (host,), code
+                )
             except InvalidPairingCode:
                 errors[CONF_PAIRING_CODE] = "invalid_code"
             except PairingLoginsFull:
@@ -354,6 +358,29 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 title=_entry_title(self.hass, host, customer_id, username), data=user_input
             )
         return self._setup_form(step_id, host, errors)
+
+    async def _async_redeem(self, hosts: tuple[str, ...], code: str) -> tuple[str, str, str]:
+        """The service that accepts the code, with the login and password it gave.
+
+        The hosts are asked in order; only a wrong-code answer (InvalidPairingCode) goes on to the next, and
+        the last one's is raised. A full account or no connection is raised at once: that service may know the
+        code. Fable M-2: a login a code gave on any of them is reused for the rest of the flow.
+        """
+        paired = self._paired if self._paired is not None else {}
+        self._paired = paired
+        normalized = normalize_code(code)
+        for host in hosts:
+            if (host, normalized) in paired:
+                return (host, *paired[(host, normalized)])
+        for host in hosts[:-1]:
+            try:
+                login, password = await async_pair(self.hass, host, code)
+            except InvalidPairingCode:
+                continue
+            paired[(host, normalized)] = (login, password)
+            return host, login, password
+        login, password = paired[(hosts[-1], normalized)] = await async_pair(self.hass, hosts[-1], code)
+        return hosts[-1], login, password
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Start a reauth flow (contract section 20) when the broker reports auth failure."""
