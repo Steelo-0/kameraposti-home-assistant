@@ -25,6 +25,9 @@ BROKER_HOSTS: Final = ("turva.secsrv.fi", "cam.steels.me", "kameraposti.fi")
 # kameraposti.fi has no sensor broker. DEFAULT_HOST stays the fallback for entries stored without a
 # host (version 1 migration), so an existing installation never changes service.
 SETUP_DEFAULT_HOST: Final = "turva.secsrv.fi"
+# 1.18.0 (Turva onboarding, review F15): the Kameraposti Turva services -- production and the CAM service.
+# Their entries are called "Turva (<home name>)"; kameraposti.fi's keep "Kameraposti (<login>)".
+TURVA_HOSTS: Final = ("turva.secsrv.fi", "cam.steels.me")
 MQTT_PORT: Final = 443
 MQTT_WS_PATH: Final = "/mqtt"
 MQTT_TRANSPORT: Final = "websockets"

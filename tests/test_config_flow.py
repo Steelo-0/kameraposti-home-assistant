@@ -233,7 +233,7 @@ async def test_the_login_can_be_typed_as_kp_id_n(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_USERNAME] == "kp-3-2"
     assert result["data"][CONF_CUSTOMER_ID] == 3
-    assert result["title"] == "Kameraposti (kp-3-2)"
+    assert result["title"] == "Turva (test home)"  # cam.steels.me is a Turva service (1.18.0)
     assert mock_test.await_args.kwargs["username"] == "kp-3-2"
     assert mock_test.await_args.kwargs["customer_id"] == 3
 
@@ -501,3 +501,41 @@ async def test_a_camera_list_time_stored_by_1_14_0_does_not_hold_back_the_new_se
         "host": "turva.secsrv.fi",
     }
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("host", "login", "title"),
+    [
+        ("turva.secsrv.fi", "kp-3", "Turva (Mökki)"),
+        ("turva.secsrv.fi", "kp-3-2", "Turva (Mökki)"),
+        ("cam.steels.me", "kp-3", "Turva (Mökki)"),
+        ("kameraposti.fi", "kp-3", "Kameraposti (3)"),
+        ("kameraposti.fi", "kp-3-2", "Kameraposti (kp-3-2)"),
+    ],
+)
+async def test_a_turva_entry_is_called_by_the_home_and_a_kameraposti_entry_by_the_login(
+    hass: HomeAssistant, host: str, login: str, title: str
+) -> None:
+    """1.18.0 (Turva onboarding, review F15): a Turva customer saw "Kameraposti (kp-1)"."""
+    hass.config.location_name = "Mökki"
+    result = await _login_form(hass)
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {**USER_INPUT, CONF_HOST: host, CONF_CUSTOMER_ID: login}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
+    assert result2["title"] == title
+
+
+async def test_a_turva_entry_without_a_home_name_is_called_by_the_login(hass: HomeAssistant) -> None:
+    hass.config.location_name = "  "
+    result = await _login_form(hass)
+    with patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {**USER_INPUT, CONF_HOST: "turva.secsrv.fi", CONF_CUSTOMER_ID: "kp-3-2"}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["title"] == "Turva (kp-3-2)"

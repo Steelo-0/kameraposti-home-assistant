@@ -59,6 +59,7 @@ from .const import (
     DEFAULT_HOST,
     DOMAIN,
     SETUP_DEFAULT_HOST,
+    TURVA_HOSTS,
     USERNAME_TEMPLATE,
 )
 from .coordinator import roster_store
@@ -230,6 +231,16 @@ def exportable_entity_options(
     ]
 
 
+def _entry_title(hass: HomeAssistant, host: str, customer_id: int, username: str) -> str:
+    """1.18.0 (Turva onboarding, review F15): "Turva (<home name>)" on a Turva service -- the name the service
+    also shows for this Home Assistant's login (pairing.py). Kameraposti keeps "Kameraposti (<login>)": the
+    account number, or an extra login itself. A Turva entry without a home name gets the login too."""
+    login = username if username != USERNAME_TEMPLATE.format(customer_id=customer_id) else str(customer_id)
+    if host not in TURVA_HOSTS:
+        return f"Kameraposti ({login})"
+    return f"Turva ({(hass.config.location_name or '').strip() or login})"
+
+
 async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Run the real connection test. Raises CannotConnect / InvalidAuth."""
     await async_test_connection(
@@ -319,7 +330,6 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
                 step_id, host, {CONF_CUSTOMER_ID: "device_login" if device else "invalid_login"}
             )
         customer_id, username = parsed
-        is_extra_login = username != USERNAME_TEMPLATE.format(customer_id=customer_id)
         # 1.5.1: the unique id is the canonical login ("3", "kp-3" and " KP-3 " are one
         # login), checked before the test connection, which would kick a running entry with
         # the same login off the broker. Entries from before 1.5.1 that have not been set up
@@ -341,8 +351,7 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = "unknown"
         else:
             return self.async_create_entry(
-                title=f"Kameraposti ({username})" if is_extra_login else f"Kameraposti ({customer_id})",
-                data=user_input,
+                title=_entry_title(self.hass, host, customer_id, username), data=user_input
             )
         return self._setup_form(step_id, host, errors)
 

@@ -72,6 +72,12 @@ Copy `custom_components/kameraposti` into your Home Assistant
    subscribe) before saving — if anything fails, you'll see the reason
    before the entry is created.
 
+Since 1.18.0 an entry on a Turva service (`turva.secsrv.fi`, `cam.steels.me`)
+is called **Turva (<home name>)**, after the name in Home Assistant's general
+settings (the service shows the same name for the login); one on
+`kameraposti.fi` stays **Kameraposti (<login>)**. Existing entries keep their
+names.
+
 A login can be added only once, however it is typed (`3`, `kp-3` and
 ` KP-3 ` are the same login; since 1.5.1). If two entries from an earlier
 version use the same login, both are kept and Home Assistant's log warns

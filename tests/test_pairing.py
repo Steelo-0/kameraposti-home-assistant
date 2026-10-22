@@ -58,7 +58,8 @@ async def test_a_pairing_code_sets_up_the_entry_with_the_login_turva_gives(
         CONF_USERNAME: "kp-3-4",
         CONF_PASSWORD: "paritettu-salasana",
     }
-    assert result["title"] == "Kameraposti (kp-3-4)"
+    # 1.18.0: a Turva entry is called by the home's name, the same name the service gives the login.
+    assert result["title"] == "Turva (Mökki)"
     assert test.await_args.kwargs["username"] == "kp-3-4"
     (_, url, body, _) = aioclient_mock.mock_calls[0]
     assert str(url) == PAIR_URL
