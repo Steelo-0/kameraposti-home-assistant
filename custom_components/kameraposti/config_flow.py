@@ -66,7 +66,14 @@ from .const import (
 from .coordinator import roster_store
 from .login import entry_login, is_device_login, parse_login
 from .mqtt_client import CannotConnect, InvalidAuth, async_test_connection
-from .pairing import InvalidPairingCode, PairingLoginsFull, async_pair, normalize_code
+from .pairing import (
+    FALLBACK_PAIR_TIMEOUT_SECONDS,
+    InvalidPairingCode,
+    PairingLoginsFull,
+    UnknownPairingCode,
+    async_pair,
+    normalize_code,
+)
 from .sensor_export import (
     CHOOSABLE_NUMERIC_KINDS,
     MAX_EXPORTED_SENSORS,
@@ -362,9 +369,13 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_redeem(self, hosts: tuple[str, ...], code: str) -> tuple[str, str, str]:
         """The service that accepts the code, with the login and password it gave.
 
-        The hosts are asked in order; only a wrong-code answer (InvalidPairingCode) goes on to the next, and
-        the last one's is raised. A full account or no connection is raised at once: that service may know the
-        code. Fable M-2: a login a code gave on any of them is reused for the rest of the flow.
+        The hosts are asked in order. Only the explicit "no such code" answer (UnknownPairingCode, 404
+        invalid_code) goes on to the next (audit H-L1: a malformed code, 422, is malformed everywhere); a
+        full account or no connection on the first is raised at once, as that service may know the code. H-M1:
+        once the first has said it does not know the code, a later one is asked briefly
+        (FALLBACK_PAIR_TIMEOUT_SECONDS), and one that cannot be asked leaves that answer standing -- a wrong
+        code, never "no connection". Fable M-2: a login a code gave on any of them is reused for the rest of
+        the flow.
         """
         paired = self._paired if self._paired is not None else {}
         self._paired = paired
@@ -372,15 +383,29 @@ class KameraportiConfigFlow(ConfigFlow, domain=DOMAIN):
         for host in hosts:
             if (host, normalized) in paired:
                 return (host, *paired[(host, normalized)])
-        for host in hosts[:-1]:
+        last = len(hosts) - 1
+        for index, host in enumerate(hosts):
             try:
-                login, password = await async_pair(self.hass, host, code)
-            except InvalidPairingCode:
+                if index == 0:
+                    login, password = await async_pair(self.hass, host, code)
+                else:
+                    login, password = await async_pair(
+                        self.hass, host, code, timeout=FALLBACK_PAIR_TIMEOUT_SECONDS
+                    )
+            except UnknownPairingCode:
+                if index == last:
+                    raise
+                continue
+            except CannotConnect as err:
+                if index == 0:
+                    raise
+                _LOGGER.debug("Kameraposti: %s could not be asked for the pairing code: %s", host, err)
+                if index == last:
+                    raise UnknownPairingCode from err
                 continue
             paired[(host, normalized)] = (login, password)
             return host, login, password
-        login, password = paired[(hosts[-1], normalized)] = await async_pair(self.hass, hosts[-1], code)
-        return hosts[-1], login, password
+        raise UnknownPairingCode  # pragma: no cover -- hosts is never empty
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Start a reauth flow (contract section 20) when the broker reports auth failure."""

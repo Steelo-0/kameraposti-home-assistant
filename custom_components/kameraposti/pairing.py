@@ -18,24 +18,37 @@ from .mqtt_client import CannotConnect
 
 PAIR_PATH: Final = "/api/v1/ha/pair"
 PAIR_TIMEOUT_SECONDS: Final = 15
+# 1.18.0 (audit H-M1): the code form's second try (CAM, after turva.secsrv.fi did not know the code) waits at
+# most this long, so a code that is simply wrong never waits the full timeout twice.
+FALLBACK_PAIR_TIMEOUT_SECONDS: Final = 5
 # The service keeps 40 characters of Home Assistant's name as the login's label (Fable L-4: a longer name
 # was refused).
 NAME_MAX_LENGTH: Final = 40
 
 
 class InvalidPairingCode(Exception):
-    """The code is wrong, expired or used (404 invalid_code)."""
+    """The service refused the code: malformed (422), or one it does not know (UnknownPairingCode)."""
+
+
+class UnknownPairingCode(InvalidPairingCode):
+    """The service has no such code (404 invalid_code): wrong, expired or used there -- or another service's.
+
+    1.18.0 (audit H-L1): only this answer sends the code form's code on to the next Turva service; a malformed
+    code (422) is malformed everywhere.
+    """
 
 
 class PairingLoginsFull(Exception):
     """The account has its maximum number of extra logins (409 logins_full)."""
 
 
-async def async_pair(hass: HomeAssistant, host: str, code: str) -> tuple[str, str]:
+async def async_pair(
+    hass: HomeAssistant, host: str, code: str, *, timeout: float = PAIR_TIMEOUT_SECONDS
+) -> tuple[str, str]:
     """The login and password the service gives for ``code``; CannotConnect when it cannot be asked."""
     session = async_get_clientsession(hass)
     try:
-        async with asyncio.timeout(PAIR_TIMEOUT_SECONDS):
+        async with asyncio.timeout(timeout):
             response = await session.post(
                 f"https://{host}{PAIR_PATH}",
                 json={"code": code, "name": (hass.config.location_name or "")[:NAME_MAX_LENGTH]},
@@ -47,7 +60,7 @@ async def async_pair(hass: HomeAssistant, host: str, code: str) -> tuple[str, st
                 # release without pairing) is no connection.
                 body = await response.json(content_type=None)
                 if isinstance(body, dict) and body.get("error") == "invalid_code":
-                    raise InvalidPairingCode
+                    raise UnknownPairingCode
                 raise CannotConnect("pairing not found on the service")
             if response.status == 409:
                 raise PairingLoginsFull

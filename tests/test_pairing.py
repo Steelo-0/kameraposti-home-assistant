@@ -6,6 +6,7 @@ code opens the login step, where the service is chosen and its code or the login
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -21,6 +22,12 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 
 from custom_components.kameraposti.const import CONF_CUSTOMER_ID, CONF_HOST, CONF_PAIRING_CODE, DOMAIN
 from custom_components.kameraposti.mqtt_client import CannotConnect
+from custom_components.kameraposti.pairing import (
+    FALLBACK_PAIR_TIMEOUT_SECONDS,
+    PAIR_TIMEOUT_SECONDS,
+    UnknownPairingCode,
+    async_pair,
+)
 
 PAIR_URL = "https://turva.secsrv.fi/api/v1/ha/pair"
 CAM_PAIR_URL = "https://cam.steels.me/api/v1/ha/pair"
@@ -161,6 +168,104 @@ async def test_only_a_wrong_code_from_turva_goes_on_to_cam(
     )
 
     assert (result["step_id"], result["errors"]) == ("user", {"base": error})
+    assert _asked(aioclient_mock) == [PAIR_URL]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"exc": aiohttp.ClientError()},
+        {"exc": TimeoutError()},
+        {"status": 503, "json": {"error": "unavailable"}},
+        {"status": 429, "text": "Too Many Attempts."},
+        {"status": 404, "text": "Not Found"},
+    ],
+)
+async def test_cam_that_cannot_be_asked_leaves_turvas_wrong_code_answer(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, answer: dict
+) -> None:
+    """Audit H-M1: turva.secsrv.fi has said it does not know the code; CAM out of reach does not make that a
+    connection problem (the user would look for a network fault instead of the code)."""
+    aioclient_mock.post(PAIR_URL, status=404, json={"error": "invalid_code"})
+    aioclient_mock.post(CAM_PAIR_URL, **answer)
+    form = await _start(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH"}
+    )
+
+    assert (result["step_id"], result["errors"]) == ("user", {CONF_PAIRING_CODE: "invalid_code"})
+    assert _asked(aioclient_mock) == [PAIR_URL, CAM_PAIR_URL]
+
+
+async def test_a_full_cam_account_after_turvas_wrong_code_says_so(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """CAM knows the code: its own answer stands."""
+    aioclient_mock.post(PAIR_URL, status=404, json={"error": "invalid_code"})
+    aioclient_mock.post(CAM_PAIR_URL, status=409, json={"error": "logins_full"})
+    form = await _start(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH"}
+    )
+
+    assert result["errors"] == {"base": "logins_full"}
+
+
+async def test_the_cam_try_waits_briefly_and_turvas_the_usual_time(hass: HomeAssistant) -> None:
+    """Audit H-M1: a wrong code never waits the full pairing timeout twice."""
+    pair = AsyncMock(side_effect=[UnknownPairingCode, ("kp-7", "pw")])
+    form = await _start(hass)
+
+    with (
+        patch("custom_components.kameraposti.config_flow.async_pair", pair),
+        patch("custom_components.kameraposti.config_flow.async_test_connection", new_callable=AsyncMock),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    [turva, cam] = pair.await_args_list
+    assert (turva.args[1], turva.kwargs) == ("turva.secsrv.fi", {})
+    assert cam.args[1] == "cam.steels.me"
+    assert cam.kwargs == {"timeout": FALLBACK_PAIR_TIMEOUT_SECONDS}
+    assert FALLBACK_PAIR_TIMEOUT_SECONDS <= 5 < PAIR_TIMEOUT_SECONDS
+
+
+async def test_the_pairing_request_waits_at_most_the_timeout_it_is_given(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    aioclient_mock.post(CAM_PAIR_URL, json={"username": "kp-7", "password": "pw"})
+    waited: list[float] = []
+    real_timeout = asyncio.timeout
+
+    def timeout(seconds: float) -> asyncio.Timeout:
+        waited.append(seconds)
+        return real_timeout(seconds)
+
+    with patch("custom_components.kameraposti.pairing.asyncio.timeout", timeout):
+        await async_pair(hass, "cam.steels.me", "ABCD-EFGH", timeout=FALLBACK_PAIR_TIMEOUT_SECONDS)
+        await async_pair(hass, "cam.steels.me", "ABCD-EFGH")
+
+    assert waited == [FALLBACK_PAIR_TIMEOUT_SECONDS, PAIR_TIMEOUT_SECONDS]
+
+
+async def test_a_malformed_code_is_not_sent_on_to_cam(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Audit H-L1: the service's 422 (e.g. longer than it takes) is malformed on every service."""
+    aioclient_mock.post(PAIR_URL, status=422, json={"message": "The code field must not be greater than 20."})
+    aioclient_mock.post(CAM_PAIR_URL, json={"username": "kp-7", "password": "cam"})
+    form = await _start(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        form["flow_id"], {CONF_PAIRING_CODE: "ABCD-EFGH-IJKL-MNOP-QRST"}
+    )
+
+    assert (result["step_id"], result["errors"]) == ("user", {CONF_PAIRING_CODE: "invalid_code"})
     assert _asked(aioclient_mock) == [PAIR_URL]
 
 

@@ -69,13 +69,15 @@ Copy `custom_components/kameraposti` into your Home Assistant
    page (e.g. `K7Q2-M9XD`, valid for 15 minutes, works once; since 1.17.0).
    Since 1.18.0 this first form is the code alone, for the Turva services; a
    my.home-assistant.io link that adds the integration opens it. The code goes
-   to `turva.secsrv.fi`, and only if that service does not know it (a wrong,
-   expired or used code there) to CAM's `cam.steels.me`: a code valid on
-   `turva.secsrv.fi` is never sent anywhere else, and no connection, a server
-   error or a full account there stops at that answer. The service that
-   accepts the code gives this Home Assistant its own login (the first one the
-   account's login `kp-2`, others their own, e.g. `kp-2-3`) and is the entry's
-   service; the code is not stored.
+   to `turva.secsrv.fi`, and only if that service answers that it has no such
+   code (wrong, expired or used there) to CAM's `cam.steels.me`, which is given
+   at most 5 seconds. A code that `turva.secsrv.fi` accepts is never sent
+   anywhere else; a malformed code, no connection, a server error or a full
+   account at `turva.secsrv.fi` stops at that answer, and if CAM cannot be
+   reached the code reads as wrong. The service that accepts the code gives
+   this Home Assistant its own login (the first one the account's login
+   `kp-2`, others their own, e.g. `kp-2-3`) and is the entry's service; the
+   code is not stored.
 
    No code, or an account on another service (`kameraposti.fi`)? Leave the
    code empty: the next form asks for the service, and that service's pairing
