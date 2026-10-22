@@ -382,7 +382,7 @@ async def test_coordinator_describes_exported_sensors_when_connected(hass: HomeA
         coordinator._handle_state_change(ConnectionState.CONNECTED)
         await hass.async_block_till_done()
 
-        calls = [c.args for c in client.publish.call_args_list]
+        calls = [c.args for c in _sent(client)]
         assert [c[0] for c in calls] == [
             "kameraposti/3/anturit/binary_sensor.kellari/config",
             "kameraposti/3/anturit/binary_sensor.kellari",
@@ -436,8 +436,13 @@ async def _connected_coordinator(
     return coordinator, client
 
 
+def _sent(client: MagicMock) -> list:
+    """The client's publishes but the hello of every connect (1.18.0, test_hello.py)."""
+    return [c for c in client.publish.call_args_list if not c.args[0].endswith("/_ha/hello")]
+
+
 def _published_topics(client: MagicMock) -> list[str]:
-    return [c.args[0] for c in client.publish.call_args_list]
+    return [c.args[0] for c in _sent(client)]
 
 
 async def test_a_reconnect_storm_sends_the_full_snapshot_at_most_once_a_minute(
@@ -508,7 +513,7 @@ async def test_an_alarm_from_a_break_goes_out_at_once_on_a_rate_limited_reconnec
     client.publish.return_value = True
     coordinator._handle_state_change(ConnectionState.CONNECTED)
     await hass.async_block_till_done()
-    assert [c.args for c in client.publish.call_args_list] == [
+    assert [c.args for c in _sent(client)] == [
         ("kameraposti/3/anturit/binary_sensor.kellari", "leak", False)
     ]
 
@@ -517,7 +522,7 @@ async def test_an_alarm_from_a_break_goes_out_at_once_on_a_rate_limited_reconnec
     coordinator._handle_state_change(ConnectionState.RECONNECTING)
     coordinator._handle_state_change(ConnectionState.CONNECTED)
     await hass.async_block_till_done()
-    assert len(client.publish.call_args_list) == 1
+    assert len(_sent(client)) == 1
     await coordinator.async_stop()
 
 
@@ -853,14 +858,14 @@ async def test_the_roster_sets_the_limit_and_a_roster_without_it_brings_the_defa
     coordinator, client = await _connected_coordinator(hass, entity_ids)
     roster_topic = f"customers/{CUSTOMER_ID}/cameras"
     assert coordinator.sensor_limit is None
-    states = [c.args for c in client.publish.call_args_list]
+    states = [c.args for c in _sent(client)]
     assert _sent_entities(states) == entity_ids[:20]
 
     client.publish.reset_mock()
     coordinator._handle_message(roster_topic, _limit_roster(30, second=1))
     await hass.async_block_till_done()
     assert coordinator.sensor_limit == 30
-    states = [c.args for c in client.publish.call_args_list]
+    states = [c.args for c in _sent(client)]
     assert _sent_entities(states) == entity_ids[20:]
 
     # The retained roster again (a reconnect): nothing more to send.
@@ -1847,7 +1852,7 @@ async def test_an_unreadable_installation_id_sends_no_list_and_setup_goes_on(has
         "custom_components.kameraposti.coordinator.instance_id.async_get", side_effect=OSError("disk full")
     ):
         coordinator, client = await _connected_coordinator(hass, ["binary_sensor.kellari"])
-    calls = [c.args for c in client.publish.call_args_list]
+    calls = [c.args for c in _sent(client)]
     assert [c[0] for c in calls] == [
         "kameraposti/3/anturit/binary_sensor.kellari/config",
         "kameraposti/3/anturit/binary_sensor.kellari",
@@ -1912,7 +1917,7 @@ async def test_a_re_added_entry_drops_nothing_until_its_selection_is_saved(
 
     def _lists(client: MagicMock) -> list[dict]:
         return [
-            json.loads(c.args[1]) for c in client.publish.call_args_list if c.args[0].endswith("/_ha/sync")
+            json.loads(c.args[1]) for c in _sent(client) if c.args[0].endswith("/_ha/sync")
         ]
 
     entry = MockConfigEntry(
@@ -2094,7 +2099,7 @@ async def test_a_reload_or_another_entry_of_the_account_shares_its_budget(
     first, _client = await _connected_coordinator(hass, entity_ids, publish=publish)
     first._handle_message(f"customers/{CUSTOMER_ID}/cameras", _limit_roster(100, second=1))
     await hass.async_block_till_done()
-    assert len(sent) == 149  # 20 sensors and the list, then 54 of the 80 the limit let in
+    assert len(sent) == 150  # the hello (1.18.0), 20 sensors and the list, then 54 of the 80 the limit let in
     await first.async_stop()
 
     freezer.tick(5)

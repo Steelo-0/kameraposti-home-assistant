@@ -475,6 +475,13 @@ class KameraportiSensorExporter:
         # Every chosen entity, not only the sent ones: a sensor's name must not change with the limit.
         return kameraposti_name(self._hass, state, self._entity_ids)
 
+    @property
+    def entity_count(self) -> int:
+        """1.18.0 (the hello): the entities to send -- the saved selection or, without one, the alarm sensors
+        found (auto_sensors.py) -- before the plan's limit, which Kameraposti knows and which is not known yet
+        when the hello goes out. Not only those with a state now: right after a restart many have none yet."""
+        return len(self._entity_ids)
+
     def async_start(self) -> None:
         if self._unsub is None and self._entity_ids:
             # Every chosen entity is tracked (and filtered when its state changes), so a higher limit

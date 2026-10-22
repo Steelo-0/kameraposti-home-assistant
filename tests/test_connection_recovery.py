@@ -165,12 +165,17 @@ class _Broker:
         self._mids = itertools.count(1)
         self._acked: set[int] = set()
         self.sent: list[tuple[str, str, int]] = []
+        # 1.18.0: the hello of every connect, apart (topic, payload, qos, retain); never acknowledged here.
+        self.hellos: list[tuple[str, str, int, bool]] = []
         paho.is_connected.return_value = True
         paho.publish.side_effect = self._publish
 
     def _publish(self, topic: str, payload: str, qos: int = 0, retain: bool = False) -> MagicMock:
         mid = next(self._mids)
-        self.sent.append((topic, payload, mid))
+        if topic.endswith("/_ha/hello"):
+            self.hellos.append((topic, payload, qos, retain))
+        else:
+            self.sent.append((topic, payload, mid))
         return MagicMock(rc=mqtt.MQTT_ERR_SUCCESS, mid=mid)
 
     def ack(self, topic: str | None = None) -> None:

@@ -136,6 +136,10 @@ SENSOR_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/{name}"
 SYNC_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/_ha/sync"
 # The broker's message_size_limit is 4096 bytes; a longer list goes out in parts of at most this.
 SYNC_PART_MAX_BYTES: Final = 3500
+# 1.18.0 (Turva onboarding contract section 1): after every connect, QoS 1 and not retained, this Home
+# Assistant's {"version", "alarm_candidates", "cameras"} -- nothing else, no names. Turva shows from it that
+# Home Assistant is connected, also with no sensor yet; an older service does not subscribe to it.
+HELLO_TOPIC_TEMPLATE: Final = "kameraposti/{customer_id}/anturit/_ha/hello"
 # 1.7.1 (steelo 2026-10-16 "ei anturirajoja"): the most this integration ever sends; the old 20
 # here stopped accounts whose limit is higher.
 MAX_EXPORTED_SENSORS: Final = 200

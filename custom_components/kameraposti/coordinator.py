@@ -57,6 +57,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
 from .auto_sensors import KameraportiAutoSensors, auto_alarm_entities
@@ -70,6 +71,7 @@ from .const import (
     DEFAULT_CAMERA_NAME_TEMPLATE,
     DOMAIN,
     EVENT_DETECTION,
+    HELLO_TOPIC_TEMPLATE,
     LATEST_PHOTO_TOPIC_PATTERN,
     MANUFACTURER,
     MODEL,
@@ -199,6 +201,7 @@ class KameraportiCoordinator:
         # 1.14.2 (bug hunt 19.10 H-L4): the snapshots of the account on this service share one message budget,
         # also with its other entries and across reloads (budget.py).
         budget = snapshot_budget(hass, host, customer_id)
+        self._budget = budget
         # 1.16.0 (steelo 2026-10-21 "Hälytysanturit lähtevät itsestään"): until a selection is saved, the
         # alarm sensors are sent by themselves (auto_sensors.py); a new one reloads the entry.
         selection_saved = CONF_EXPORTED_ENTITIES in entry.options
@@ -232,6 +235,10 @@ class KameraportiCoordinator:
         # 1.7.0: the Home Assistant cameras described to Kameraposti and used for its photos (1.8.0:
         # every camera not hidden, worked out each time they are needed).
         camera_settings = camera_settings_from_options(entry.options)
+        self._exported_cameras = partial(exported_cameras, hass, camera_settings)
+        # 1.18.0: the hello after every connect (_publish_hello); the version is read at start.
+        self._hello_topic = HELLO_TOPIC_TEMPLATE.format(customer_id=customer_id)
+        self._version: str | None = None
         self._camera_exporter = KameraportiCameraExporter(
             hass,
             customer_id=customer_id,
@@ -252,7 +259,7 @@ class KameraportiCoordinator:
             host=host,
             customer_id=customer_id,
             cameras=capture_cameras_from_options(entry.options),
-            exported=partial(exported_cameras, hass, camera_settings),
+            exported=self._exported_cameras,
             video=camera_settings.video,
             video_seconds=camera_settings.video_seconds,
             detections=self._frigate,
@@ -332,6 +339,8 @@ class KameraportiCoordinator:
         """Start the MQTT client (contract section 21/22 counterpart is async_stop)."""
         # Before any message can arrive: the retained roster comes right after connecting.
         self._roster_applied_at = await self._async_load_roster_applied_at()
+        # 1.18.0: the manifest's version for the hello, before the first connect.
+        self._version = str((await async_get_integration(self.hass, DOMAIN)).version)
         # 1.12.0 (Fable audit H1): the login and this installation, so two Home Assistants never pass for one.
         # Unreadable (Fable audit L-D): no list and no source -- Kameraposti then drops nothing of this one.
         try:
@@ -388,6 +397,8 @@ class KameraportiCoordinator:
         async_dispatcher_send(self.hass, self.signal_security)
 
         if state == ConnectionState.CONNECTED:
+            # 1.18.0: first, so Turva knows who is connected before the descriptions follow.
+            self._publish_hello()
             # Describe the exported sensors and send their current state on
             # (re)connect -- nothing is buffered while disconnected. 1.5.1: the
             # full snapshot at most once a minute (a reconnect storm must not use
@@ -405,6 +416,26 @@ class KameraportiCoordinator:
             # retrying with backoff regardless -- reauth just gives the
             # user a fast path to fix a rotated/typo'd password.
             self.entry.async_start_reauth(self.hass)
+
+    @callback
+    def _publish_hello(self) -> None:
+        """1.18.0 (Turva onboarding contract section 1): once after every connect, also within the snapshot's
+        minute. It never waits for the snapshot budget but counts in it, like what a break left unsent, so
+        the snapshot right after it leaves it room.
+
+        alarm_candidates: the entities sent as sensors (the saved selection, or the alarm sensors found);
+        cameras: the Home Assistant cameras reported to Kameraposti. No location name or other text.
+        """
+        if self._version is None:
+            return
+        payload = {
+            "version": self._version,
+            "alarm_candidates": self._exporter.entity_count,
+            "cameras": len(self._exported_cameras()),
+        }
+        if self._client.publish(self._hello_topic, json.dumps(payload), False):
+            self._budget.record()
+            _LOGGER.debug("Kameraposti hello: %s", payload)
 
     @callback
     def _handle_publishes_lost(self, topics: list[str]) -> None:
