@@ -88,9 +88,9 @@ Copy `custom_components/kameraposti` into your Home Assistant
    before the entry is created.
 
 Since 1.18.0 an entry on a Turva service (`turva.secsrv.fi`, `cam.steels.me`)
-is called **Turva (<home name>)**, after the name in Home Assistant's general
+is called **Turva (&lt;home name&gt;)**, after the name in Home Assistant's general
 settings (the service shows the same name for the login); one on
-`kameraposti.fi` stays **Kameraposti (<login>)**. Existing entries keep their
+`kameraposti.fi` stays **Kameraposti (&lt;login&gt;)**. Existing entries keep their
 names.
 
 A login can be added only once, however it is typed (`3`, `kp-3` and
@@ -405,7 +405,7 @@ How the photo and the video are taken:
   (its own MQTT event `frigate/events`, type `new` -- the same events
   Frigate-Notify reads) is a motion of that camera in Kameraposti, with
   nothing to tick. Kameraposti gets a sensor `binary_sensor.<camera>_frigate`
-  ("<camera> Frigate") and links it to the camera `camera.<camera>` by its
+  ("&lt;camera&gt; Frigate") and links it to the camera `camera.<camera>` by its
   name; the motion brings Frigate's picture of the detection, and an alarm
   when armed. Home Assistant's MQTT integration must be on the broker Frigate
   publishes to (Frigate's integration needs that anyway); the topic prefix is
@@ -423,7 +423,7 @@ How the photo and the video are taken:
   message** (Tuya's alarm message, which a security camera sends on motion
   too) and, on a doorbell, **Doorbell picture** (a press). Each new event of
   them is a motion of that camera in Kameraposti, with nothing to tick:
-  Kameraposti gets a sensor `binary_sensor.<camera>_tuya` ("<camera> Tuya")
+  Kameraposti gets a sensor `binary_sensor.<camera>_tuya` ("&lt;camera&gt; Tuya")
   and links it to the camera `camera.<camera>` by its name; the motion brings
   a live still of the camera, and an alarm when armed. A doorbell press brings
   both events: within 5 seconds they are one motion. An event Home Assistant

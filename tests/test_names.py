@@ -7,6 +7,7 @@ the custom_components/kameraposti folder HACS installs into), so only the shown 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from custom_components.kameraposti.const import DOMAIN
@@ -54,3 +55,17 @@ def test_the_readme_is_turvas() -> None:
 
     assert readme.startswith("# Turva for Home Assistant\n")
     assert "search for\n   **Turva**" in readme
+
+
+def test_the_readme_has_no_bare_placeholders() -> None:
+    """Audit H-L4: GitHub and HACS read "<home name>" outside code as an HTML tag and show nothing."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    bare = []
+    in_code_block = False
+    for number, line in enumerate(readme.splitlines(), 1):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if not in_code_block and re.search(r"<[A-Za-z/][^>]*>", re.sub(r"`[^`]*`", "", line)):
+            bare.append(number)
+    assert bare == []
