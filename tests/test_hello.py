@@ -180,3 +180,35 @@ async def test_the_cameras_own_alarm_sensors_are_candidates_too(hass: HomeAssist
     hello = await _hello_of(hass, {CONF_EXPORTED_ENTITIES: ["sensor.lampo"]})
     assert hello["alarm_candidates"] == 3
     assert (await _hello_of(hass, {CONF_EXPORTED_ENTITIES: []}))["alarm_candidates"] == 2
+
+
+async def test_a_failing_hello_is_logged_and_the_connection_goes_on(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The hello is only a greeting: an error while working it out must not stop the sensors, the cameras or
+    the connection state."""
+    _set_sensors(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, options={}, version=2)
+    entry.add_to_hass(hass)
+    client = MagicMock()
+    client.async_start = AsyncMock()
+    client.async_stop = AsyncMock()
+    client.publish.return_value = True
+    with patch("custom_components.kameraposti.coordinator.KameraportiMqttClient", return_value=client):
+        coordinator = KameraportiCoordinator(
+            hass, entry, host="turva.secsrv.fi", customer_id=3, username="kp-3", password="x"
+        )
+    await coordinator.async_start()
+    coordinator._exported_cameras = MagicMock(side_effect=RuntimeError("camera registry broke"))
+
+    coordinator._handle_state_change(ConnectionState.CONNECTED)
+    await hass.async_block_till_done()
+
+    topics = [c.args[0] for c in client.publish.call_args_list]
+    assert HELLO_TOPIC not in topics
+    assert "kameraposti/3/anturit/binary_sensor.ovi/config" in topics
+    assert "kameraposti/3/anturit/binary_sensor.savu" in topics
+    assert coordinator.connection_state is ConnectionState.CONNECTED
+    assert "the hello to the service could not be sent" in caplog.text
+    assert "camera registry broke" in caplog.text
+    await coordinator.async_stop()

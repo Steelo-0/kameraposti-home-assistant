@@ -425,18 +425,22 @@ class KameraportiCoordinator:
 
         alarm_candidates: the sensors sent (the saved selection or the alarm sensors found, and the cameras'
         own alarm sensors from Frigate and Tuya); cameras: the Home Assistant cameras reported to Kameraposti.
-        No location name or other text.
+        No location name or other text. Only a greeting: whatever goes wrong here is logged, and the
+        connection's sensors, cameras and alarms go out as without it.
         """
         if self._version is None:
             return
-        payload = {
-            "version": self._version,
-            "alarm_candidates": self._exporter.sensor_count,
-            "cameras": len(self._exported_cameras()),
-        }
-        if self._client.publish(self._hello_topic, json.dumps(payload), False):
-            self._budget.record()
-            _LOGGER.debug("Kameraposti hello: %s", payload)
+        try:
+            payload = {
+                "version": self._version,
+                "alarm_candidates": self._exporter.sensor_count,
+                "cameras": len(self._exported_cameras()),
+            }
+            if self._client.publish(self._hello_topic, json.dumps(payload), False):
+                self._budget.record()
+                _LOGGER.debug("Kameraposti hello: %s", payload)
+        except Exception:  # noqa: BLE001 -- the hello never stops the connection's snapshot
+            _LOGGER.exception("Kameraposti: the hello to the service could not be sent")
 
     @callback
     def _handle_publishes_lost(self, topics: list[str]) -> None:
