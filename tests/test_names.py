@@ -1,4 +1,5 @@
-"""1.18.0 (Turva onboarding, steelo "1 ok"): the integration is called Turva; its domain stays kameraposti.
+"""1.18.0 (Turva onboarding; steelo 2026-10-23 "2"): the integration is called "Turva ja Kameraposti", because
+Kameraposti (kameraposti.fi) customers use the same integration; its domain stays kameraposti.
 
 Renaming the domain would break every installation (entries, entity ids, the kameraposti_detection event,
 the custom_components/kameraposti folder HACS installs into), so only the shown names change.
@@ -20,26 +21,28 @@ def _json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_the_integration_is_called_turva_and_its_domain_stays() -> None:
+def test_the_integration_is_called_turva_ja_kameraposti_and_its_domain_stays() -> None:
     manifest = _json(INTEGRATION / "manifest.json")
 
-    assert manifest["name"] == "Turva"
+    assert manifest["name"] == "Turva ja Kameraposti"
     assert manifest["domain"] == DOMAIN == "kameraposti"
     assert manifest["documentation"] == "https://github.com/Steelo-0/kameraposti-home-assistant"
-    assert _json(ROOT / "hacs.json")["name"] == "Turva"
+    assert _json(ROOT / "hacs.json")["name"] == "Turva ja Kameraposti"
 
 
-def test_the_titles_that_named_kameraposti_name_turva() -> None:
+def test_the_titles_fit_both_services() -> None:
+    """The first form is shown before the service is known; reconnect and the sensor choice belong to one
+    entry, which may be Turva's or Kameraposti's, so their titles name neither."""
     expected = {
         "fi": {
-            "user": "Yhdistä Turvaan",
-            "reauth_confirm": "Yhdistä uudelleen Turvaan",
-            "sensors": "Anturit Turvaan",
+            "user": "Yhdistä Turvaan tai Kamerapostiin",
+            "reauth_confirm": "Yhdistä uudelleen",
+            "sensors": "Valitse anturit",
         },
         "en": {
-            "user": "Connect to Turva",
-            "reauth_confirm": "Reconnect to Turva",
-            "sensors": "Sensors to Turva",
+            "user": "Connect to Turva or Kameraposti",
+            "reauth_confirm": "Reconnect",
+            "sensors": "Choose sensors",
         },
     }
     for language, titles in expected.items():
@@ -47,14 +50,16 @@ def test_the_titles_that_named_kameraposti_name_turva() -> None:
         steps = {**translations["config"]["step"], **translations["options"]["step"]}
         for step, title in titles.items():
             assert steps[step]["title"] == title, (language, step)
-        assert not [step for step, texts in steps.items() if "Kamerapost" in texts.get("title", "")], language
+        titled = {step: texts.get("title", "") for step, texts in steps.items()}
+        named = [step for step, title in titled.items() if re.search("Turva|Kamerapost", title)]
+        assert named == ["user"], language
 
 
-def test_the_readme_is_turvas() -> None:
+def test_the_readme_uses_the_integration_name() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert readme.startswith("# Turva for Home Assistant\n")
-    assert "search for\n   **Turva**" in readme
+    assert readme.startswith("# Turva ja Kameraposti for Home Assistant\n")
+    assert "search for\n   **Turva ja Kameraposti**" in readme
 
 
 def test_the_readme_has_no_bare_placeholders() -> None:

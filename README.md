@@ -1,4 +1,4 @@
-# Turva for Home Assistant
+# Turva ja Kameraposti for Home Assistant
 
 Home Assistant custom integration for **Turva** (Kameraposti Turva,
 `turva.secsrv.fi`) and **Kameraposti**. It sends your own Home Assistant
@@ -10,7 +10,7 @@ riistakamera (trail camera) detection events directly from Kameraposti's own
 MQTT broker, turns them into Home Assistant sensors and an automation trigger
 event, and shows each camera's latest photo.
 
-Since 1.18.0 the integration is called **Turva** in HACS and in Home
+Since 1.18.0 the integration is called **Turva ja Kameraposti** in HACS and in Home
 Assistant. Its domain stays `kameraposti` (the `custom_components/kameraposti`
 folder, the `kameraposti_detection` event, entity ids), so existing
 installations, entries and automations keep working. Kameraposti
@@ -53,7 +53,7 @@ Assistant or a bridge.
 
 1. In HACS, go to **Integrations → ⋮ → Custom repositories**.
 2. Add this repository's URL, category **Integration**.
-3. Install **Turva** (the repository is `kameraposti-home-assistant`), then
+3. Install **Turva ja Kameraposti** (the repository is `kameraposti-home-assistant`), then
    restart Home Assistant.
 
 ### Manual
@@ -64,7 +64,7 @@ Copy `custom_components/kameraposti` into your Home Assistant
 ## Setup
 
 1. Go to **Settings → Devices & services → Add integration**, search for
-   **Turva** (1.17.0 and older: **Kameraposti**).
+   **Turva ja Kameraposti** (1.17.0 and older: **Kameraposti**).
 2. Enter the **pairing code** shown in the Home Assistant section of the Turva
    page (e.g. `K7Q2-M9XD`, valid for 15 minutes, works once; since 1.17.0).
    Since 1.18.0 this first form is the code alone, for the Turva services; a
@@ -107,7 +107,7 @@ If Kameraposti rotates your MQTT password, Home Assistant will prompt you
 to re-authenticate; enter the new password and the integration reconnects
 automatically.
 
-Since 1.14.1 **Settings → Devices & services → Turva → ⋮ →
+Since 1.14.1 **Settings → Devices & services → Turva ja Kameraposti → ⋮ →
 Reconfigure** changes an entry's service (e.g. from `cam.steels.me` to
 `turva.secsrv.fi`) and its password there, tested before it is saved. The
 login, the chosen sensors and the entities stay, so there is no need to
@@ -231,7 +231,7 @@ you remove it (Settings → Devices & services → Generic Camera).
 
 ## Sensors to Kameraposti
 
-**Settings → Devices & services → Turva → Configure → Sensors to Turva**
+**Settings → Devices & services → Turva ja Kameraposti → Configure → Choose sensors**
 (1.17.0 and older: **Kameraposti → … → Sensors to Kameraposti**) lets you pick Home Assistant entities to send to Kameraposti, as
 many as your Kameraposti plan takes (see [How many sensors](#how-many-sensors-since-180)).
 

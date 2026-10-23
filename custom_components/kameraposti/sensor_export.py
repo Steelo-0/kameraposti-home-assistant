@@ -559,7 +559,7 @@ class KameraportiSensorExporter:
         if dropped:
             _LOGGER.warning(
                 "Kameraposti: your Kameraposti plan takes at most %d sensors; not sending %s "
-                "(the last ones chosen under Configure -> Sensors to Turva)",
+                "(the last ones chosen under Configure -> Choose sensors)",
                 limit,
                 ", ".join(dropped),
             )

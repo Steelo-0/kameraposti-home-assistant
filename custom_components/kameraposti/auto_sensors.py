@@ -2,7 +2,7 @@
 HA-yhteys lähettää heti ovi-, ikkuna-, liike-, savu-, vuoto- ja kaasuanturit paketin rajaan asti.
 Lämpötilat ja muut lisätään itse, ja kaikki voi poistaa valinnasta.").
 
-Until a selection has been saved under Configure -> Sensors to Turva, every smoke, gas, leak, door,
+Until a selection has been saved under Configure -> Choose sensors, every smoke, gas, leak, door,
 window and motion sensor of this Home Assistant is sent, most important first (the plan's limit takes the
 first, sensor_export). Temperatures, CO2 and sensors whose kind has to be chosen are left to the user, and so
 are Frigate's own sensors (1.11.1), this integration's own entities, and hidden, disabled or diagnostic ones.

@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to Turva",
+        "title": "Connect to Turva or Kameraposti",
         "description": "Enter the pairing code shown on the Turva page (e.g. K7Q2-M9XD).",
         "data": {
           "pairing_code": "Pairing code"
@@ -22,7 +22,7 @@
         }
       },
       "reauth_confirm": {
-        "title": "Reconnect to Turva",
+        "title": "Reconnect",
         "description": "Kameraposti rejected the stored password. Create or change the password on Kameraposti's Turva page and enter it here.",
         "data": {
           "password": "Password"
@@ -84,7 +84,7 @@
   "options": {
     "step": {
       "sensors": {
-        "title": "Sensors to Turva",
+        "title": "Choose sensors",
         "description": "Choose the Home Assistant sensors that appear in Kameraposti and alarm through Kameraposti notifications: leak, smoke, gas (also carbon monoxide detectors and CO meters: alarm from 50 ppm, clear below 35 ppm), door, window, motion, temperature and CO₂ (carbon dioxide, ppm). {limit_note} Until you save a selection, the alarm sensors (smoke, gas, leak, door, window, motion) are sent by themselves and are chosen here already; add temperatures and the rest yourself. Kameraposti creates them automatically. A sensor removed in Kameraposti does not come back (Restore on its Turva page brings it back). Cameras are chosen in Kameraposti: Home Assistant tells it all its cameras, and an alarm brings a photo and a short video. A Z-Wave leak sensor is usually \"…_water_leak\" and a gas sensor has gas or carbon_monoxide in its name (shown as OK / Problem). The list has every binary sensor and every numeric sensor. If a sensor's kind cannot be read (marked \"kind chosen next\"), you choose it on the next page.",
         "data": {
           "exported_entities": "Exported sensors"

@@ -750,7 +750,7 @@ async def test_only_the_first_chosen_sensors_up_to_the_limit_are_sent(
         assert _kameraposti_logs(caplog, logging.WARNING) == [
             "Kameraposti: your Kameraposti plan takes at most 20 sensors; not sending "
             + ", ".join(entity_ids[20:])
-            + " (the last ones chosen under Configure -> Sensors to Turva)"
+            + " (the last ones chosen under Configure -> Choose sensors)"
         ]
         # The left-out ones are not sent when they change either.
         published.clear()
@@ -838,7 +838,7 @@ async def test_a_lower_limit_stops_sending_the_extra_sensors_without_removal_mes
     assert _kameraposti_logs(caplog, logging.WARNING) == [
         "Kameraposti: your Kameraposti plan takes at most 22 sensors; not sending "
         + ", ".join(entity_ids[22:])
-        + " (the last ones chosen under Configure -> Sensors to Turva)"
+        + " (the last ones chosen under Configure -> Choose sensors)"
     ]
     exporter.publish_snapshot()
     assert _sent_entities(published) == entity_ids[:22]
@@ -853,7 +853,7 @@ async def test_a_lower_limit_stops_sending_the_extra_sensors_without_removal_mes
         exporter.async_set_limit(24)
     assert _kameraposti_logs(caplog, logging.WARNING) == [
         "Kameraposti: your Kameraposti plan takes at most 24 sensors; not sending binary_sensor.ovi_24 "
-        "(the last ones chosen under Configure -> Sensors to Turva)"
+        "(the last ones chosen under Configure -> Choose sensors)"
     ]
     exporter.async_stop()
 
